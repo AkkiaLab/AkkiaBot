@@ -7,8 +7,9 @@ changing the prompt or the model::
     uv run akkiabot-antispam-eval --dataset my.jsonl --concurrency 4
 
 Each line of the data set is a JSON object ``{"id", "label" (1 spam / 0 not),
-"text"}``. Fail-open verdicts (timeouts, API errors) are counted as wrong *and*
-reported separately, so a broken endpoint cannot look like a good prompt.
+"text"}``. Fail-open verdicts (timeouts, API errors) are counted as wrong for both
+classes (never as a correct "not spam"), kept out of TP/TN/FP/FN and reported
+separately, so a broken endpoint cannot look like a good prompt.
 """
 
 from __future__ import annotations
@@ -75,6 +76,8 @@ class EvalReport:
     false_positive: int = 0
     false_negative: int = 0
     fail_open: int = 0
+    fail_open_spam: int = 0
+    """Fail-open verdicts on spam samples (missed spam, counted in recall)."""
     seconds: float = 0.0
     mistakes: list[tuple[Sample, SpamVerdict]] = field(default_factory=list)
 
@@ -93,14 +96,18 @@ class EvalReport:
 
     @property
     def recall(self) -> float:
-        actual = self.true_positive + self.false_negative
+        actual = self.true_positive + self.false_negative + self.fail_open_spam
         return self.true_positive / actual if actual else 0.0
 
     def add(self, sample: Sample, verdict: SpamVerdict) -> None:
+        """Fail-open verdicts are never correct and stay out of the confusion matrix."""
         self.total += 1
         if verdict.failed:
             self.fail_open += 1
-        match (sample.is_spam, verdict.is_spam and not verdict.failed):
+            self.fail_open_spam += sample.is_spam
+            self.mistakes.append((sample, verdict))
+            return
+        match (sample.is_spam, verdict.is_spam):
             case (True, True):
                 self.true_positive += 1
             case (False, False):
@@ -109,7 +116,7 @@ class EvalReport:
                 self.false_positive += 1
             case (True, False):
                 self.false_negative += 1
-        if verdict.failed or verdict.is_spam != sample.is_spam:
+        if verdict.is_spam != sample.is_spam:
             self.mistakes.append((sample, verdict))
 
     def render(self) -> str:

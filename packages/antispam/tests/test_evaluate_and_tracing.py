@@ -66,7 +66,7 @@ async def test_evaluate_reports_accuracy() -> None:
     report = await evaluate(KeywordClassifier(), samples, concurrency=2)
     assert (report.total, report.correct) == (5, 2)
     assert (report.true_positive, report.true_negative) == (1, 1)
-    assert (report.false_positive, report.false_negative, report.fail_open) == (1, 2, 1)
+    assert (report.false_positive, report.false_negative, report.fail_open) == (1, 1, 1)
     assert report.accuracy == pytest.approx(0.4)
     assert report.precision == pytest.approx(0.5)
     assert report.recall == pytest.approx(1 / 3)
@@ -74,6 +74,26 @@ async def test_evaluate_reports_accuracy() -> None:
     assert "准确率: 40.0%" in text
     assert "fo: 期望 1，得到 fail_open(timeout)" in text
     assert "fp: 期望 0，得到 1" in text
+
+
+@pytest.mark.parametrize(("label", "recall"), [(0, 1.0), (1, 0.5)])
+async def test_fail_open_is_never_correct(label: int, recall: float) -> None:
+    # Regression: a timed-out *ham* sample used to count as a correct "not spam".
+    samples = [
+        Sample(id="tp", label=1, text="buy now"),
+        Sample(id="tn", label=0, text="hello"),
+        Sample(id="fo", label=label, text="boom"),
+    ]
+    report = await evaluate(KeywordClassifier(), samples)
+    assert (report.total, report.correct, report.fail_open) == (3, 2, 1)
+    assert (report.true_positive, report.true_negative) == (1, 1)
+    assert (report.false_positive, report.false_negative) == (0, 0)
+    assert report.accuracy == pytest.approx(2 / 3)
+    assert report.precision == pytest.approx(1.0)
+    assert report.recall == pytest.approx(recall)
+    text = report.render()
+    assert "准确率: 66.7%" in text
+    assert f"fo: 期望 {label}，得到 fail_open(timeout)" in text
 
 
 def test_empty_report() -> None:
