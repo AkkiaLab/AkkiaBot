@@ -3,8 +3,7 @@
 * ``akkiabot`` / ``akkiabot --version`` — print the version (container smoke test).
 * ``akkiabot migrate [REVISION]`` — apply Alembic migrations (default ``head``)
   to the database configured by ``DB_URL``. Run it before starting the app.
-
-The bot runtime and HTTP API arrive in M2.
+* ``akkiabot serve`` — run the bot and the HTTP API in one event loop.
 """
 
 import argparse
@@ -13,9 +12,13 @@ from collections.abc import Sequence
 
 from pydantic import ValidationError
 
-from akkiabot_core.config import load_database_settings, load_observability_settings
+from akkiabot_core.config import (
+    load_database_settings,
+    load_observability_settings,
+    load_settings,
+)
 from akkiabot_core.db.migrate import upgrade
-from akkiabot_core.observability import configure_logging
+from akkiabot_core.observability import configure_logging, setup_observability
 from akkiabot_server import __version__
 
 logger = logging.getLogger("akkiabot_server")
@@ -27,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     migrate = sub.add_parser("migrate", help="执行数据库迁移（读取 DB_URL）")
     migrate.add_argument("revision", nargs="?", default="head", help="目标版本，默认 head")
+    sub.add_parser("serve", help="启动机器人与 HTTP API")
     return parser
 
 
@@ -45,10 +49,42 @@ def _migrate(revision: str) -> int:
     return 0
 
 
+def _serve() -> int:
+    obs = load_observability_settings()
+    configure_logging(obs.log_level, fmt=obs.log_format)
+    try:
+        settings = load_settings()
+    except ValidationError as exc:
+        logger.error("invalid configuration: %s", exc)
+        return 2
+
+    import uvicorn
+
+    from akkiabot_server.api import create_app
+    from akkiabot_server.runtime import Runtime
+
+    setup_observability(settings.observability, release=f"akkiabot@{__version__}")
+    logger.info("starting akkiabot", extra={"version": __version__, "config": settings.redacted()})
+    app = create_app(Runtime.build(settings))
+    config = uvicorn.Config(
+        app,
+        host=settings.server.host,
+        port=settings.server.port,
+        log_config=None,  # keep our structured logging
+        access_log=False,
+        lifespan="on",
+        server_header=False,
+    )
+    uvicorn.Server(config).run()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "migrate":
         return _migrate(args.revision)
+    if args.command == "serve":
+        return _serve()
     print(f"akkiabot {__version__}")
     return 0
 
