@@ -56,7 +56,19 @@ def test_extract_ip(text: str, expected: str) -> None:
     assert extract_ip(text) == ip_address(expected)
 
 
-@pytest.mark.parametrize("text", ["", "no address here", "1.2.3", "12:30 见", "999.1.1.1", "IP:999.1.1.1", "1.2.3.4.5", "ip:1.2.3"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "no address here",
+        "1.2.3",
+        "12:30 见",
+        "999.1.1.1",
+        "IP:999.1.1.1",
+        "1.2.3.4.5",
+        "ip:1.2.3",
+    ],
+)
 def test_extract_ip_none(text: str) -> None:
     assert extract_ip(text) is None
 
