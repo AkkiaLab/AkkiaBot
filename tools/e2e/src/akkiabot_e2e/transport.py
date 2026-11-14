@@ -119,8 +119,12 @@ class Account(Protocol):
         """Whether ``user_id`` is in the chat's banned (kicked) list."""
         ...
 
+    async def is_restricted(self, chat_id: int, user_id: int) -> bool:
+        """Whether ``user_id`` is a restricted member who may not send messages (muted)."""
+        ...
+
     async def unban(self, chat_id: int, user_id: int) -> None:
-        """Lift a ban (the user can join again; they are not re-added)."""
+        """Lift a ban or a restriction (a banned user can join again; they are not re-added)."""
         ...
 
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:

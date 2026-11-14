@@ -106,7 +106,11 @@ def register_handlers(application: App, commands: CommandRegistry) -> None:
     )
     application.add_handler(
         MessageHandler(
-            groups & ~filters.StatusUpdate.ALL & (filters.TEXT | filters.CAPTION),
+            # Commands are answered by their handlers, not classified.
+            groups
+            & ~filters.StatusUpdate.ALL
+            & ~filters.COMMAND
+            & (filters.TEXT | filters.CAPTION),
             instrument("antispam", check_group_message),
         ),
         group=GROUP_ANTISPAM,

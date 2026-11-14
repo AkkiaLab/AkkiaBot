@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import itertools
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from akkiabot_e2e.errors import E2EError, FloodWait
 from akkiabot_e2e.redaction import Secret
@@ -25,6 +26,8 @@ MOCK_MEMBER_SESSION = "1MemberSessionStringSECRET-bbbbbbbbbbbbbbbb"  # mock: 同
 
 # mock: 人工构造的不可用 api_hash，不是凭据。
 MOCK_API_HASH = "fake-api-hash-for-tests"
+# mock: 人工构造的不可用 LLM key，不是凭据。
+MOCK_LLM_API_KEY = "fake-llm-key-for-tests"
 
 
 def live_env(**overrides: str) -> dict[str, str]:
@@ -38,6 +41,9 @@ def live_env(**overrides: str) -> dict[str, str]:
         "E2E_ALLOWED_CHAT_IDS": "",
         "E2E_REPLY_TIMEOUT": "0.3",
         "E2E_SEND_INTERVAL": "0.001",
+        "E2E_ANTISPAM_WAIT": "0.01",
+        "LLM_API_KEY": MOCK_LLM_API_KEY,
+        "LLM_MODEL": "fake-model",
     }
     env.update(overrides)
     return env
@@ -52,6 +58,9 @@ class FakeChat:
     rights: dict[int, frozenset[str]] = field(default_factory=dict)
     messages: dict[int, Msg] = field(default_factory=dict)
     banned: set[int] = field(default_factory=set)
+    restricted: set[int] = field(default_factory=set)
+    """Muted members (cannot send messages)."""
+    message_counts: dict[int, int] = field(default_factory=dict)
     next_id: int = 1
 
 
@@ -99,6 +108,13 @@ class FakeBot:
     """Skip the permission check."""
     stale_menu: bool = False
     """Apply a toggle but do not redraw the menu."""
+    # -- M5 knobs --
+    antispam_ignores_switch: bool = False
+    """Remove spam even when the switch is off."""
+    antispam_no_exemption: bool = False
+    """Check long-standing members too."""
+    antispam_no_mute: bool = False
+    """Delete spam but never mute."""
     # -- state --
     settings: dict[int, dict[str, bool]] = field(default_factory=dict, init=False)
     warns: dict[tuple[int, int], int] = field(default_factory=dict, init=False)
@@ -219,6 +235,30 @@ class FakeBot:
                 return text, entities, ()
         return None
 
+    def check_spam(self, world: FakeTelegram, chat: FakeChat, msg: Msg) -> None:
+        """Fake LLM: "彩金" means spam. Mirrors the guard's switch / exemption rules."""
+        sender = msg.sender_id or 0
+        chat.message_counts[sender] = count = chat.message_counts.get(sender, 0) + 1
+        enabled = self._switches(chat.id)["antispam"] or self.antispam_ignores_switch
+        if not enabled or chat.members.get(sender) in ("creator", "admin"):
+            return
+        if count > 3 and not self.antispam_no_exemption:
+            return
+        if "彩金" not in msg.text:
+            return
+        chat.messages.pop(msg.id, None)
+        if not self.antispam_no_mute:
+            chat.restricted.add(sender)
+        text, entities = _mention(world.users[sender], "")
+        notice = f"[Anti SPAM]\n内容命中反垃圾策略\n用户：{text}\n动作：删除消息、禁言"
+        offset = len("[Anti SPAM]\n内容命中反垃圾策略\n用户：".encode("utf-16-le")) // 2
+        world.post(
+            chat,
+            self.user.id,
+            notice,
+            entities=tuple(Entity(e.kind, e.offset + offset, e.length) for e in entities),
+        )
+
     def respond(self, world: FakeTelegram, chat: FakeChat, msg: Msg) -> None:
         if chat.id == self.user.id:
             self.respond_private(world, chat, msg)
@@ -231,6 +271,8 @@ class FakeBot:
             ):
                 chat.messages.pop(msg.id, None)
             return
+        if not msg.text.startswith("/"):
+            self.check_spam(world, chat, msg)
         if self.silent or not msg.text.startswith("/"):
             return
         command, _, arg = msg.text.partition(" ")
@@ -254,6 +296,22 @@ class FakeBot:
                     target = world.users[reply.sender_id]
                     parts += [f"\n回复目标的UserId: {target.first_name} (", (str(target.id),), ")"]
                 text, entities = rendered(*parts)
+            case "/spam":
+                entities = ()
+                if reply is None or reply.sender_id is None:
+                    text = "此命令需要以回复的方式使用，将举报被回复的成员。"
+                elif chat.members.get(reply.sender_id) in ("creator", "admin"):
+                    text = "无法举报管理员或群主。"
+                elif self.can_moderate(chat, sender.id):
+                    target = world.users[reply.sender_id]
+                    deleted = self._ban(chat, target)
+                    text, entities = _mention(
+                        target, f" 已被封禁（垃圾信息），删除了 {deleted} 条消息。"
+                    )
+                else:
+                    text = "举报已收到，正在进行机器审核……"
+                world.post(chat, self.user.id, text, reply_to=msg.id, entities=entities)
+                return
             case "/config" | "/ban" | "/warn":
                 answer = self.respond_m4(world, chat, msg, command, reply)
                 if answer is None:
@@ -438,9 +496,14 @@ class FakeAccount:
         self._op("is_banned")
         return user_id in self._chat(chat_id).banned
 
+    async def is_restricted(self, chat_id: int, user_id: int) -> bool:
+        self._op("is_restricted")
+        return user_id in self._chat(chat_id).restricted
+
     async def unban(self, chat_id: int, user_id: int) -> None:
         self._op("unban")
         self._chat(chat_id).banned.discard(user_id)
+        self._chat(chat_id).restricted.discard(user_id)
 
     async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
         self._op("click")
@@ -464,6 +527,21 @@ class FakeAccount:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeTraces:
+    """:class:`~akkiabot_e2e.scenarios.TraceProbe` answering from a fixed set of traced markers.
+
+    ``traced=None`` means "everything asked for was traced".
+    """
+
+    def __init__(self, traced: set[str] | None = None) -> None:
+        self.traced = traced
+        self.asked: list[str] = []
+
+    async def wait_for_markers(self, markers: Sequence[str], *, since: datetime) -> dict[str, int]:
+        self.asked += markers
+        return {m: int(self.traced is None or m in self.traced) for m in markers}
 
 
 class Connector:

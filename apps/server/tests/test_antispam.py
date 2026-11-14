@@ -308,6 +308,7 @@ async def test_channels_bots_and_empty_messages_are_skipped(
         "type": "regular",
     }
     await group.say(SPAMMER_ID, None, sticker=sticker)
+    await group.say(SPAMMER_ID, "/help")  # commands are not classified
     assert llm.requests == []
 
 

@@ -19,6 +19,7 @@ from akkiabot_e2e.testing import (
     MOCK_MEMBER_SESSION,
     Connector,
     FakeTelegram,
+    FakeTraces,
     live_env,
 )
 from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, UserInfo
@@ -40,6 +41,7 @@ async def run(
     connector: Connector | None = None,
     pacer: Pacer | None = None,
     message_log=None,
+    traces: FakeTraces | None = None,
 ) -> Report:
     return await run_acceptance(
         config,
@@ -50,6 +52,7 @@ async def run(
         pacer=pacer or Pacer(send_interval=0, sleep=_no_sleep),
         poll_interval=0.01,
         message_log=message_log,
+        traces=traces or FakeTraces(),
     )
 
 
@@ -450,3 +453,96 @@ async def test_member_left_banned_by_an_interrupted_run_is_restored(world: FakeT
     assert any("解除普通成员账号的封禁" in step for step in report.setup)
     assert chat.banned == set()
     assert chat.members[MEMBER.id] == "member"
+
+
+# ---------------------------------------------------------------------- M5
+
+
+async def test_m5_scenarios_pass_and_leave_the_member_free(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
+    traces = FakeTraces()
+    report = await run(world, config, scenarios=select_scenarios(["m5"]), traces=traces)
+    assert report.status == "passed", report.to_markdown(Redactor())
+    chat = world.chats[_group_chat(world)]
+    assert chat.restricted == set()
+    assert chat.banned == set()
+    assert chat.members[MEMBER.id] == "member"
+    assert world.bot is not None
+    assert world.bot.settings[chat.id]["antispam"] is False  # switched off again
+    assert traces.asked == ["spam test-run"]
+
+
+async def test_m5_skipped_without_llm(world: FakeTelegram) -> None:
+    env = live_env(LLM_API_KEY="", LLM_MODEL="")
+    report = await run(world, load_config(env), scenarios=select_scenarios(["m5.spam", "m2.help"]))
+    assert statuses(report) == {"m5.spam": "not_run", "m2.help": "passed"}
+    assert "未配置 LLM" in report.results[0].detail
+    assert report.status == "failed"  # M5 was not verified
+
+
+async def test_m5_langfuse_skipped_without_probe(world: FakeTelegram, config: E2EConfig) -> None:
+    report = await run_acceptance(
+        config,
+        select_scenarios(["m5.spam", "m5.langfuse"]),
+        connect=Connector(world),
+        run_id="test-run",
+        allow_create=True,
+        pacer=Pacer(send_interval=0, sleep=_no_sleep),
+        poll_interval=0.01,
+    )
+    assert statuses(report) == {"m5.spam": "passed", "m5.langfuse": "not_run"}
+    assert "LANGFUSE" in report.results[1].detail
+
+
+async def test_m5_missing_trace_fails(world: FakeTelegram, config: E2EConfig) -> None:
+    report = await run(
+        world,
+        config,
+        scenarios=select_scenarios(["m5.spam", "m5.langfuse"]),
+        traces=FakeTraces(set()),
+    )
+    assert statuses(report)["m5.langfuse"] == "failed"
+    assert "spam test-run" in report.results[1].detail
+
+
+@pytest.mark.parametrize(
+    ("knob", "scenario", "detail"),
+    [
+        ("antispam_ignores_switch", "m5.disabled", "反垃圾已关闭，但消息"),
+        ("antispam_no_exemption", "m5.exempt", "老成员应被豁免，但消息"),
+        ("antispam_no_mute", "m5.spam", "成员没有被禁言"),
+    ],
+)
+async def test_m5_regressions_are_caught(
+    world: FakeTelegram, config: E2EConfig, knob: str, scenario: str, detail: str
+) -> None:
+    assert world.bot is not None
+    setattr(world.bot, knob, True)
+    report = await run(world, config, scenarios=select_scenarios([scenario]))
+    (result,) = report.results
+    assert result.status == "failed", report.to_markdown(Redactor())
+    assert detail in result.detail
+    chat = world.chats[_group_chat(world)]
+    assert chat.restricted == set()  # the member is never left muted
+
+
+async def test_m5_spam_command(world: FakeTelegram, config: E2EConfig) -> None:
+    report = await run(world, config, scenarios=select_scenarios(["m5.spam-command"]))
+    assert report.status == "passed", report.to_markdown(Redactor())
+    chat = world.chats[_group_chat(world)]
+    assert chat.members[MEMBER.id] == "member"
+
+
+async def test_member_left_muted_by_an_interrupted_run_is_restored(world: FakeTelegram) -> None:
+    chat = world.add_chat("AkkiaBot E2E 自动验收群", ADMIN)
+    chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
+    chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
+    chat.restricted.add(MEMBER.id)
+    config = load_config(live_env(E2E_ALLOWED_CHAT_IDS=str(chat.id)))
+
+    report = await run(world, config, allow_create=False, scenarios=select_scenarios(["m2.help"]))
+
+    assert report.status == "passed", report.to_markdown(Redactor())
+    assert any("解除普通成员账号的禁言" in step for step in report.setup)
+    assert chat.restricted == set()

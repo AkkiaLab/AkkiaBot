@@ -1,6 +1,6 @@
 # 真实 Telegram 验收（Telegram 测试环境 + 1Password + 用户账号自动化）
 
-本文说明如何对已实现的功能（目前为 M2、M3、M4）做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
+本文说明如何对已实现的功能（目前为 M2、M3、M4、M5）做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
 
 工具代码位于 `tools/e2e`（Python 包 `akkiabot_e2e`，命令 `akkiabot-e2e`）。它只通过 Telegram 黑盒验证，不导入产品代码；产品代码也不依赖它（import-linter 契约 `e2e-black-box`、`product-without-e2e`）。
 
@@ -61,6 +61,10 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | `bot_token` | 密码 | 测试环境 bot 的 token | `just e2e-bootstrap-bot` |
 | `sentry_dsn` | 密码 | Sentry 测试项目的 DSN；为空时不启用 Sentry | Sentry handoff 完成后写入 |
 | `ipinfo_token` | 密码 | ipinfo token（M3 的 `/ip` 使用，对应配置 `WHOIS_IPINFO_TOKEN`） | 已写入 |
+| `llm_base_url`、`llm_model` | 文本 | M5 反垃圾使用的 OpenAI 兼容接口地址与模型（`LLM_BASE_URL`、`LLM_MODEL`） | 负责人填写（字段已建好，2026-11-14） |
+| `llm_api_key` | 密码 | 上述接口的 API key（`LLM_API_KEY`）；为空时 M5 场景记为未执行 | 负责人填写 |
+| `langfuse_public_key`、`langfuse_secret_key` | 密码 | Langfuse 测试项目的密钥（`LANGFUSE_*`）：bot 用于上报，验收工具用同一组密钥只读查询 `antispam.classify` 记录 | 负责人填写 |
+| `langfuse_host` | 文本 | Langfuse 地址；为空时为 Langfuse Cloud（`https://cloud.langfuse.com`） | 负责人填写（可选） |
 
 ### 条目 `telegram-e2e`（用户账号自动化）
 
@@ -156,12 +160,16 @@ uv run akkiabot-e2e list    # 列出所有场景
 4. 选择测试群。只考虑**群主账号创建的、标题与 `E2E_CHAT_TITLE`（默认“AkkiaBot E2E 自动验收群”）完全一致的超级群**，并且群 id 必须在 `allowed_chat_ids` 中。同名但不在白名单中的群会被拒绝。只有带 `--create-group` 时才会新建群。
 5. 准备测试群：
    - 邀请 bot，确保它有 `delete_messages`、`ban_users` 管理员权限（手动授予的其他权限会保留）；
-   - 普通成员如果在封禁列表中（上次 M4 运行中断遗留），先解除封禁；
+   - 普通成员如果在封禁列表中（上次 M4 / M5 运行中断遗留），先解除封禁；
    - 普通成员通过一次性、1 小时内有效的邀请链接入群。
 6. 依次执行各场景并收集证据，最后核对 `message_log`。
 
 | 场景 | 内容 |
 | --- | --- |
+| `m5.spam` | 群主用 `/config` 开启“反垃圾”；成员发一条明显的博彩广告：广告被删除、成员被禁言，bot 发出带成员提及的“内容命中反垃圾策略”通知。结束时（无论成败）解除禁言 |
+| `m5.disabled` | 关闭“反垃圾”后，成员再发同样的广告：等待 `E2E_ANTISPAM_WAIT`（默认 20）秒后消息仍在、成员未被禁言 |
+| `m5.exempt` | 重新开启“反垃圾”，成员先发三条普通消息，再发广告：作为发言超过 3 条的老成员被豁免（同样等待后检查）。结束时关闭“反垃圾” |
+| `m5.langfuse` | 用 Langfuse 公共 API 查询本次运行之后的 `antispam.classify` generation，`m5.spam` 的广告（按消息中的运行标记匹配）必须有记录。未配置 `LANGFUSE_*` 时记为未执行 |
 | `m2.help` | `/help` 返回命令列表（包括 `/help`、`/id` 及其用法） |
 | `m2.id` | `/id` 返回“当前ChatId: 群名 (群 id)”和“你的UserId: 名字 (user id)”；id 显示为行内代码，没有残留反斜杠 |
 | `m2.id-reply` | 回复群主的消息执行 `/id`，额外返回“回复目标的UserId” |
@@ -171,10 +179,13 @@ uv run akkiabot-e2e list    # 列出所有场景
 | `m4.config` | 群主在群内发 `/config`，回复带深链按钮；用私聊发送 `/start <token>` 打开菜单（含反垃圾、入群验证、警告、删除系统消息四个开关）；点击“警告”，回调提示“设置成功”且菜单刷新为新状态。若初始为开启则先关再开，最终保持开启 |
 | `m4.warn` | 成员发两条消息，群主回复其中一条连续 `/warn`：回复依次显示 `1/3`、`2/3`，第 3 次显示已封禁；检查成员在封禁列表中、两条消息已被删除。开关未开启时先走一遍 `m4.config` 的流程。结束时（无论成败）解除封禁并让成员重新入群 |
 | `m4.ban` | 成员发三条消息，群主回复最后一条 `/ban`：回复显示删除条数不少于 3、名字渲染为提及链接；检查成员在封禁列表中、三条消息已被删除。结束时同样恢复成员 |
+| `m5.spam-command` | 成员回复群主消息发 `/spam` 得到“无法举报管理员或群主。”；群主回复成员消息发 `/spam`，回复“已被封禁（垃圾信息）”，成员进入封禁列表、消息被删除。结束时恢复成员 |
 | `m2.service-message` | 成员退群后通过邀请链接重新入群，两条系统消息都被 bot 删除（此场景最后执行）。如果 Telegram 没有返回其中任一条系统消息的 id，记为失败（未验证），不算通过 |
 | `m2.message-log` | 仅 `--serve` 模式：群主发出的普通消息出现在 `message_log` 中 |
 
 M3 合并到 master 之前，在 master 上运行 `m3.*` 会失败（bot 还没有 `/ip` 命令）。这时请用 `--scenarios m2`，或在 M3 的分支上运行。同理，M4 合并前在 master 上运行 `m4.*` 会失败。
+
+M5 场景排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用外部 bot 时，需要保证该 bot 的数据库中成员发言不超过 3 条，否则 `m5.spam` 会因豁免而失败。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，M5 的反垃圾场景记为未执行（⏭️），整次运行不算通过；只验收其他里程碑时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
 
 `m4.warn`、`m4.ban` 会真实封禁普通成员账号，并在场景结束时（包括失败时）解除封禁、用一次性邀请链接让成员重新入群，后续场景不受影响。如果运行被强行中断，成员可能停留在封禁状态；下次运行的准备阶段会先解除封禁再让成员入群，并在报告的准备步骤中注明。
 

@@ -9,12 +9,19 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 
 from akkiabot_e2e.config import E2EConfig
-from akkiabot_e2e.errors import CheckFailed, E2EError, RateLimitExceeded, SafetyError
+from akkiabot_e2e.errors import (
+    CheckFailed,
+    E2EError,
+    RateLimitExceeded,
+    SafetyError,
+    ScenarioSkipped,
+)
 from akkiabot_e2e.group import prepare_group
+from akkiabot_e2e.langfuse import LangfuseProbe
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.report import Report, ScenarioResult
-from akkiabot_e2e.scenarios import Scenario, ScenarioContext
+from akkiabot_e2e.scenarios import Scenario, ScenarioContext, TraceProbe
 from akkiabot_e2e.transport import Account, UserInfo
 
 logger = logging.getLogger(__name__)
@@ -51,7 +58,9 @@ async def run_acceptance(
     pacer: Pacer | None = None,
     poll_interval: float = 1.0,
     message_log: MessageLogProbe | None = None,
+    traces: TraceProbe | None = None,
 ) -> Report:
+    """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests)."""
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
     report = Report(run_id=run_id, status="failed", started_at=datetime.now(UTC).isoformat())
     async with AsyncExitStack() as stack:
@@ -102,7 +111,14 @@ async def run_acceptance(
             run_id=run_id,
             reply_timeout=config.reply_timeout,
             poll_interval=poll_interval,
+            antispam=config.antispam,
+            antispam_wait=config.antispam_wait,
         )
+        if traces is None and config.langfuse is not None:
+            probe = LangfuseProbe(config.langfuse)
+            stack.push_async_callback(probe.aclose)
+            traces = probe
+        ctx.traces = traces
         await _run_scenarios(ctx, scenarios, report)
         if message_log is not None and ctx.plain_message_ids:
             report.results.append(await _check_message_log(ctx, message_log))
@@ -128,6 +144,8 @@ async def _run_scenarios(
         try:
             await scenario.run(ctx)
             result.status = "passed"
+        except ScenarioSkipped as exc:
+            result.status, result.detail = "not_run", str(exc)
         except CheckFailed as exc:
             result.status, result.detail = "failed", str(exc)
         except RateLimitExceeded as exc:
