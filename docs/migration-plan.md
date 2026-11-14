@@ -47,6 +47,7 @@ flowchart LR
     M5 --> M10[M10 配置迁移与切换上线]
     M7 --> M10
     M9 --> M10
+    M3 --> M10
     M10 -.后续优化.-> M11[M11 Mini App 配置面板]
 ```
 
@@ -63,7 +64,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
   - `justfile`：`setup`、`lint`、`fmt`、`typecheck`、`test`、`dev`、`gen-api`。
   - `.pre-commit-config.yaml`（ruff、biome、gitleaks、基础检查）、`.editorconfig`、`.env.example`。
   - `deploy/Dockerfile`（后端镜像，多阶段构建）、`deploy/compose.dev.yaml`（postgres、redis）。
-  - GitHub Actions：`ci.yml`（PR 上按路径过滤运行 lint、type、test、镜像构建）、`release.yml`（main 分支推送 `ghcr.io/akkialab/akkiabot:<sha>` 和 `:latest`）；Renovate 配置。
+  - GitHub Actions：`ci.yml`（PR 上按路径过滤运行 lint、type、test、镜像构建）、`release.yml`（master 分支推送 `ghcr.io/akkialab/akkiabot:<sha>` 和 `:latest`）；Renovate 配置。
   - 补充 README 中的开发说明。
 - **依赖**：无（本 PR 合并后即可开始）。
 - **验收标准**
@@ -92,7 +93,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M2 · 机器人运行时与基础命令　`M`
 
 - **范围**
-  - `main.py`：PTB 与 uvicorn 在同一事件循环中运行，lifespan 负责启动和关闭；默认长轮询，可通过配置切换为 webhook；提供 `/healthz`、`/readyz`，以及独立端口上只在内网可访问的 `/metrics`。
+  - `main.py`：PTB 与 uvicorn 在同一事件循环中运行，lifespan 负责启动和关闭；默认长轮询，可通过配置切换为 webhook；`allowed_updates` 显式包含 `message`、`callback_query`、`chat_member`、`my_chat_member`；提供 `/healthz`、`/readyz`，以及独立端口上只在内网可访问的 `/metrics`。
   - 命令注册机制（一个声明式列表，同时生成 `set_my_commands` 和 `/help` 文本）；`/start` 的 payload 分发器（基于 `Cache.pop` 的一次性 payload）；`/help`、`/id`。
   - 每个 handler 都自动记录耗时、错误数，并把异常上报 Sentry；记录 `updates_total`、`command_total` 等基础指标。
   - 群消息处理：记录 `message_log`（只存 ID）；按群配置删除系统消息；首次见到某个群时写入 `chat` 记录。
@@ -117,7 +118,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M4 · 群管理：`/config`、`/ban`、`/warn`　`M`
 
 - **范围**
-  - `services/chat_settings`：读取和修改群配置（JSONB + pydantic 校验 + 缓存失效）。
+  - `services/chat_settings`：读取和修改群配置（可移植 JSON 列 + pydantic 校验 + 缓存失效）。
   - `/config`：在群内校验管理员权限 → 发送跳转私聊的深链 → 私聊中展示 inline 开关按钮（反垃圾、入群验证、警告、删除系统消息），回调时再次校验权限（行为与 core 版一致）。
   - `services/moderation`：权限判断（群主，或有限制成员权限的管理员）、封禁并批量删除历史消息（限制并发，按 Telegram 限速退避）、警告计数与达到上限后封禁；所有操作都更新 `chat_member.restriction`，并记录 `moderation_actions_total`。
   - `/ban`、`/warn` 命令（必须以回复方式使用；不能作用于管理员）。
@@ -142,7 +143,8 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M6 · 入群验证后端　`M`
 
 - **范围**
-  - 新成员入群（`chat_member` 更新事件中从 left 变为 member）且该群开启了验证 → 禁言 → 创建 `captcha_challenge`（有效期 **5 分钟**）→ 在群内发送脱敏称呼的提示和深链按钮。
+  - 入群判定：在 polling / webhook 的 `allowed_updates` 中显式订阅 `chat_member`（Telegram 默认不推送这类更新，且要求 bot 为群管理员）；按"成员身份从非成员变为成员"判断入群，即 `old.is_member == False` 且 `new.is_member == True`，或者状态从 left / kicked 变为 member / restricted。这样，带着限制状态重新入群的用户也会被覆盖。
+  - 新成员入群且该群开启了验证 → 禁言 → 创建 `captcha_challenge`（有效期 **5 分钟**）→ 在群内发送脱敏称呼的提示和深链按钮。
   - 私聊 `/start` 时校验发起人就是被验证的用户 → 回复打开 Mini App（`https://bot.akkia.moe/captcha?challenge=…`）的按钮，URL 只携带 challenge id。
   - `POST /api/v1/captcha/verify`：依次校验 Turnstile（async httpx）、initData（含 `auth_date` 过期检查）、challenge 是否存在且未过期、initData 中的用户是否与 challenge 一致 → 解除禁言（只解除 captcha 造成的禁言）→ 通过 `answerWebAppQuery` 回执。
   - CORS 只放行配置中的前端来源（生产为 `https://bot.akkia.moe`）。
@@ -160,7 +162,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
   - `apps/webapp` 中的 `/captcha?challenge=…` 页面：初始化 @telegram-apps/sdk-react，渲染 Turnstile 组件，提交后显示成功、失败或已超时状态并提供重试；成功后关闭 Mini App。
   - 只在 `import.meta.env.DEV` 下启用 Telegram 环境模拟（修复旧版生产环境也使用模拟数据的问题）。
   - 使用 openapi-typescript 生成的类型作为请求客户端；API 地址在构建时由 `VITE_API_BASE_URL` 注入。
-  - Cloudflare Pages 部署：`main` 分支发布到生产环境（自定义域名 `bot.akkia.moe`），PR 生成预览地址；SPA 回退规则（`_redirects`）与缓存头（`_headers`）。采用 Pages 的 Git 集成，或在 GitHub Actions 中用 `wrangler pages deploy` 发布，二选一，实现时决定。
+  - Cloudflare Pages 部署：`master` 分支发布到生产环境（自定义域名 `bot.akkia.moe`），PR 生成预览地址；SPA 路由回退：项目不放 `404.html`，Pages 会对未知路径自动返回根 `index.html`；如有需要，也可以显式写 `_redirects`（`/* /index.html 200`），并在验收中直接打开 `/captcha?challenge=…` 验证；缓存头写在 `_headers` 中。采用 Pages 的 Git 集成，或在 GitHub Actions 中用 `wrangler pages deploy` 发布，二选一，实现时决定。
   - 可选：接入 Sentry 浏览器 SDK，捕获前端异常。
 - **依赖**：M6。
 - **验收标准**
@@ -208,7 +210,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
     5. 冒烟验证。
   - 回滚步骤：停止新服务，重新启动 Go 版（旧数据库在此期间保持只读，不做修改）。
   - **切换上线并观察稳定之后**，在 5 个旧仓库的 README 中标注已迁移，并将它们归档（归档前在 issue 中再确认一次）。
-- **依赖**：M5、M7、M9。
+- **依赖**：M3、M5、M7、M9（切换前所有旧命令，包括 `/ip`，都必须已经迁移）。
 - **验收标准**：脚本在旧库副本上 dry-run 的统计与源数据一致；正式 bot 切换后，所有命令、入群验证、反垃圾完成一轮冒烟验证，Grafana 和 Sentry 中能看到生产数据。
 
 ### M11（后续优化）· Mini App 群配置面板　`M`

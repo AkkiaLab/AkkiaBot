@@ -177,7 +177,7 @@ flowchart LR
 | Telegram 框架 | **python-telegram-bot 22** | 已有代码基于它；官方 API 覆盖及时；自带 JobQueue（可用于定时清理、captcha 超时）；支持 webhook 和长轮询 | **aiogram 3**：Router / 中间件 / 依赖注入更现代，但需要全部重写，而且团队对它没有积累。如果后续中间件需求变复杂，可以再评估 |
 | HTTP API | **FastAPI** | 与 PTB 同在一个 asyncio 事件循环；可以自动生成 OpenAPI，前端据此生成类型 | Litestar：差别不大，生态更小 |
 | ORM / 迁移 | **SQLAlchemy 2.0（async）+ Alembic** | 修复同步 Session 阻塞事件循环的问题；所有 Telegram ID 统一用 `BigInteger` | SQLModel：对 async 和复杂类型的支持仍然别扭，旧代码里已经因此踩坑 |
-| 数据库 | **PostgreSQL 17**（生产，已确认）/ SQLite（本地开发、单测） | JSONB 适合存群配置；支持并发写；docker compose 一键拉起 | MySQL：旧 core 用过，但没有必须保留的理由；纯 SQLite：单实例也够用，但不利于以后扩展 |
+| 数据库 | **PostgreSQL 17**（生产，已确认）/ SQLite（本地开发、单测） | JSONB 适合存群配置（模型层使用可移植 JSON 类型，见 §5.3）；支持并发写；docker compose 一键拉起 | MySQL：旧 core 用过，但没有必须保留的理由；纯 SQLite：单实例也够用，但不利于以后扩展 |
 | 缓存 / 临时状态 | **Redis 7**（可选），接口抽象 + 内存实现作为后备 | start payload、captcha 状态需要 TTL；本地开发和测试不依赖 Redis | 只用数据库表加过期字段：可以少一个组件，但 TTL 清理要自己实现 |
 | 配置 | **pydantic-settings**（环境变量 + `.env`） | 带类型校验，启动时一次性失败；替代私有 submodule 和"写回配置文件"的做法 | YAML 文件：容器化部署时不如环境变量方便 |
 | LLM | **openai SDK（OpenAI 兼容端点）** + 可选 **Langfuse** | 豆包、OpenAI、DeepSeek 等都兼容这套接口；使用 JSON / 结构化输出 | LiteLLM：多一层依赖，但目前只调用一个模型，用不上 |
@@ -293,7 +293,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 
 | 表 | 主要字段 | 说明 |
 | --- | --- | --- |
-| `chat` | `id BIGINT PK`（Telegram chat id）、`type`、`title`、`settings JSONB`、`created_at`、`updated_at` | 群配置合并为一个 JSONB 字段（`antispam`、`captcha`、`warn`、`max_warn_count`、`delete_service_messages` 等），由 pydantic 模型校验 |
+| `chat` | `id BIGINT PK`（Telegram chat id）、`type`、`title`、`settings JSON`（通用 `sa.JSON` 类型，在 PostgreSQL 上通过 `with_variant(JSONB)` 使用 JSONB，在 SQLite 上为普通 JSON；Alembic 迁移使用同一可移植类型）、`created_at`、`updated_at` | 群配置合并为一个 JSONB 字段（`antispam`、`captcha`、`warn`、`max_warn_count`、`delete_service_messages` 等），由 pydantic 模型校验 |
 | `chat_member` | `(chat_id, user_id) UNIQUE`、`restriction`（enum：none / captcha_mute / spam_mute / admin_ban …）、`restricted_by`、`restricted_until`、`warn_count`、`message_count`、`joined_at`、`last_message_at` | 合并 core 与 telegram 两版的字段 |
 | `message_log` | `chat_id`、`message_id`、`user_id`、`created_at`、`spam_verdict`（nullable）、`text`（nullable，默认不写入） | 用于封禁时批量删除和反垃圾审计；定时清理 |
 | `captcha_challenge` | `id UUID`、`chat_id`、`user_id`、`status`、`created_at`、`expires_at`、`group_message_id` | 把 start payload、Mini App 回调和超时处理绑定到同一条记录 |
@@ -305,7 +305,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 - **一个进程**：`main.py` 构建 PTB `Application` 和 FastAPI app，在同一个事件循环中运行 PTB（默认长轮询，可配置为 webhook）和 uvicorn；FastAPI lifespan 负责初始化和关闭数据库、缓存、HTTP 客户端。
 - **数据库迁移**：通过独立命令 `akkiabot migrate`（容器启动前执行）完成，不在应用进程内用 subprocess 调用 alembic。
 - **域名与前端**：
-  - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。`main` 分支自动发布到生产环境，PR 生成预览地址。
+  - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。`master` 分支自动发布到生产环境，PR 生成预览地址。
   - `bot-api.akkia.moe` → cloudflared tunnel → 后端容器，提供 `/api/v1/...`。
   - 前端在构建时通过 `VITE_API_BASE_URL` 注入 API 地址；后端的 CORS 只放行 `https://bot.akkia.moe`（以及配置里列出的预览域名）。
   - Mini App 的鉴权依赖请求中携带的 Telegram initData，而不是 Cookie，所以跨域不涉及凭据共享，配置很简单。
