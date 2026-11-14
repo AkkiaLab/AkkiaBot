@@ -134,6 +134,8 @@ jobs:
         run: just test-web
       - name: Build
         run: pnpm --filter @akkiabot/webapp build
+      - name: No dev-only Telegram mock in the production bundle
+        run: bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist
 
   docker:
     needs: changes

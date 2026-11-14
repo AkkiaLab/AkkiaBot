@@ -57,6 +57,11 @@ test-py *args:
 test-web:
     pnpm -r test
 
+# Production build of the Mini App, then check it carries no dev-only Telegram mock
+build-web:
+    pnpm --filter @akkiabot/webapp build
+    bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist
+
 # Run pytest against the compose postgres/redis (start them with `just dev` or `just services`)
 test-integration *args:
     AKKIABOT_TEST_DATABASE_URL="postgresql+asyncpg://akkiabot:akkiabot@127.0.0.1:5432/akkiabot" \
