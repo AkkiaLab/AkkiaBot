@@ -1,0 +1,129 @@
+# Production / staging stack: app + postgres + redis + cloudflared.
+# Runbook: docs/operations.md. On the server, put this file next to `.env`
+# (compose variables, from deploy/.env.example) and `app.env` (application
+# config, from deploy/app.env.example), then:
+#
+#   docker compose up -d --wait
+#
+# `migrate` runs `akkiabot migrate` to completion before `app` starts.
+# Networks:
+#   backend — app, migrate, postgres, redis; internal (no route to the internet)
+#   edge    — app, cloudflared; the tunnel only forwards to app:8000
+# The metrics listener (app:9464) is never published and must never be a
+# tunnel target.
+
+x-app: &app
+  image: ${AKKIABOT_IMAGE:-ghcr.io/akkialab/akkiabot}:${AKKIABOT_TAG:-latest}
+  env_file: app.env
+  environment:
+    # Wiring that depends on this stack; it overrides values from app.env.
+    # POSTGRES_PASSWORD is used inside a URL: keep it [A-Za-z0-9] (openssl rand -hex 32).
+    DB_URL: postgresql+asyncpg://akkiabot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/akkiabot
+    REDIS_URL: redis://redis:6379/0
+    SERVER_HOST: 0.0.0.0
+    SERVER_PORT: "8000"
+    OBSERVABILITY_LOG_FORMAT: json
+    # Reachable inside the compose networks only (scraped by Alloy from M9).
+    OBSERVABILITY_METRICS_HOST: 0.0.0.0
+    OBSERVABILITY_METRICS_PORT: "9464"
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: akkiabot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: akkiabot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U akkiabot -d akkiabot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    command: ["serve"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [backend, edge]
+    # Loopback only, for health checks from the host. Never publish 9464.
+    ports:
+      - "127.0.0.1:${AKKIABOT_HTTP_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 4
+    stop_grace_period: 30s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.0
+    restart: unless-stopped
+    # Remotely managed tunnel: the public hostname -> http://app:8000 rule lives
+    # in the Cloudflare dashboard (docs/operations.md §DNS 与 tunnel).
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TOKEN:?set CLOUDFLARED_TOKEN in .env}
+      TUNNEL_METRICS: 127.0.0.1:20241
+      NO_AUTOUPDATE: "true"
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 4
+    logging: *logging
+
+networks:
+  backend:
+    internal: true
+  edge: {}
+
+volumes:
+  postgres-data:
+  redis-data:

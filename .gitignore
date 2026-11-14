@@ -19,6 +19,9 @@ coverage/
 .env
 .env.*
 !.env.example
+# Server-side app config and backups if deploy/ is used in place (docs/operations.md)
+deploy/**/app.env
+deploy/**/backups/
 
 # Editors / OS
 .idea/
