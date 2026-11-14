@@ -114,7 +114,7 @@ def test_exception_logged(log_stream: io.StringIO) -> None:
     assert "RuntimeError: boom" in rec["exc_info"]
 
 
-RAW = 'p"a\\ss\nw\u00f6rd 7123456789:AAHk3j4k5l6m7n8o9p0q1r2s3t4u5v6w7x8'
+RAW = 'p"a\\ss\nw\u00f6rd 123456:fake-bot-token-for-tests'
 
 
 def test_content_is_logged_verbatim(log_stream: io.StringIO) -> None:
