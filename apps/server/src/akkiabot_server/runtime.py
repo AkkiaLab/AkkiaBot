@@ -31,12 +31,16 @@ from akkiabot_server.bot.commands import COMMANDS
 from akkiabot_server.bot.deps import BotDeps
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
+from akkiabot_server.services.antispam_guard import AntiSpamGuard
+from akkiabot_server.services.background import BackgroundTasks
 from akkiabot_server.services.captcha import CaptchaService
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.chats import ChatDirectory
 from akkiabot_server.services.ip_lookup import build_ip_lookup
+from akkiabot_server.services.llm import LlmComponents, build_llm
 from akkiabot_server.services.message_log import MessageRecorder
 from akkiabot_server.services.moderation import ModerationService
+from akkiabot_server.services.rate_limit import RateLimiter
 from akkiabot_server.services.start_payload import StartPayloadStore
 from akkiabot_server.services.turnstile import HttpTurnstileVerifier, TurnstileVerifier
 
@@ -52,6 +56,9 @@ WEBHOOK_PATH = "/telegram/webhook"
 _TOKEN_LEAKING_LOGGERS = {
     "httpx": logging.WARNING,
     "httpcore": logging.WARNING,
+    # The openai SDK uses the httpx2 fork.
+    "httpx2": logging.WARNING,
+    "httpcore2": logging.WARNING,
     "telegram.Bot": logging.INFO,
     "telegram.ext.ExtBot": logging.INFO,
 }
@@ -84,6 +91,7 @@ class Runtime:
     """Shared client for outbound HTTP APIs (whois providers…)."""
     deps: BotDeps
     application: App
+    llm: LlmComponents
     _metrics: tuple[WSGIServer, threading.Thread] | None = field(default=None, init=False)
 
     @classmethod
@@ -94,6 +102,7 @@ class Runtime:
         cache: Cache | None = None,
         request: BaseRequest | None = None,
         get_updates_request: BaseRequest | None = None,
+        llm: LlmComponents | None = None,
     ) -> Runtime:
         silence_token_leaking_logs()  # before the bot is constructed or sends anything
         engine = create_engine(settings.db.url, echo=settings.db.echo)
@@ -108,6 +117,11 @@ class Runtime:
             headers={"User-Agent": f"AkkiaBot/{__version__}"},
         )
         start_payloads = StartPayloadStore(cache, default_ttl=settings.telegram.start_payload_ttl)
+        if llm is None:
+            llm = build_llm(settings, release=__version__)
+        moderation = ModerationService(session_factory, chat_settings)
+        background = BackgroundTasks()
+        antispam = settings.antispam
         deps = BotDeps(
             settings=settings,
             commands=CommandRegistry(COMMANDS),
@@ -116,7 +130,7 @@ class Runtime:
             messages=MessageRecorder(session_factory, chats),
             ip_lookup=build_ip_lookup(settings.whois, http),
             chat_settings=chat_settings,
-            moderation=ModerationService(session_factory, chat_settings),
+            moderation=moderation,
             captcha=CaptchaService(
                 session_factory,
                 chat_settings,
@@ -126,6 +140,18 @@ class Runtime:
                 init_data_max_age=settings.webapp.init_data_max_age,
                 turnstile=_turnstile(settings, http),
             ),
+            background=background,
+            antispam=AntiSpamGuard(
+                session_factory,
+                chat_settings,
+                moderation,
+                background,
+                llm.classifier,
+                exempt_message_count=antispam.exempt_message_count,
+                purge_delay=antispam.purge_delay,
+                notice_ttl=antispam.notice_ttl,
+            ),
+            spam_reports=RateLimiter(antispam.report_rate_limit, antispam.report_rate_window),
         )
         application = build_application(
             deps,
@@ -133,7 +159,7 @@ class Runtime:
             request=request,
             get_updates_request=get_updates_request,
         )
-        return cls(settings, engine, session_factory, cache, http, deps, application)
+        return cls(settings, engine, session_factory, cache, http, deps, application, llm)
 
     @property
     def webhook_url(self) -> str | None:
@@ -188,6 +214,8 @@ class Runtime:
         if self.application.running:
             await self.application.stop()
         await self.application.shutdown()
+        await self.deps.background.aclose()  # after PTB: no handler can spawn any more
+        await self.llm.aclose()
         await self.cache.aclose()
         await self.http.aclose()
         await self.engine.dispose()

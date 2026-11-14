@@ -29,3 +29,7 @@ class RateLimitExceeded(E2EError):  # noqa: N818 - reads better in reports
 
 class CheckFailed(E2EError):  # noqa: N818 - an assertion outcome, not a crash
     """An acceptance assertion did not hold."""
+
+
+class ScenarioSkipped(E2EError):  # noqa: N818 - an outcome, reported as "not run"
+    """A prerequisite of the scenario is missing (e.g. the bot has no LLM)."""

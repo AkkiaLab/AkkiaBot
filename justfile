@@ -114,6 +114,10 @@ e2e-bootstrap-bot *args:
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
 
+# Evaluate the antispam prompt on the offline data set (calls the real LLM; LLM_* / ANTISPAM_* from env or .env)
+antispam-eval *args:
+    uv run akkiabot-antispam-eval {{ args }}
+
 # Regenerate the OpenAPI document and the frontend API types (commit both)
 gen-api:
     uv run akkiabot openapi --output apps/webapp/openapi.json

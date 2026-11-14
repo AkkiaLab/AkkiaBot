@@ -14,6 +14,7 @@ callers must log :meth:`Settings.redacted` / ``safe_url`` instead of raw values.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -137,6 +138,42 @@ class LlmSettings(_Group):
     model: str | None = None
 
 
+class AntispamSettings(_Group):
+    """Group message spam detection and ``/spam`` reports (LLM from ``LLM_*``)."""
+
+    timeout: float = Field(default=45.0, gt=0)
+    """Overall budget (seconds) of one classification; on timeout the message passes."""
+    structured_output: Literal["auto", "json_schema", "off"] = "auto"
+    """``auto``: JSON structured output, falling back to 0/1 answers when the
+    endpoint rejects it; ``json_schema``: never fall back; ``off``: 0/1 only."""
+    prompt_file: Path | None = None
+    """UTF-8 file replacing the built-in base prompt (output format is appended)."""
+    prompt_version: str | None = None
+    """Version label of ``prompt_file`` (default: ``custom-<hash>``)."""
+    exempt_message_count: int = Field(default=3, ge=0)
+    """Members with more than this many recorded messages are not checked."""
+    purge_delay: float = Field(default=5.0, ge=0)
+    """Seconds to wait before deleting a spammer's logged history."""
+    notice_ttl: int = Field(default=60, ge=1)
+    """Seconds before the "spam removed" notice deletes itself."""
+    report_rate_limit: int = Field(default=3, gt=0)
+    """``/spam`` reports by ordinary members allowed per user within ``report_rate_window``."""
+    report_rate_window: int = Field(default=300, gt=0)
+
+
+class LangfuseSettings(_Group):
+    """LLM tracing. Disabled unless both keys are set."""
+
+    public_key: SecretStr | None = None
+    secret_key: SecretStr | None = None
+    host: AnyHttpUrl | None = None
+    """Langfuse base URL; empty = Langfuse Cloud (EU)."""
+
+    @property
+    def enabled(self) -> bool:
+        return self.public_key is not None and self.secret_key is not None
+
+
 class WhoisSettings(_Group):
     """``/ip`` lookups (ipinfo → ip-api)."""
 
@@ -213,6 +250,8 @@ class Settings(BaseSettings):
     server: ServerSettings = Field(default_factory=ServerSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    antispam: AntispamSettings = Field(default_factory=AntispamSettings)
+    langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     whois: WhoisSettings = Field(default_factory=WhoisSettings)
     turnstile: TurnstileSettings = Field(default_factory=TurnstileSettings)
     webapp: WebAppSettings = Field(default_factory=WebAppSettings)
@@ -251,8 +290,10 @@ def load_observability_settings() -> ObservabilitySettings:
 
 
 __all__ = [
+    "AntispamSettings",
     "CorsSettings",
     "DatabaseSettings",
+    "LangfuseSettings",
     "LlmSettings",
     "ObservabilitySettings",
     "RedisSettings",

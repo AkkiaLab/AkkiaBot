@@ -194,12 +194,29 @@ class MessageLogRepository:
         )
         return result.all()
 
+    async def record_verdict(
+        self, chat_id: int, message_id: int, *, verdict: dict[str, Any]
+    ) -> None:
+        """Attach a (non-spam) verdict; the text is not stored."""
+        await self.session.execute(
+            update(MessageLog)
+            .where(MessageLog.chat_id == chat_id, MessageLog.message_id == message_id)
+            .values(spam_verdict=verdict)
+        )
+
     async def delete_messages(self, chat_id: int, message_ids: Sequence[int]) -> int:
+        """Forget messages that were deleted in Telegram.
+
+        Audit rows (spam hits whose ``text`` was kept) stay until the retention
+        cleanup, so purging a spammer's history does not erase the evidence.
+        """
         if not message_ids:
             return 0
         result = await self.session.execute(
             delete(MessageLog).where(
-                MessageLog.chat_id == chat_id, MessageLog.message_id.in_(message_ids)
+                MessageLog.chat_id == chat_id,
+                MessageLog.message_id.in_(message_ids),
+                MessageLog.text.is_(None),
             )
         )
         assert isinstance(result, CursorResult)  # noqa: S101

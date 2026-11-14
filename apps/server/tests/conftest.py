@@ -23,6 +23,8 @@ _GROUPS = {
     "DB",
     "REDIS",
     "LLM",
+    "ANTISPAM",
+    "LANGFUSE",
     "TURNSTILE",
     "WHOIS",
     "WEBAPP",
@@ -92,6 +94,8 @@ async def runtime(settings: Settings, api: FakeBotApi) -> AsyncIterator[Runtime]
     try:
         yield rt
     finally:
+        await rt.deps.background.drain()
+        await rt.deps.background.aclose()
         await rt.application.shutdown()
         await rt.http.aclose()
         await rt.engine.dispose()

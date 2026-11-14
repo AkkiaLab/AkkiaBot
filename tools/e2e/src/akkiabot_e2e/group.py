@@ -241,6 +241,10 @@ async def prepare_group(
         # Left over by an interrupted M4 run (/warn, /ban ban the member, then restore it).
         await admin.unban(chat_id, member_user.id)
         actions.append("解除普通成员账号的封禁（上次运行中断时遗留）")
+    elif await admin.is_restricted(chat_id, member_user.id):
+        # Left over by an interrupted M5 run (spam detection mutes the member).
+        await admin.unban(chat_id, member_user.id)
+        actions.append("解除普通成员账号的禁言（上次运行中断时遗留）")
     if await member.find_chat(chat_id) is None:
         link = await admin.export_invite_link(chat_id)
         await member.join_by_link(link)
