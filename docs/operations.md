@@ -1,6 +1,6 @@
 # AkkiaBot 运维手册
 
-本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复，以及 DNS 和预发布环境。日志、指标、dashboard 与告警见 `docs/observability.md`。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
+本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复、DNS 和预发布环境，以及从 Go 版正式切换（§9）。日志、指标、dashboard 与告警见 `docs/observability.md`。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
 
 ## 1. 总览
 
@@ -131,7 +131,7 @@ flowchart LR
 
 ## 4. 首次部署（干净机器）
 
-> **M10 切换之前，生产栈不得使用正式 bot token 启动。** Go 版 core 仍在用同一个 token 拉取更新，两个进程会争抢 update，并且新服务会直接作用在真实群组上。M8 的部署演练和验收在预发布环境（§8）完成；生产目录可以提前准备好，并用 `docker compose up -d --wait postgres redis && docker compose run --rm migrate` 验证数据库和迁移，但不要启动 `app`（也不要执行不带服务名的 `up`）。
+> **M10 切换之前，生产栈不得使用正式 bot token 启动。** Go 版 core 仍在用同一个 token 拉取更新，两个进程会争抢 update，并且新服务会直接作用在真实群组上。M8 的部署演练和验收在预发布环境（§8）完成；生产目录可以提前准备好，并用 `docker compose up -d --wait postgres redis && docker compose run --rm migrate` 验证数据库和迁移，但不要启动 `app`（也不要执行不带服务名的 `up`）。切换步骤见 §9。
 
 ### 4.1 前置条件
 
@@ -407,3 +407,129 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
 1Password 中 `staging-*` 条目的值更新后，重新执行上面的三条 `op inject` 和 `docker compose up -d --wait`。
+
+## 9. 正式切换（M10）
+
+本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、冒烟验证、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在 BOT-4 中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
+
+### 9.1 前置检查
+
+全部满足后才能请求确认切换：
+
+- [ ] M3、M5、M7、M9 已完成，旧版的全部命令（包括 `/ip`）都已迁移。
+- [ ] staging 已经用一个确定的 master sha 完成发版全量验收（§8.1，commit status `staging-acceptance` 为 success），生产会使用同一个 sha。
+- [ ] 生产目录已按 §4.2 准备好，`app.env` 使用 `prod-*` 条目：正式 bot token、`WEBAPP_URL=https://bot.akkia.moe`、prod Turnstile、`OBSERVABILITY_SENTRY_DSN`；`.env` 填好 `prod-cloudflare` 的 tunnel token 和 `prod-grafana`。按 §4 的说明，只执行 `docker compose up -d --wait postgres redis && docker compose run --rm migrate`，**还没有启动 `app`**。
+- [ ] 前端：`webapp-promote.yml` 已经可以用同一个 sha 提升到 `bot.akkia.moe`（需要负责人审批）。
+- [ ] 确认旧版使用 SQLite：旧部署目录中 `botlab_core/data/config.yaml` 的 `db.driver` 为 `sqlite`。如果是 `mysql`，本脚本不适用，改用 §9.8 的备选方案。
+- [ ] 已用旧库只读副本完成一次 dry-run（§9.3），统计“一致”，报告中的注意事项和 captcha 禁言名单都已看过。
+- [ ] 记下旧版镜像的 digest，回滚时使用：在旧部署目录执行 `docker compose images core`，或 `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/akkialab/botlab-core:latest`。
+
+### 9.2 版本锁定
+
+- 后端：生产 `.env` 的 `AKKIABOT_TAG` 设为通过 staging 验收的完整 sha（不要用 `latest`），`compose.yaml` 等文件从同一个 sha 下载（§4.2）。
+- 前端：`webapp-promote.yml` 输入同一个 sha；切换后检查 `https://bot.akkia.moe/version.json`，其中的 sha 应与后端一致。
+- 旧版：Go 版 core 的镜像不要再 `pull`。旧的 compose 使用 `latest` 标签，回滚时如果本地镜像已经被清理，就按 9.1 记录的 digest 拉取（`ghcr.io/akkialab/botlab-core@sha256:...`）。
+
+### 9.3 配置导入：`akkiabot import-legacy`
+
+脚本以只读方式（SQLite `mode=ro`）打开旧库副本，读取未软删除（`deleted_at IS NULL`）的记录：
+
+| 旧库（botlab-core） | 新库 | 说明 |
+| --- | --- | --- |
+| `telegram_chats.enable_captcha` | `chat.settings.captcha` | 只导入 `type` 为 `group` / `supergroup` 的记录，其他类型（私聊、频道）跳过并计数 |
+| `telegram_chats.enable_anti_spam` | `chat.settings.antispam` | |
+| `telegram_chats.enable_warn` | `chat.settings.warn` | |
+| `telegram_chats.max_warn_count` | `chat.settings.max_warn_count` | 超出新系统允许范围 1–100 时按边界值导入，并在“注意事项”中列出。新旧系统都在达到上限的那次 `/warn` 时封禁，语义相同 |
+| `telegram_chat_members.warn_count`（> 0） | `chat_member.warn_count` | 只导入属于上面这些群的成员；所在群不在导入范围的成员跳过并计数 |
+| `restriction_type = 'CaptchaBAN'` 的成员 | 不写入 | 只在报告中列出，由管理员处理（新系统中没有对应的验证） |
+
+已经存在的 `chat` 只更新上面四项，`delete_service_messages` 等旧版没有的配置保持不变；新建的 `chat` 使用旧库中的 `type` 和标题。所有写入在同一个事务里完成，重复执行结果相同（第二次执行时全部为“不变”）。
+
+报告是 Markdown 格式，输出到 stdout（日志写到 stderr），内容包括：
+
+- **源数据统计**：直接用 SQL 对旧库计数（群、各开关开启数、有警告的成员数、警告数合计、captcha 禁言人数）。
+- **一致性校验**：逐项比较源数据统计与导入计划。任何一项不一致时，脚本不写入任何数据，并以退出码 1 结束。
+- **变更汇总**、**群配置差异**、**警告数差异**：新建 / 更新 / 不变，以及原值和新值。
+- **captcha 禁言中的成员**、**注意事项**。
+
+`--report FILE` 会把同样的内容另外写成 JSON。`FILE` 必须是一个不存在的新文件（所在目录要已存在），也不能是符号链接；在读取旧库之前就会检查，不满足时退出码为 2，不会读写任何数据，避免误把报告写到旧库副本上。退出码：`0` 成功；`1` 一致性校验失败，未写入；`2` 文件、库结构或配置错误。
+
+**制作只读副本**（在旧服务器上执行）。正式切换时，在 9.4 第 1 步停止旧服务之后再复制；切换前的演练可以在服务运行时用 SQLite 在线备份复制：
+
+```bash
+cd <旧部署目录>                                     # 含 docker-compose.yml 和 botlab_core/data/
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+install -d -m 755 legacy-copy
+sqlite3 botlab_core/data/sqlite.db ".backup legacy-copy/sqlite-$STAMP.db"     # 只读取原库
+sqlite3 legacy-copy/sqlite-$STAMP.db "PRAGMA journal_mode=DELETE; PRAGMA integrity_check;"  # 只改副本；应输出 delete、ok
+chmod 444 legacy-copy/sqlite-$STAMP.db
+sha256sum botlab_core/data/sqlite.db legacy-copy/sqlite-$STAMP.db   # 记录下来；旧服务停止期间，原库的哈希不应变化
+```
+
+副本中有群标题和用户 id，按生产数据处理：不要上传到 issue 或公开位置。把副本复制到生产服务器的 `/opt/akkiabot/production/legacy/`（目录权限 755，文件 444；容器以 uid 10001 运行，需要能读到）。
+
+**dry-run**（不写入；生产库在切换前是空的，所以差异就是将要导入的全部内容）：
+
+```bash
+cd /opt/akkiabot/production
+DB=sqlite-<STAMP>.db
+docker compose run --rm -v "$PWD/legacy:/legacy:ro" migrate \
+  import-legacy "/legacy/$DB" --dry-run > "legacy/report-dry-run-$(date -u +%Y%m%dT%H%M%SZ).md"
+echo "exit=$?"
+```
+
+`migrate` 服务只连接 `backend` 网络，正好满足导入的需要（只访问 postgres），不会启动 app。演练时也可以不连接数据库：在仓库检出中执行 `uv run akkiabot import-legacy <副本> --dry-run`（不设置 `DB_URL`），此时差异按空库计算，报告中会注明。
+
+**正式导入**：去掉 `--dry-run`，在 9.4 的第 2 步执行。
+
+### 9.4 切换步骤
+
+同一个 bot token 同一时间只能有一个进程拉取更新，所以必须先停旧服务再启动新服务。整个过程中 bot 会停止响应几分钟；Telegram 会保留未拉取的 update（最多 24 小时），新服务启动后继续处理。
+
+1. **停止 Go 版 core**（旧服务器，旧部署目录）：`docker compose stop core`。确认已停止：`docker compose ps core`。llm、cloudflared 暂时保留，回滚时不用重新启动。从这一刻起，旧库保持只读，不再修改。
+2. **导入配置**：按 9.3 制作停服后的副本，复制到生产服务器，先 dry-run 一次，确认“一致”，再正式导入：
+
+   ```bash
+   cd /opt/akkiabot/production
+   ./backup.sh                                        # 导入前备份一次（此时是迁移后的空库）
+   docker compose run --rm -v "$PWD/legacy:/legacy:ro" migrate \
+     import-legacy "/legacy/$DB" > "legacy/report-import-$(date -u +%Y%m%dT%H%M%SZ).md"
+   echo "exit=$?"                                     # 必须为 0
+   ```
+
+   把报告中“captcha 禁言中的成员”交给各群管理员处理：新 bot 没有解除禁言的命令，由管理员在 Telegram 客户端中确认：是真人就在群成员权限中解除限制，否则移出。
+3. **启动新服务**：`docker compose up -d --wait`，然后按 §4.3 验证（`/readyz`、tunnel、日志中的 `bot started`）。Grafana 告警规则的预期环境加入 `production`（`docs/observability.md` §5）。
+4. **切换 Mini App 地址**：执行 `webapp-promote.yml`（同一个 sha，需要负责人审批），确认 `https://bot.akkia.moe/version.json`。如果旧 bot 在 BotFather 中设置过菜单按钮或 Mini App 地址（`/mybots` → Bot Settings → Menu Button / Configure Mini App），改为 `https://bot.akkia.moe`。新的入群验证按钮使用 `app.env` 的 `WEBAPP_URL`，不再使用旧前端的地址。
+5. **冒烟验证**（用正式 bot，在负责人指定的群里）：
+   - 私聊：`/start`、`/help`、`/id`、`/ip 1.1.1.1`；
+   - 群内（管理员）：`/config` 查看配置，应与导入结果一致；回复测试账号的消息执行 `/warn`（警告数从导入值继续累加）和 `/ban`，之后在客户端中把测试账号解封；
+   - 入群验证：测试账号入群 → 被禁言 → 私聊深链 → Mini App 完成验证 → 解除禁言；
+   - 反垃圾：在开启了反垃圾的群发送一条明显的垃圾消息样例，确认被处理，再用 `/spam` 标记一次；
+   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据，日志可以按 `chat_id` 检索到这次入群验证；Sentry：`production` 环境中能看到本次版本（release `akkiabot@<版本>`）上报的数据。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
+   结果记录到 BOT-16，包括版本 sha、各项结果和未自动化项。
+
+### 9.5 回滚
+
+切换后出现无法快速修复的问题时：
+
+1. 停止新服务：`cd /opt/akkiabot/production && docker compose stop app cloudflared`。
+2. 在旧部署目录重新启动 Go 版：`docker compose start core`（本地镜像不在时，用 9.1 记录的 digest 拉取）。旧库在切换期间没有被修改，配置和警告数仍是切换前的状态；新系统运行期间产生的警告、禁言记录不会回写到旧库。
+3. Mini App 地址：如果在 BotFather 中改过，改回旧地址；`bot.akkia.moe` 可以保留，旧版不会使用它。
+4. 用 `/start`、`/help` 确认旧 bot 恢复响应，并在 BOT-16 记录回滚原因。
+
+再次切换时从 9.4 第 1 步重新开始，用新的停服副本重新导入（新库已有数据时，导入只更新四项群配置和警告数，报告中会列出原值）。
+
+### 9.6 旧仓库归档
+
+切换上线并稳定运行一段时间（时长由负责人决定）之后：在 BOT-16 中**再请求一次确认**，然后在 5 个旧仓库（botlab-core、botlab-telegram、botlab-llm、botlab-fe、Toolbox-py）的 README 顶部注明“已迁移到 AkkiaLab/AkkiaBot”，再把它们归档（GitHub Settings → Archive）。旧服务器上的 Go 版服务和旧库保留到负责人决定清理为止。
+
+### 9.7 版本记录
+
+切换完成后，在 BOT-16 记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、冒烟结果、旧版镜像 digest。
+
+### 9.8 备选方案
+
+如果脚本在实际数据上不适用（例如旧版使用 MySQL，或旧库结构与预期不一致，脚本以退出码 2 报告缺少的列）：
+
+- **导出 CSV 后手动导入**：用 `sqlite3 -csv`（或 MySQL 的 `SELECT ... INTO OUTFILE`）导出 `telegram_chats` 的 `id, type, title, enable_captcha, enable_anti_spam, enable_warn, max_warn_count` 和 `telegram_chat_members` 中 `warn_count > 0` 的 `chat_id, user_id, warn_count`（都加 `WHERE deleted_at IS NULL`），整理成同样表结构的 SQLite 文件后再用本脚本导入；或者直接按 9.3 的映射表在新库中逐条写入。
+- **管理员重新配置**：群数量很少时，切换后请各群管理员重新执行 `/config` 打开需要的开关。警告数无法这样恢复，从 0 开始计数，需要在群里提前说明。
