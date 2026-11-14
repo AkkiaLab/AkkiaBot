@@ -71,6 +71,30 @@ def test_bad_signature(raw: str) -> None:
     assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
 
 
+@pytest.mark.parametrize(
+    "bad_hash",
+    [
+        pytest.param("%C3%A9", id="non-ascii"),
+        pytest.param("%C3%A9" * 32, id="non-ascii-64-chars"),
+        pytest.param("z" * 64, id="non-hex"),
+        pytest.param("ab" * 31, id="too-short"),
+        pytest.param("ab" * 33, id="too-long"),
+    ],
+)
+def test_malformed_hash_is_bad_signature(bad_hash: str) -> None:
+    raw = f"auth_date={int(NOW.timestamp())}&hash={bad_hash}"
+    with pytest.raises(InitDataError) as exc:
+        parse_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+    assert exc.value.reason == "bad_signature"
+    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
+
+
+def test_uppercase_hex_hash_accepted() -> None:
+    raw = make_init_data()
+    head, sig = raw.split("&hash=")
+    assert verify_init_data(f"{head}&hash={sig.upper()}", BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+
+
 def test_bad_signature_reason() -> None:
     with pytest.raises(InitDataError) as exc:
         parse_init_data(make_init_data(token="1:x"), BOT_TOKEN, max_age=MAX_AGE, now=NOW)

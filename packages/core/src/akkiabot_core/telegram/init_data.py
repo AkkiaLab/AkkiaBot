@@ -11,12 +11,15 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 logger = logging.getLogger(__name__)
+
+_HASH_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 # Clock skew tolerated for auth_date values slightly in the future.
 _FUTURE_SKEW = timedelta(seconds=60)
@@ -100,8 +103,11 @@ def parse_init_data(
     received_hash = fields.pop("hash", None)
     if not received_hash:
         raise InitDataError("missing_hash")
+    # compare_digest raises TypeError on non-ASCII str, so validate the shape first.
+    if not _HASH_RE.fullmatch(received_hash):
+        raise InitDataError("bad_signature")
     expected = sign_init_data(fields, bot_token)
-    if not hmac.compare_digest(expected, received_hash.lower()):
+    if not hmac.compare_digest(expected.encode(), received_hash.lower().encode()):
         raise InitDataError("bad_signature")
 
     try:
