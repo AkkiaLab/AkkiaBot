@@ -1,0 +1,46 @@
+name: Build webapp
+description: >-
+  Production build of apps/webapp for one environment. VITE_* values are inlined
+  at build time, so the same commit is built once per environment; the commit
+  sha is written to dist/version.json so deployments can be traced to a commit.
+inputs:
+  api-base-url:
+    description: VITE_API_BASE_URL for this environment
+    required: true
+  turnstile-site-key:
+    description: VITE_TURNSTILE_SITE_KEY for this environment (public value)
+    required: true
+  sha:
+    description: Commit being built (recorded in dist/version.json)
+    required: true
+  environment:
+    description: Environment name recorded in dist/version.json
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Build
+      shell: bash
+      env:
+        VITE_API_BASE_URL: ${{ inputs.api-base-url }}
+        VITE_TURNSTILE_SITE_KEY: ${{ inputs.turnstile-site-key }}
+      run: pnpm --filter @akkiabot/webapp build
+    - name: Record version
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        TARGET: ${{ inputs.environment }}
+      run: |
+        jq -n --arg sha "$SHA" --arg environment "$TARGET" \
+          '{sha: $sha, environment: $environment}' > apps/webapp/dist/version.json
+        cat apps/webapp/dist/version.json
+    - name: No dev-only Telegram mock in the bundle
+      shell: bash
+      run: bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist

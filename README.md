@@ -78,6 +78,7 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
   - 配置了 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`（及可选的 `LANGFUSE_HOST`）时，每次 LLM 调用在 Langfuse 中记录为一个 generation：提示词版本、输入输出、耗时、token 用量与错误。
   - `/spam`（回复使用）：群主或有封禁权限的管理员使用时直接封禁并删除历史；普通成员举报时，把被举报人的名字、简介和消息内容交给 LLM，是垃圾信息则封禁（`restricted_by` 为机器人），否则编辑回执消息 @ 全部管理员人工审核。普通成员举报按 `ANTISPAM_REPORT_RATE_LIMIT` / `ANTISPAM_REPORT_RATE_WINDOW`（默认 300 秒内 3 次）限流。
   - 提示词基线：`just antispam-eval`（`akkiabot-antispam-eval`）用 `packages/antispam/tests/fixtures/eval_set.jsonl`（30 条正负样本）调用真实 LLM，输出准确率、精确率、召回率与判错样本；调整提示词或模型前后各跑一次对比。
+- Mini App 验证页（`apps/webapp`，`/captcha?challenge=<id>`）：完成 Turnstile 后提交上述接口，显示成功（随后关闭 Mini App）、失败（可重试时提供“重试”）或已超时；Telegram 环境模拟只在开发服务器中启用。构建期变量 `VITE_API_BASE_URL`、`VITE_TURNSTILE_SITE_KEY`，详见 [docs/webapp.md](docs/webapp.md)。
 - 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；入群验证记 `akkiabot_captcha_total{result=passed|timeout|failed}`（`failed` 为被拒绝的提交）与 `akkiabot_captcha_duration_seconds`（入群到通过的耗时）；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|mute|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；反垃圾记 `akkiabot_antispam_verdict_total{verdict=spam|ham|error|skipped,action}`、`akkiabot_antispam_llm_duration_seconds`、`akkiabot_antispam_llm_errors_total{error}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
 - Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更、按钮回调），`member_responder()` 用来模拟 `getChatMember`；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
 
@@ -101,6 +102,7 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
 
 - `ci.yml`：PR 和 master 推送时运行。按改动路径决定执行 Python（lint / typecheck / test）、前端（lint / typecheck / test / build）和镜像构建（含启动冒烟）；`ci-ok` 汇总所有结果，适合作为分支保护的必需检查。
 - `release.yml`：master 推送后构建并推送 `ghcr.io/akkialab/akkiabot:<sha>` 与 `:latest`。
+- `webapp-deploy.yml` / `webapp-promote.yml`：构建 Mini App，检查产物不包含开发用的 Telegram 模拟代码，再用 `wrangler pages deploy` 发布到 Cloudflare Pages。PR 发布到预览地址；每次 master 推送发布到 staging（`staging.akkiabot-webapp.pages.dev`）；生产（`bot.akkia.moe`）只能通过 `webapp-promote.yml` 提升已通过 staging 发版验收的 sha，并且需要审批。详见 [docs/webapp.md](docs/webapp.md)。
 - 前后端契约：pytest 校验 `apps/webapp/openapi.json` 与后端一致，前端 job 校验 `src/api/schema.d.ts` 与 `openapi.json` 一致；接口变更后运行 `just gen-api` 并提交两者。openapi-typescript 依赖 TypeScript 5 的编译器 API，而前端使用的 TypeScript 7 不再提供，因此它单独放在 `tools/api-types` 这个 pnpm 包里，自带 TypeScript 5。
 - `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。
 - 依赖升级由 Renovate 按 `renovate.json` 每周一提交 PR。

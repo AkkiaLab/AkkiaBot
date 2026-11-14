@@ -22,6 +22,7 @@ from akkiabot_e2e.testing import (
     FakeRegistry,
     FakeTelegram,
     FakeTraces,
+    FakeWeb,
     live_env,
 )
 from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, UserInfo
@@ -45,6 +46,7 @@ async def run(
     message_log=None,
     traces: FakeTraces | None = None,
     registry: FakeRegistry | None = None,
+    web: FakeWeb | None = None,
 ) -> Report:
     return await run_acceptance(
         config,
@@ -57,6 +59,7 @@ async def run(
         message_log=message_log,
         traces=traces or FakeTraces(),
         registry=registry or FakeRegistry(),
+        web=web or FakeWeb(world),
     )
 
 

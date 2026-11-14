@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+/* Follow the Telegram theme (CSS vars bound by @telegram-apps/sdk-react), with
+   light/dark fallbacks for browsers outside Telegram. */
+body {
+  background-color: var(--tg-theme-bg-color, #ffffff);
+  color: var(--tg-theme-text-color, #0f172a);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: var(--tg-theme-bg-color, #0f172a);
+    color: var(--tg-theme-text-color, #f1f5f9);
+  }
+}

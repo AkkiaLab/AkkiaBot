@@ -157,6 +157,11 @@ class PacedAccount:
             self._label("click"), lambda: self.inner.click(chat_id, message_id, data)
         )
 
+    async def open_web_app(self, bot: UserInfo, url: str) -> str:
+        return await self.pacer.call(
+            self._label("open_web_app"), lambda: self.inner.open_web_app(bot, url)
+        )
+
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
         await self.pacer.before_send()
         return await self.pacer.call(
