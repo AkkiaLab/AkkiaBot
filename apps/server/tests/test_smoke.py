@@ -86,9 +86,9 @@ def test_serve_runs_uvicorn_with_configured_bind(
     import uvicorn
     from fastapi import FastAPI
 
-    token = "123456:" + "B" * 35
+    mock_token = "123456:fake-bot-token-b-for-tests"  # mock: 人工构造、不可用
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", mock_token)
     monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}")
     monkeypatch.setenv("SERVER_HOST", "127.0.0.1")
     monkeypatch.setenv("SERVER_PORT", "18080")

@@ -20,14 +20,14 @@ from akkiabot_e2e.telethon_transport import (
     _session,
     ensure_test_environment,
 )
-from akkiabot_e2e.testing import ADMIN, FakeTelegram, add_fake_botfather
+from akkiabot_e2e.testing import ADMIN, MOCK_BOT_TOKEN, FakeTelegram, add_fake_botfather
 
 PRODUCTION_DC2 = "149.154.167.50"
 PRODUCTION_DC1 = "149.154.175.53"
 #: What the test servers' help.getConfig advertises for DC1 (and Telethon uses
 #: after PHONE_MIGRATE); seen on 2026-11-14 when logging in a +1 test account.
 TEST_DC1_ADVERTISED = "149.154.175.40"
-TOKEN = Secret("123456:fake-bot-token-for-tests-xxxxxxxxxxx")
+TOKEN = Secret(MOCK_BOT_TOKEN)
 
 
 def _saved(address: str) -> Secret:

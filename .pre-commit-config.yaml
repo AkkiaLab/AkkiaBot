@@ -1,4 +1,7 @@
-# Install with `just setup` (runs `pre-commit install`).
+# Install with `just setup` (runs `pre-commit install`, which installs both hook types below).
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -23,10 +26,26 @@ repos:
         args: ["--fix"]
       - id: ruff-format
 
+  # Credential scanning, see docs/secret-scanning.md. Uses .gitleaks.toml / .gitleaksignore.
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
     hooks:
+      # Before each commit: staged changes.
       - id: gitleaks
+      # Before each push (incl. the first push of a branch): every commit not on a remote yet.
+      - id: gitleaks
+        alias: gitleaks-unpushed
+        name: gitleaks (unpushed commits)
+        entry: bash scripts/secret_scan.sh unpushed
+        always_run: true
+        stages: [pre-push]
+      # Full history reachable from HEAD; `just secret-scan` and the CI `secret-scan` job.
+      - id: gitleaks
+        alias: gitleaks-history
+        name: gitleaks (history)
+        entry: bash scripts/secret_scan.sh history
+        always_run: true
+        stages: [manual]
 
   - repo: local
     hooks:

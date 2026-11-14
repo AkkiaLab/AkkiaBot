@@ -9,13 +9,16 @@ from akkiabot_core.config import (
     load_settings,
 )
 
-TOKEN = "123456:" + "A" * 35
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SENTRY_DSN = "https://pub@o1.ingest.sentry.io/1"
 PG = "postgresql+asyncpg://akkiabot:s3cr3t-pw@db:5432/akkiabot"
 
 
 @pytest.fixture
 def required_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", MOCK_BOT_TOKEN)
     monkeypatch.setenv("DB_URL", PG)
 
 
@@ -31,7 +34,7 @@ def test_loads_groups_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     s = load_settings()
 
-    assert s.telegram.bot_token.get_secret_value() == TOKEN
+    assert s.telegram.bot_token.get_secret_value() == MOCK_BOT_TOKEN
     assert s.db.url == PG
     assert s.redis.url is not None
     assert s.cors.allow_origins == ["https://bot.akkia.moe", "https://preview.pages.dev"]
@@ -106,11 +109,18 @@ def test_secrets_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_API_KEY", "sk-llm-key")
     monkeypatch.setenv("TURNSTILE_SECRET_KEY", "ts-secret")
     monkeypatch.setenv("WHOIS_IPINFO_TOKEN", "ipinfo-secret")
-    monkeypatch.setenv("OBSERVABILITY_SENTRY_DSN", "https://pub@o1.ingest.sentry.io/1")
+    monkeypatch.setenv("OBSERVABILITY_SENTRY_DSN", MOCK_SENTRY_DSN)
     s = load_settings()
 
     rendered = repr(s) + str(s) + str(s.redacted())
-    for secret in (TOKEN, "s3cr3t-pw", "sk-llm-key", "ts-secret", "ipinfo-secret", "pub@o1"):
+    for secret in (
+        MOCK_BOT_TOKEN,
+        "s3cr3t-pw",
+        "sk-llm-key",
+        "ts-secret",
+        "ipinfo-secret",
+        "pub@o1",
+    ):
         assert secret not in rendered
     assert s.redacted()["db"]["url"] == "postgresql+asyncpg://akkiabot:***@db:5432/akkiabot"
 

@@ -21,10 +21,15 @@ from akkiabot_e2e.onepassword import (
     token_init,
 )
 from akkiabot_e2e.server import ManagedServer, query_message_log, server_env
-from akkiabot_e2e.testing import ADMIN, ADMIN_SESSION, BOT, live_env
+from akkiabot_e2e.testing import ADMIN, BOT, MOCK_ADMIN_SESSION, live_env
 from akkiabot_e2e.transport import UserInfo
 
-TOKEN = "ops_synthetic-service-account-token"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_OP_TOKEN = "ops_synthetic-service-account-token"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_OP_TOKEN_OVERRIDE = "ops_x"
+# mock: 故意畸形的不可用 bot token。
+MOCK_MALFORMED_BOT_TOKEN = "1:x"
 
 
 def mode(path: Path) -> int:
@@ -44,7 +49,7 @@ def test_private_file_is_owner_only_and_not_overwritten(tmp_path: Path) -> None:
 
 def test_read_private_file_refuses_wide_permissions(tmp_path: Path) -> None:
     path = tmp_path / "token"
-    path.write_text(TOKEN)
+    path.write_text(MOCK_OP_TOKEN)
     path.chmod(0o644)
     with pytest.raises(SafetyError, match="chmod 600"):
         read_private_file(path)
@@ -55,20 +60,20 @@ def test_token_init_validates_and_stores(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="ops_"):
         token_init(path, lambda _: "not-a-token")
     assert not path.exists()
-    token_init(path, lambda _: f"  {TOKEN}\n")
-    assert read_private_file(path) == TOKEN
+    token_init(path, lambda _: f"  {MOCK_OP_TOKEN}\n")
+    assert read_private_file(path) == MOCK_OP_TOKEN
     assert mode(path) == 0o600
 
 
 def test_op_token_goes_through_env_not_argv(tmp_path: Path) -> None:
     path = tmp_path / "op-token"
-    token_init(path, lambda _: TOKEN)
+    token_init(path, lambda _: MOCK_OP_TOKEN)
     env, note = op_environment({"PATH": "/bin"}, path)
     command = op_command(Path("tools/e2e/staging.env.tpl"), ["akkiabot-e2e", "run"])
 
-    assert env[TOKEN_ENV] == TOKEN
-    assert TOKEN not in " ".join(command)
-    assert TOKEN not in note
+    assert env[TOKEN_ENV] == MOCK_OP_TOKEN
+    assert MOCK_OP_TOKEN not in " ".join(command)
+    assert MOCK_OP_TOKEN not in note
     assert command == [
         "op",
         "run",
@@ -78,7 +83,10 @@ def test_op_token_goes_through_env_not_argv(tmp_path: Path) -> None:
         "run",
     ]
     # An explicitly exported token wins; with neither, op's own sign-in is used.
-    assert op_environment({TOKEN_ENV: "ops_x"}, path)[0][TOKEN_ENV] == "ops_x"
+    assert (
+        op_environment({TOKEN_ENV: MOCK_OP_TOKEN_OVERRIDE}, path)[0][TOKEN_ENV]
+        == MOCK_OP_TOKEN_OVERRIDE
+    )
     assert TOKEN_ENV not in op_environment({}, tmp_path / "missing")[0]
     with pytest.raises(ConfigError):
         op_command(Path("x"), [])
@@ -95,7 +103,7 @@ class FakeLogin:
         return self.user
 
     def session_string(self) -> str:
-        return ADMIN_SESSION
+        return MOCK_ADMIN_SESSION
 
     async def close(self) -> None:
         self.closed = True
@@ -109,10 +117,10 @@ async def test_login_returns_session_in_memory_without_printing(
         client, prompt=lambda _: "+10000000000", secret_prompt=lambda _: "2fa"
     )
     assert user == ADMIN
-    assert session.reveal() == ADMIN_SESSION
-    assert ADMIN_SESSION not in repr(session)
+    assert session.reveal() == MOCK_ADMIN_SESSION
+    assert MOCK_ADMIN_SESSION not in repr(session)
     assert client.closed
-    assert ADMIN_SESSION not in capsys.readouterr().out
+    assert MOCK_ADMIN_SESSION not in capsys.readouterr().out
 
 
 async def test_login_refuses_bot() -> None:
@@ -145,7 +153,7 @@ def test_run_rejects_unknown_scenario_before_connecting(capsys: pytest.CaptureFi
     assert code == cli.EXIT_USAGE
     err = capsys.readouterr().err
     assert "m9" in err
-    assert ADMIN_SESSION not in err
+    assert MOCK_ADMIN_SESSION not in err
 
 
 def test_list_scenarios(capsys: pytest.CaptureFixture[str]) -> None:
@@ -156,13 +164,13 @@ def test_list_scenarios(capsys: pytest.CaptureFixture[str]) -> None:
 def test_server_env_drops_user_sessions_and_op_token(tmp_path: Path) -> None:
     base = {
         **live_env(),
-        TOKEN_ENV: TOKEN,
-        "TELEGRAM_BOT_TOKEN": "1:x",
+        TOKEN_ENV: MOCK_OP_TOKEN,
+        "TELEGRAM_BOT_TOKEN": MOCK_MALFORMED_BOT_TOKEN,
         "DB_URL": "postgres://prod",
     }
     env = server_env(base, db_path=tmp_path / "bot.db", port=1, metrics_port=2)
     assert not [k for k in env if k.startswith(("E2E_", "OP_"))]
-    assert env["TELEGRAM_BOT_TOKEN"] == "1:x"
+    assert env["TELEGRAM_BOT_TOKEN"] == MOCK_MALFORMED_BOT_TOKEN
     assert env["DB_URL"] == f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}"
     assert env["SERVER_HOST"] == env["OBSERVABILITY_METRICS_HOST"] == "127.0.0.1"
     assert env["OBSERVABILITY_SENTRY_ENVIRONMENT"] == "staging"

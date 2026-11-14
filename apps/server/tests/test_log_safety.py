@@ -18,7 +18,8 @@ from akkiabot_core.observability import configure_logging
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.testing import BOT_USER
 
-FAKE_TOKEN = "987654:" + "Z" * 35
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "987654:fake-bot-token-for-log-safety-tests"
 
 
 @pytest.fixture
@@ -48,7 +49,7 @@ def _request(status: int, result: object) -> HTTPXRequest:
 
 
 def _settings(make_settings: Callable[..., Settings]) -> Settings:
-    return make_settings(telegram={"bot_token": FAKE_TOKEN})
+    return make_settings(telegram={"bot_token": MOCK_BOT_TOKEN})
 
 
 async def test_successful_requests_do_not_log_token(
@@ -65,7 +66,7 @@ async def test_successful_requests_do_not_log_token(
 
     logs = log_stream.getvalue()
     assert '"level": "debug"' in logs  # DEBUG logging is really on
-    assert FAKE_TOKEN not in logs
+    assert MOCK_BOT_TOKEN not in logs
 
 
 async def test_failed_requests_do_not_log_token(
@@ -76,16 +77,16 @@ async def test_failed_requests_do_not_log_token(
     with pytest.raises(RuntimeError, match="InvalidToken"):
         await runtime.start()
 
-    assert FAKE_TOKEN not in log_stream.getvalue()
+    assert MOCK_BOT_TOKEN not in log_stream.getvalue()
 
 
 def test_unguarded_loggers_would_leak(log_stream: io.StringIO) -> None:
     """Documents why the guard exists: both log the token-bearing URL."""
     transport = httpx.MockTransport(lambda _r: httpx.Response(200))
     with httpx.Client(transport=transport) as client:
-        client.get(f"https://api.telegram.org/bot{FAKE_TOKEN}/getMe")
+        client.get(f"https://api.telegram.org/bot{MOCK_BOT_TOKEN}/getMe")
     from telegram import Bot
 
-    Bot(FAKE_TOKEN)
-    lines = [line for line in log_stream.getvalue().splitlines() if FAKE_TOKEN in line]
+    Bot(MOCK_BOT_TOKEN)
+    lines = [line for line in log_stream.getvalue().splitlines() if MOCK_BOT_TOKEN in line]
     assert {json.loads(line)["logger"] for line in lines} == {"httpx", "telegram.Bot"}

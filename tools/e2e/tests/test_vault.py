@@ -11,8 +11,11 @@ import pytest
 from akkiabot_e2e import cli
 from akkiabot_e2e.errors import ConfigError
 from akkiabot_e2e.files import write_private_file
-from akkiabot_e2e.testing import ADMIN, ADMIN_SESSION, live_env
+from akkiabot_e2e.testing import ADMIN, MOCK_ADMIN_SESSION, live_env
 from akkiabot_e2e.vault import FieldValue, Vault
+
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_VAULT_BOT_TOKEN = "1:fake-token-for-tests"
 
 
 class FakeOp:
@@ -35,7 +38,7 @@ class FakeOp:
         self.calls.append((argv, stdin))
         verb = "read" if argv[1] == "read" else argv[2]
         if verb == self.fail:
-            return 1, b"", f"[ERROR] boom {ADMIN_SESSION}".encode()
+            return 1, b"", f"[ERROR] boom {MOCK_ADMIN_SESSION}".encode()
         if verb == "read":
             _, _, _, title, label = argv[2].split("/")
             item = self.items.get(title)
@@ -72,23 +75,23 @@ def labels(op: FakeOp, title: str) -> dict[str, tuple[str, str | None]]:
 def test_set_fields_edits_existing_item_via_stdin_only() -> None:
     op = FakeOp({"telegram-e2e": [{"id": "a", "label": "api_id", "type": "STRING", "value": "1"}]})
 
-    Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)})
+    Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
 
-    assert ADMIN_SESSION not in op.argv_text()
+    assert MOCK_ADMIN_SESSION not in op.argv_text()
     edit = [stdin for argv, stdin in op.calls if argv[:3] == ["op", "item", "edit"]]
     assert len(edit) == 1
-    assert ADMIN_SESSION in (edit[0] or b"").decode()
+    assert MOCK_ADMIN_SESSION in (edit[0] or b"").decode()
     assert labels(op, "telegram-e2e") == {
         "api_id": ("STRING", "1"),
-        "admin_session": ("CONCEALED", ADMIN_SESSION),
+        "admin_session": ("CONCEALED", MOCK_ADMIN_SESSION),
     }
 
 
 def test_set_fields_creates_missing_item() -> None:
     op = FakeOp()
-    Vault(run=op).set_fields("runtime", {"bot_token": FieldValue("1:fake-token-for-tests")})
+    Vault(run=op).set_fields("runtime", {"bot_token": FieldValue(MOCK_VAULT_BOT_TOKEN)})
     assert ["op", "item", "create", "--vault=AkkiaBot-Staging", "-"] in [a for a, _ in op.calls]
-    assert labels(op, "runtime") == {"bot_token": ("CONCEALED", "1:fake-token-for-tests")}
+    assert labels(op, "runtime") == {"bot_token": ("CONCEALED", MOCK_VAULT_BOT_TOKEN)}
     assert "fake-token" not in op.argv_text()
 
 
@@ -96,14 +99,14 @@ def test_write_errors_are_redacted_and_readback_is_checked() -> None:
     op = FakeOp({"telegram-e2e": []})
     op.fail = "edit"
     with pytest.raises(ConfigError, match="写入") as info:
-        Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)})
-    assert ADMIN_SESSION not in str(info.value)
+        Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
+    assert MOCK_ADMIN_SESSION not in str(info.value)
 
     op.fail, op.corrupt_reads = None, True
     waits: list[float] = []
     with pytest.raises(ConfigError, match="不一致"):
         Vault(run=op, sleep=waits.append).set_fields(
-            "telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)}
+            "telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)}
         )
     assert len(waits) == 4  # gave up after 5 reads
 
@@ -115,10 +118,10 @@ def test_readback_tolerates_eventual_consistency() -> None:
     op.stale_reads = 2
     waits: list[float] = []
     Vault(run=op, sleep=waits.append).set_fields(
-        "telegram-e2e", {"member_session": FieldValue(ADMIN_SESSION)}
+        "telegram-e2e", {"member_session": FieldValue(MOCK_ADMIN_SESSION)}
     )
     assert waits == [1.0, 2.0]
-    assert labels(op, "telegram-e2e")["member_session"] == ("CONCEALED", ADMIN_SESSION)
+    assert labels(op, "telegram-e2e")["member_session"] == ("CONCEALED", MOCK_ADMIN_SESSION)
 
 
 def test_add_ids_merges_and_drops_placeholder() -> None:
@@ -133,7 +136,7 @@ def test_session_store_cli_writes_vault_then_deletes_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     session_file = tmp_path / "admin.session"
-    write_private_file(session_file, ADMIN_SESSION + "\n")
+    write_private_file(session_file, MOCK_ADMIN_SESSION + "\n")
     op = FakeOp({"telegram-e2e": []})
     op.fail = "edit"
     monkeypatch.setattr(cli, "_vault", lambda: Vault(run=op))
@@ -152,4 +155,4 @@ def test_session_store_cli_writes_vault_then_deletes_file(
     assert not session_file.exists()
     assert labels(op, "telegram-e2e")["allowed_user_ids"] == ("STRING", str(ADMIN.id))
     out = capsys.readouterr()
-    assert ADMIN_SESSION not in out.out + out.err
+    assert MOCK_ADMIN_SESSION not in out.out + out.err

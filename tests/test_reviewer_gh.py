@@ -25,7 +25,7 @@ from scripts.reviewer_gh import (
 )
 
 REPO = "AkkiaLab/AkkiaBot"
-FAKE_TOKEN = "ghs_fake-token-value"  # test fixture, not a credential (S105 ignored for tests)
+MOCK_GH_TOKEN = "ghs_fake-token-value"  # mock: 人工构造的不可用测试值，不是凭据
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="需要 openssl")
 
@@ -81,7 +81,7 @@ class FakeGitHub:
         if path == "/app/installations/7/access_tokens":
             self.minted += 1
             return {
-                "token": f"{FAKE_TOKEN}-{self.minted}",
+                "token": f"{MOCK_GH_TOKEN}-{self.minted}",
                 "expires_at": _iso(time.time() + 3600),
                 "permissions": self.permissions,
                 "repository_selection": "selected",
@@ -153,7 +153,7 @@ def test_mints_token_scoped_to_repo_and_caches_privately(paths: Paths) -> None:
     gh = FakeGitHub()
     record, from_cache = get_token(paths, REPO, gh)
     assert not from_cache
-    assert record["token"] == f"{FAKE_TOKEN}-1"
+    assert record["token"] == f"{MOCK_GH_TOKEN}-1"
     mint = next(c for c in gh.calls if c[0] == "POST")
     assert mint[3] == {"repositories": ["AkkiaBot"]}
     # The JWT, not a token, authenticates the installation lookup and mint.
@@ -167,7 +167,7 @@ def test_reuses_fresh_cached_token(paths: Paths) -> None:
     get_token(paths, REPO, gh)
     record, from_cache = get_token(paths, REPO, gh)
     assert from_cache
-    assert record["token"] == f"{FAKE_TOKEN}-1"
+    assert record["token"] == f"{MOCK_GH_TOKEN}-1"
     assert gh.minted == 1
 
 
@@ -181,7 +181,7 @@ def test_refreshes_token_close_to_expiry(paths: Paths, remaining: int) -> None:
 
     record, from_cache = get_token(paths, REPO, gh)
     assert not from_cache
-    assert record["token"] == f"{FAKE_TOKEN}-2"
+    assert record["token"] == f"{MOCK_GH_TOKEN}-2"
 
 
 def test_refresh_flag_and_corrupt_or_foreign_cache_mint_new_token(paths: Paths) -> None:
@@ -201,7 +201,7 @@ def test_revoke_deletes_token_and_cache(paths: Paths) -> None:
     gh = FakeGitHub()
     get_token(paths, REPO, gh)
     assert revoke_cached(paths, gh)
-    assert gh.calls[-1][:3] == ("DELETE", f"{API}/installation/token", f"{FAKE_TOKEN}-1")
+    assert gh.calls[-1][:3] == ("DELETE", f"{API}/installation/token", f"{MOCK_GH_TOKEN}-1")
     assert not paths.token_cache.exists()
     assert not revoke_cached(paths, gh)
 
@@ -216,9 +216,9 @@ def test_check_passes_and_never_prints_tokens(
     assert check_installation(paths, REPO, gh, refresh=False) == []
     out = capsys.readouterr()
     assert "akkiabot-reviewer[bot]" in out.out
-    assert FAKE_TOKEN not in out.out + out.err
+    assert MOCK_GH_TOKEN not in out.out + out.err
     # The unrestricted probe token is revoked right after use.
-    assert gh.calls[-1][:3] == ("DELETE", f"{API}/installation/token", f"{FAKE_TOKEN}-2")
+    assert gh.calls[-1][:3] == ("DELETE", f"{API}/installation/token", f"{MOCK_GH_TOKEN}-2")
 
 
 @pytest.mark.parametrize(
@@ -277,7 +277,7 @@ def test_cli_gh_execs_gh_with_token_in_env(
     monkeypatch.setattr(os, "execve", fake_execve)
     assert main(["gh", "pr", "review", "1", "--approve"]) == 0
     assert seen["argv"] == [str(fake_gh), "pr", "review", "1", "--approve"]
-    assert seen["env"]["GH_TOKEN"] == f"{FAKE_TOKEN}-1"
+    assert seen["env"]["GH_TOKEN"] == f"{MOCK_GH_TOKEN}-1"
     assert "GITHUB_TOKEN" not in seen["env"]
 
 
@@ -288,8 +288,8 @@ def test_unwritable_cache_degrades_to_minting_each_time(
     blocker.write_text("")
     readonly = Paths(app_dir=paths.app_dir, cache_dir=blocker / "cache")
     gh = FakeGitHub()
-    assert get_token(readonly, REPO, gh)[0]["token"] == f"{FAKE_TOKEN}-1"
-    assert get_token(readonly, REPO, gh)[0]["token"] == f"{FAKE_TOKEN}-2"
+    assert get_token(readonly, REPO, gh)[0]["token"] == f"{MOCK_GH_TOKEN}-1"
+    assert get_token(readonly, REPO, gh)[0]["token"] == f"{MOCK_GH_TOKEN}-2"
     err = capsys.readouterr().err
     assert "无法写入 token 缓存" in err
-    assert FAKE_TOKEN not in err
+    assert MOCK_GH_TOKEN not in err

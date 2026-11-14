@@ -13,13 +13,18 @@ from akkiabot_core.telegram import (
     verify_init_data,
 )
 
-BOT_TOKEN = "123456:fake-bot-token-for-tests"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_OTHER_BOT_TOKEN = "654321:other-token"
+# mock: 故意畸形的不可用 token，用于签名不匹配。
+MOCK_MALFORMED_BOT_TOKEN = "1:x"
 NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 MAX_AGE = timedelta(hours=1)
 USER = {"id": 987654321, "first_name": "Akkia", "username": "akkia", "language_code": "zh"}
 
 
-def make_init_data(*, auth_date: datetime = NOW, token: str = BOT_TOKEN, **extra: str) -> str:
+def make_init_data(*, auth_date: datetime = NOW, token: str = MOCK_BOT_TOKEN, **extra: str) -> str:
     fields = {
         "query_id": "AAHdF6IQAAAAAN0XohDhrOrc",
         "user": json.dumps(USER, separators=(",", ":")),
@@ -36,13 +41,13 @@ def test_known_vector() -> None:
     import hmac
 
     fields = {"auth_date": "1", "user": "{}"}
-    secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+    secret = hmac.new(b"WebAppData", MOCK_BOT_TOKEN.encode(), hashlib.sha256).digest()
     expected = hmac.new(secret, b"auth_date=1\nuser={}", hashlib.sha256).hexdigest()
-    assert sign_init_data(fields, BOT_TOKEN) == expected
+    assert sign_init_data(fields, MOCK_BOT_TOKEN) == expected
 
 
 def test_valid_signature() -> None:
-    data = verify_init_data(make_init_data(), BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+    data = verify_init_data(make_init_data(), MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
     assert data is not None
     assert data.user is not None
     assert data.user.id == 987654321
@@ -54,13 +59,13 @@ def test_valid_signature() -> None:
 def test_valid_with_extra_signature_field() -> None:
     # Newer clients add a `signature` field; it is part of the checked data.
     raw = make_init_data(signature="ed25519sig")
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is not None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is not None
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        pytest.param(make_init_data(token="654321:other-token"), id="other-bot-token"),
+        pytest.param(make_init_data(token=MOCK_OTHER_BOT_TOKEN), id="other-bot-token"),
         pytest.param(make_init_data().replace("captcha_abc", "captcha_xyz"), id="tampered-field"),
         pytest.param(make_init_data() + "&chat_type=group", id="added-field"),
         pytest.param(make_init_data().split("&hash=")[0], id="missing-hash"),
@@ -68,7 +73,7 @@ def test_valid_with_extra_signature_field() -> None:
     ],
 )
 def test_bad_signature(raw: str) -> None:
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -84,53 +89,55 @@ def test_bad_signature(raw: str) -> None:
 def test_malformed_hash_is_bad_signature(bad_hash: str) -> None:
     raw = f"auth_date={int(NOW.timestamp())}&hash={bad_hash}"
     with pytest.raises(InitDataError) as exc:
-        parse_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+        parse_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
     assert exc.value.reason == "bad_signature"
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
 
 
 def test_uppercase_hex_hash_accepted() -> None:
     raw = make_init_data()
     head, sig = raw.split("&hash=")
-    assert verify_init_data(f"{head}&hash={sig.upper()}", BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+    assert verify_init_data(f"{head}&hash={sig.upper()}", MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
 
 
 def test_bad_signature_reason() -> None:
     with pytest.raises(InitDataError) as exc:
-        parse_init_data(make_init_data(token="1:x"), BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+        parse_init_data(
+            make_init_data(token=MOCK_MALFORMED_BOT_TOKEN), MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW
+        )
     assert exc.value.reason == "bad_signature"
 
 
 def test_expired() -> None:
     raw = make_init_data(auth_date=NOW - MAX_AGE - timedelta(seconds=1))
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
     with pytest.raises(InitDataError) as exc:
-        parse_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+        parse_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
     assert exc.value.reason == "expired"
 
 
 def test_at_max_age_boundary_is_valid() -> None:
     raw = make_init_data(auth_date=NOW - MAX_AGE)
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is not None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is not None
 
 
 def test_auth_date_far_in_future_rejected() -> None:
     raw = make_init_data(auth_date=NOW + timedelta(minutes=10))
     with pytest.raises(InitDataError) as exc:
-        parse_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+        parse_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
     assert exc.value.reason == "auth_date_in_future"
 
 
 @pytest.mark.parametrize("raw", ["", "%%%", "no-equals-sign"])
 def test_malformed(raw: str) -> None:
-    assert verify_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
+    assert verify_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW) is None
 
 
 def test_invalid_user_json_rejected() -> None:
     fields = {"auth_date": str(int(NOW.timestamp())), "user": "{not json"}
-    raw = urlencode({**fields, "hash": sign_init_data(fields, BOT_TOKEN)})
+    raw = urlencode({**fields, "hash": sign_init_data(fields, MOCK_BOT_TOKEN)})
     with pytest.raises(InitDataError) as exc:
-        parse_init_data(raw, BOT_TOKEN, max_age=MAX_AGE, now=NOW)
+        parse_init_data(raw, MOCK_BOT_TOKEN, max_age=MAX_AGE, now=NOW)
     assert exc.value.reason == "invalid_payload"
 
 

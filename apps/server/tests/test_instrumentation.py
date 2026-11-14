@@ -17,6 +17,9 @@ from akkiabot_server.bot.types import Context
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
+
 GROUP_ID = -1001234567890
 
 
@@ -41,7 +44,7 @@ def sentry_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, An
         return real_init(transport=transport, **kwargs)
 
     monkeypatch.setattr(sentry_sdk, "init", init_with_transport)
-    settings = ObservabilitySettings(sentry_dsn="https://key@o0.ingest.sentry.io/1")  # pyright: ignore[reportArgumentType]
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
     assert init_sentry(settings, release="akkiabot@test")
     try:
         yield transport.events
