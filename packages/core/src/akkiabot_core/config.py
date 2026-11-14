@@ -39,6 +39,10 @@ _SETTINGS_CONFIG = SettingsConfigDict(
 )
 
 
+# Supported (backend, async driver) pairs; validated together.
+_SUPPORTED_DB_DRIVERS = frozenset({("postgresql", "asyncpg"), ("sqlite", "aiosqlite")})
+
+
 class _Group(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -66,10 +70,8 @@ class DatabaseSettings(_Group):
     @classmethod
     def _check_async_driver(cls, value: str) -> str:
         url = make_url(value)
-        if url.get_backend_name() not in {"postgresql", "sqlite"}:
-            raise ValueError("仅支持 PostgreSQL 与 SQLite")
-        if url.get_driver_name() not in {"asyncpg", "aiosqlite"}:
-            raise ValueError("请使用异步驱动：postgresql+asyncpg:// 或 sqlite+aiosqlite://")
+        if (url.get_backend_name(), url.get_driver_name()) not in _SUPPORTED_DB_DRIVERS:
+            raise ValueError("仅支持 postgresql+asyncpg:// 或 sqlite+aiosqlite://")
         return value
 
     @property

@@ -79,6 +79,10 @@ def test_blank_optional_value_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         ("DB_URL", "mysql+aiomysql://u:p@h/db"),
         ("DB_URL", "postgresql://u:p@h/db"),  # sync driver
+        ("DB_URL", "sqlite:///x.db"),  # sync driver
+        ("DB_URL", "postgresql+aiosqlite://u:p@h/db"),  # cross pairing
+        ("DB_URL", "sqlite+asyncpg:///x.db"),  # cross pairing
+        ("DB_URL", "postgresql+psycopg://u:p@h/db"),
         ("OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE", "1.5"),
         ("OBSERVABILITY_LOG_LEVEL", "verbose"),
         ("WEBAPP_INIT_DATA_MAX_AGE", "0"),
@@ -111,6 +115,15 @@ def test_validation_error_does_not_echo_secrets(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(ValidationError) as exc:
         load_settings()
     assert "hunter2" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "url", ["postgresql+asyncpg://u:p@h:5432/db", "sqlite+aiosqlite:///./data/bot.db"]
+)
+@pytest.mark.usefixtures("required_env")
+def test_supported_db_urls(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    monkeypatch.setenv("DB_URL", url)
+    assert load_settings().db.url == url
 
 
 def test_partial_loaders_do_not_need_bot_token(monkeypatch: pytest.MonkeyPatch) -> None:
