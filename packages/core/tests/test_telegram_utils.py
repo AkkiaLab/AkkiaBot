@@ -13,7 +13,7 @@ from akkiabot_core.telegram import (
     verify_init_data,
 )
 
-BOT_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+BOT_TOKEN = "123456:fake-bot-token-for-tests"
 NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 MAX_AGE = timedelta(hours=1)
 USER = {"id": 987654321, "first_name": "Akkia", "username": "akkia", "language_code": "zh"}

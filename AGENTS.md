@@ -6,6 +6,7 @@
 
 - 测试环境密钥统一放在 1Password 的 `AkkiaBot-Staging` vault；该 vault 的服务账号可读写（负责人 2026-11-14 决定），工具会自动写回会话、测试 bot、群 id。测试密钥可在 Multica 内部共享，但仓库是公开的：仓库、PR、CI 日志只出现 `op://` 引用（`tools/e2e/*.env.tpl`）与 `.env.example`。字段清单见 `docs/e2e-acceptance.md` 第 3 节。
 - 不得把 token、DSN、Telegram 会话、验证码、两步验证密码写进仓库、PR、日志或命令行参数；写入 1Password 时值经 stdin 传递。交接时说明 1Password 中的位置即可。
+- 测试与文档中的凭据样例：一律使用一看就是假的、且**不符合真实凭据格式**的占位值，例如 bot token 用 `123456:fake-bot-token-for-tests`（真实格式为 8–10 位 bot id + `:AA` 开头的 35 位串），其他密钥用 `fake-api-hash-for-tests` 这类低熵字符串。不要照抄官方文档的示例 token，不要手写"看起来真实"的随机串，也不要用字符串拼接绕过扫描。需要能被解析器识别的 token（如 BotFather 回复解析）时复用 `akkiabot_e2e.testing.FAKE_BOT_TOKEN`。`tests/test_secret_samples.py` 会拦截已跟踪文件中出现的真实 Telegram bot token 格式。
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
 
 ## 真实 Telegram 验收
