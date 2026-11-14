@@ -16,12 +16,18 @@ from akkiabot_e2e.errors import E2EError, SafetyError
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.telethon_transport import (
     TEST_DC_ADDRESSES,
+    TEST_DC_ALLOWED_ADDRESSES,
     _session,
     ensure_test_environment,
 )
 from akkiabot_e2e.testing import ADMIN, FakeTelegram, add_fake_botfather
 
+PRODUCTION_DC1 = "149.154.175.53"
 PRODUCTION_DC2 = "149.154.167.50"
+PRODUCTION_DC2_ALT = "149.154.167.51"
+PRODUCTION_ADDRESSES = [PRODUCTION_DC1, PRODUCTION_DC2, PRODUCTION_DC2_ALT]
+#: What test DC1 announces in help.getConfig; PHONE_MIGRATE_1 lands here.
+TEST_DC1_ANNOUNCED = "149.154.175.40"
 TOKEN = Secret("123456:fake-bot-token-for-tests-xxxxxxxxxxx")
 
 
@@ -40,7 +46,20 @@ def test_test_session_is_accepted() -> None:
     assert _session(_saved(TEST_DC_ADDRESSES[2])).server_address == TEST_DC_ADDRESSES[2]
 
 
-@pytest.mark.parametrize("value", [_saved(PRODUCTION_DC2), Secret("not-a-session")])
+def test_session_on_announced_test_dc1_is_accepted() -> None:
+    assert _session(_saved(TEST_DC1_ANNOUNCED)).server_address == TEST_DC1_ANNOUNCED
+
+
+def test_allowlist_contains_no_production_address() -> None:
+    assert TEST_DC1_ANNOUNCED in TEST_DC_ALLOWED_ADDRESSES
+    assert TEST_DC_ALLOWED_ADDRESSES.isdisjoint(PRODUCTION_ADDRESSES)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [*(_saved(a) for a in PRODUCTION_ADDRESSES), Secret("not-a-session")],
+    ids=[*PRODUCTION_ADDRESSES, "invalid"],
+)
 def test_production_or_invalid_sessions_are_refused(value: Secret) -> None:
     with pytest.raises(SafetyError):
         _session(value)
@@ -59,16 +78,23 @@ class FakeClient:
         self.disconnected = True
 
 
-async def test_server_confirmed_test_mode_passes() -> None:
-    client = FakeClient(test_mode=True, address=TEST_DC_ADDRESSES[2])
+@pytest.mark.parametrize(
+    "address", [TEST_DC_ADDRESSES[2], TEST_DC1_ANNOUNCED], ids=["test-dc2", "migrated-test-dc1"]
+)
+async def test_server_confirmed_test_mode_passes(address: str) -> None:
+    client = FakeClient(test_mode=True, address=address)
     await ensure_test_environment(client)
     assert not client.disconnected
 
 
 @pytest.mark.parametrize(
     ("test_mode", "address"),
-    [(False, TEST_DC_ADDRESSES[2]), (True, PRODUCTION_DC2)],
-    ids=["server-not-test-mode", "production-address"],
+    [
+        (False, TEST_DC_ADDRESSES[2]),
+        (False, TEST_DC1_ANNOUNCED),
+        *((True, a) for a in PRODUCTION_ADDRESSES),
+    ],
+    ids=["server-not-test-mode", "dc1-not-test-mode", *PRODUCTION_ADDRESSES],
 )
 async def test_non_test_server_disconnects_without_fallback(test_mode: bool, address: str) -> None:
     client = FakeClient(test_mode=test_mode, address=address)
