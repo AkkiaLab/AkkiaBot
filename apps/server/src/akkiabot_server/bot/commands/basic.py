@@ -47,7 +47,7 @@ async def help_command(update: Update, context: Context) -> str | None:
     return None
 
 
-def _replied_message(message: Message) -> Message | None:
+def replied_message(message: Message) -> Message | None:
     reply = message.reply_to_message
     # In forum topics every message implicitly "replies" to the topic header.
     if reply is None or reply.forum_topic_created is not None:
@@ -63,7 +63,7 @@ async def id_command(update: Update, _context: Context) -> str | None:
     lines = [f"当前ChatId: {escape_markdown_v2(chat.effective_name or '')} \\(`{chat.id}`\\)"]
     if user is not None:
         lines.append(f"你的UserId: {escape_markdown_v2(user.first_name)} \\(`{user.id}`\\)")
-    reply = _replied_message(message)
+    reply = replied_message(message)
     if reply is not None:
         # Anonymous admins and channels post as a chat (from_user is a placeholder bot).
         if reply.sender_chat is not None:

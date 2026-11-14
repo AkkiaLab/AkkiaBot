@@ -12,6 +12,7 @@ import threading
 from dataclasses import dataclass, field
 from wsgiref.simple_server import WSGIServer
 
+import httpx
 from prometheus_client import start_http_server
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from telegram.request import BaseRequest
@@ -20,6 +21,7 @@ from akkiabot_core.cache import Cache, create_cache
 from akkiabot_core.config import Settings
 from akkiabot_core.db import create_engine, create_session_factory, ping
 from akkiabot_core.observability import REGISTRY
+from akkiabot_server import __version__
 from akkiabot_server.bot.application import (
     ALLOWED_UPDATES,
     build_application,
@@ -30,6 +32,7 @@ from akkiabot_server.bot.deps import BotDeps
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
 from akkiabot_server.services.chats import ChatDirectory
+from akkiabot_server.services.ip_lookup import build_ip_lookup
 from akkiabot_server.services.message_log import MessageRecorder
 from akkiabot_server.services.start_payload import StartPayloadStore
 
@@ -61,6 +64,8 @@ class Runtime:
     engine: AsyncEngine
     session_factory: async_sessionmaker[AsyncSession]
     cache: Cache
+    http: httpx.AsyncClient
+    """Shared client for outbound HTTP APIs (whois providers…)."""
     deps: BotDeps
     application: App
     _metrics: tuple[WSGIServer, threading.Thread] | None = field(default=None, init=False)
@@ -81,6 +86,10 @@ class Runtime:
             redis_url = settings.redis.url
             cache = create_cache(redis_url.get_secret_value() if redis_url else None)
         chats = ChatDirectory(session_factory)
+        http = httpx.AsyncClient(
+            timeout=settings.whois.timeout,
+            headers={"User-Agent": f"AkkiaBot/{__version__}"},
+        )
         deps = BotDeps(
             settings=settings,
             commands=CommandRegistry(COMMANDS),
@@ -89,6 +98,7 @@ class Runtime:
             ),
             chats=chats,
             messages=MessageRecorder(session_factory, chats),
+            ip_lookup=build_ip_lookup(settings.whois, http),
         )
         application = build_application(
             deps,
@@ -96,7 +106,7 @@ class Runtime:
             request=request,
             get_updates_request=get_updates_request,
         )
-        return cls(settings, engine, session_factory, cache, deps, application)
+        return cls(settings, engine, session_factory, cache, http, deps, application)
 
     @property
     def webhook_url(self) -> str | None:
@@ -152,6 +162,7 @@ class Runtime:
             await self.application.stop()
         await self.application.shutdown()
         await self.cache.aclose()
+        await self.http.aclose()
         await self.engine.dispose()
         self._stop_metrics()
         logger.info("bot stopped")
