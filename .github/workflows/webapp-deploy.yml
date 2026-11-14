@@ -1,0 +1,102 @@
+name: Webapp deploy
+
+# Publishes apps/webapp to Cloudflare Pages with `wrangler pages deploy`
+# (docs/webapp.md): master → production (bot.akkia.moe), pull
+# requests → preview URL shown as a GitHub deployment on the PR.
+#
+# Needs repository secret CLOUDFLARE_API_TOKEN (Pages: Edit), repository variable
+# CLOUDFLARE_ACCOUNT_ID, and per-environment variables VITE_API_BASE_URL and
+# VITE_TURNSTILE_SITE_KEY on the `webapp-production` / `webapp-preview`
+# environments. Until the token exists (and for fork PRs, which get no secrets)
+# the build and the dev-mock check still run; only the upload is skipped.
+
+on:
+  push:
+    branches: [master]
+    paths: &paths
+      - apps/webapp/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
+      - .github/workflows/webapp-deploy.yml
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+concurrency:
+  group: webapp-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'akkiabot-webapp' }}
+  WRANGLER_VERSION: 4.162.0
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/master' && 'webapp-production' || 'webapp-preview' }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+        run: pnpm --filter @akkiabot/webapp build
+      - name: No dev-only Telegram mock in the bundle
+        run: bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist
+      - name: Decide whether to upload
+        id: gate
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+        run: |
+          if [[ "$HAS_TOKEN" != "true" ]]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN is not available (not configured yet, or a fork PR); skipping the Pages upload."
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          missing=()
+          [[ -n "$ACCOUNT_ID" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [[ -n "$API_BASE_URL" ]] || missing+=(VITE_API_BASE_URL)
+          [[ -n "$SITE_KEY" ]] || missing+=(VITE_TURNSTILE_SITE_KEY)
+          if (( ${#missing[@]} )); then
+            echo "::error::missing GitHub variables for this environment: ${missing[*]}"
+            exit 1
+          fi
+          echo "upload=true" >> "$GITHUB_OUTPUT"
+      - name: Upload to Cloudflare Pages
+        id: deploy
+        if: steps.gate.outputs.upload == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Untrusted branch names go through env, never interpolated into the script.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          npx --yes "wrangler@${WRANGLER_VERSION}" pages deploy apps/webapp/dist \
+            --project-name="$PAGES_PROJECT" \
+            --branch="$BRANCH" \
+            --commit-hash="$COMMIT_SHA" \
+            --commit-dirty=true
+          # Production: the immutable deployment URL; previews: the stable per-branch alias.
+          filter='select(.type == "pages-deploy-detailed") | .url'
+          [[ "$GITHUB_REF" == refs/heads/master ]] || filter='select(.type == "pages-deploy-detailed") | .alias // .url'
+          url="$(jq -r "$filter" "$WRANGLER_OUTPUT_FILE_PATH" | tail -n1)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed: $url" >> "$GITHUB_STEP_SUMMARY"
