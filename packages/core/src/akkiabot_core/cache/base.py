@@ -24,6 +24,10 @@ class Cache(Protocol):
 
     async def delete(self, key: str) -> None: ...
 
+    async def ping(self) -> bool:
+        """Connectivity check for readiness probes (raises when unreachable)."""
+        ...
+
     async def aclose(self) -> None: ...
 
 

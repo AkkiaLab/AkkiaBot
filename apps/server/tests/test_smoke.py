@@ -68,3 +68,36 @@ def test_migrate_rejects_bad_db_url(
     out = capsys.readouterr().out
     assert "invalid database configuration" in out
     assert "hunter2" not in out
+
+
+def test_serve_rejects_missing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for key in ("TELEGRAM_BOT_TOKEN", "DB_URL"):
+        monkeypatch.delenv(key, raising=False)
+    assert main(["serve"]) == 2
+    assert "invalid configuration" in capsys.readouterr().out
+
+
+def test_serve_runs_uvicorn_with_configured_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+    from fastapi import FastAPI
+
+    token = "123456:" + "B" * 35
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
+    monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}")
+    monkeypatch.setenv("SERVER_HOST", "127.0.0.1")
+    monkeypatch.setenv("SERVER_PORT", "18080")
+    monkeypatch.setenv("SERVER_SOFTWARE", "unrelated/1.0")  # foreign SERVER_* vars are ignored
+    started: list[uvicorn.Config] = []
+    monkeypatch.setattr(uvicorn.Server, "run", lambda self, *a, **k: started.append(self.config))
+
+    assert main(["serve"]) == 0
+
+    (config,) = started
+    assert (config.host, config.port, config.log_config) == ("127.0.0.1", 18080, None)
+    assert isinstance(config.app, FastAPI)

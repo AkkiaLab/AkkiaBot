@@ -63,6 +63,10 @@ test-integration *args:
 migrate revision="head":
     uv run akkiabot migrate {{ revision }}
 
+# Run the bot and HTTP API (reads .env; run `just migrate` first)
+serve:
+    uv run akkiabot serve
+
 # Autogenerate a new Alembic revision against DB_URL (database must be at head)
 db-revision message:
     uv run python -c 'import sys; from akkiabot_core.config import load_database_settings; from akkiabot_core.db.migrate import revision; revision(load_database_settings().url, sys.argv[1])' "{{ message }}"
@@ -82,7 +86,7 @@ dev-down:
 
 # Regenerate frontend API types from the backend OpenAPI schema
 gen-api:
-    @echo "gen-api: 后端尚未提供 HTTP API（M2 引入 FastAPI 后接入 openapi-typescript），当前无需生成。"
+    @echo "gen-api: 后端目前只有健康检查接口，业务 API 从 M6 起接入 openapi-typescript，当前无需生成。"
 
 # Build the backend image and print its version
 docker-build tag="akkiabot:dev":

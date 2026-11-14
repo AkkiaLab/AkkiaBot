@@ -27,7 +27,8 @@ def init_sentry(settings: ObservabilitySettings, *, release: str | None = None) 
         environment=settings.sentry_environment,
         traces_sample_rate=settings.sentry_traces_sample_rate,
         release=release,
-        send_default_pii=False,
+        # No PII options: the SDK default sends none (``send_default_pii`` is
+        # deprecated in favour of ``data_collection`` and warns when passed).
         integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
     )
     logger.info(

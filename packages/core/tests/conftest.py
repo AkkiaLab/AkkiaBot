@@ -38,6 +38,7 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
             "WEBAPP",
             "CORS",
             "OBSERVABILITY",
+            "SERVER",
         }:
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)

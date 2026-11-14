@@ -1,0 +1,1 @@
+"""Non-command update handlers."""

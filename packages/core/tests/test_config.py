@@ -130,3 +130,39 @@ def test_partial_loaders_do_not_need_bot_token(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("DB_URL", PG)
     assert load_database_settings().url == PG
     assert load_observability_settings().log_format == "json"
+
+
+@pytest.mark.usefixtures("required_env")
+def test_runtime_defaults() -> None:
+    s = load_settings()
+    assert s.telegram.mode == "polling"
+    assert s.telegram.message_log_retention_days == 30
+    assert s.telegram.start_payload_ttl == 600
+    assert (s.server.host, s.server.port) == ("0.0.0.0", 8000)  # noqa: S104
+    assert (s.observability.metrics_host, s.observability.metrics_port) == ("127.0.0.1", 9464)
+
+
+@pytest.mark.usefixtures("required_env")
+def test_webhook_mode_requires_url_and_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+    with pytest.raises(ValidationError, match="TELEGRAM_WEBHOOK_URL"):
+        load_settings()
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://bot-api.akkia.moe")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "s3cret_webhook-token")
+    s = load_settings()
+    assert s.telegram.webhook_secret is not None
+    assert "s3cret_webhook-token" not in str(s.redacted())
+
+
+@pytest.mark.usefixtures("required_env")
+def test_webhook_secret_charset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "bad secret!")
+    with pytest.raises(ValidationError, match="webhook_secret"):
+        load_settings()
+
+
+@pytest.mark.usefixtures("required_env")
+def test_foreign_server_env_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SERVER_SOFTWARE", "nginx")
+    monkeypatch.setenv("SERVER_PORT", "9000")
+    assert load_settings().server.port == 9000

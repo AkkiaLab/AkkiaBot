@@ -51,5 +51,8 @@ class MemoryCache:
     async def delete(self, key: str) -> None:
         self._data.pop(key, None)
 
+    async def ping(self) -> bool:
+        return True
+
     async def aclose(self) -> None:
         self._data.clear()
