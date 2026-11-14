@@ -230,7 +230,7 @@ uv run akkiabot-e2e list    # 列出所有场景
 
 M3 合并到 master 之前，在 master 上运行 `m3.*` 会失败（bot 还没有 `/ip` 命令）。这时请用 `--scenarios m2`，或在 M3 的分支上运行。同理，M4 合并前在 master 上运行 `m4.*` 会失败。
 
-M5 场景排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用外部 bot 时，需要保证该 bot 的数据库中成员发言不超过 3 条，否则 `m5.spam` 会因豁免而失败。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，M5 的反垃圾场景记为未执行（⏭️），整次运行不算通过；只验收其他里程碑时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
+M5 场景排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用数据库长期保留的外部 bot 时，加 `--fresh-group` 让每次运行使用新建的专用群（`just e2e-staging` 已默认加上），否则成员在旧群中的发言数会累计，`m5.spam` 会因豁免而失败（见 6.2 节“持久化被测 bot 的数据准备”）。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，M5 的反垃圾场景记为未执行（⏭️），整次运行不算通过；只验收其他里程碑时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
 
 `m4.warn`、`m4.ban` 会真实封禁普通成员账号，并在场景结束时（包括失败时）解除封禁、用一次性邀请链接让成员重新入群，后续场景不受影响。如果运行被强行中断，成员可能停留在封禁状态；下次运行的准备阶段会先解除封禁再让成员入群，并在报告的准备步骤中注明。
 
@@ -255,17 +255,31 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 1. 选定要发版的 master commit `SHA`（完整 40 位）。
 2. 前端：每次 master 推送都会把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`。也可以在 master 上手动运行 `webapp-deploy.yml`。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
 3. 后端：按 `docs/operations.md` §8.1，把预发布栈升级到同一个 `SHA` 的镜像。
-4. 运行（第一次运行加 `--create-group`，会建立单独的“AkkiaBot Staging 发版验收群”并写入白名单）：
+4. 运行：
 
    ```bash
    just e2e-staging --record-status SHA
    ```
+
+   `just e2e-staging` 每次都带 `--fresh-group`（`--record-status` 也会自动启用）：本次运行新建一个标题为“AkkiaBot Staging 发版验收群 <运行标识>”的专用测试群，按 6.1 节的可恢复流程写入白名单，不复用旧群。原因见下方“持久化被测 bot 的数据准备”。
 
    staging 别名会被每次 master 推送覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行全部场景（含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`：只有全部场景通过、且开始和结束时都是 `SHA`，才写 `success`，否则写 `failure`。`--record-status` 不能与 `--scenarios`、`--serve` 同时使用。
 5. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、后端镜像和结果。报告中的“未自动化”项要原样保留。
 6. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查。
 
 写 commit status 需要本机 `gh` 已登录，且对仓库有写权限。
+
+#### 持久化被测 bot 的数据准备
+
+staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态会累计：成员发言数（`chat_member.message_count`）、各项开关、警告次数。反垃圾只检查发言不超过 3 条的成员（`ANTISPAM_EXEMPT_MESSAGE_COUNT`），而一次全量运行会让普通成员发言十几条，所以第二次在同一个群里运行时，`m5.spam` 的广告会被豁免：消息不删除、成员不禁言，指标只出现 `antispam_verdict_total{verdict="skipped",action="exempt"}`，`m5.langfuse` 也因没有判定而失败（BOT-27 在 staging 上复现：发版验收群里两个测试账号的计数已达 40 和 42）。
+
+约束：
+
+- 针对持久化被测 bot 的运行一律使用 `--fresh-group`，让每次运行的群内状态与首次运行一致。不要通过清库、删除或重置成员计数等方式“恢复新成员”，也不要为了验收调高豁免阈值或把 `skipped`/`exempt` 当作通过。
+- 只验收部分场景时同样适用，例如连续复验反垃圾：`just e2e-staging --scenarios m5`。
+- 每次运行留下一个测试群（工具从不删除群），两个测试账号的已加入群数随之增长。Telegram 对单个账号可加入的群数有上限（普通账号约 500 个），接近上限前需要清理旧群；删除群属于删除操作，须先报告范围并经负责人确认。
+- 建群中断后遗留的、不在白名单中的同名群不会被后续运行认领（每次运行的标题都不同）；1Password 中残留的待恢复标识会被下一次建群沿用，不影响运行。
+- 本地 `just e2e --serve` 每次使用新数据库，不需要 `--fresh-group`。
 
 ## 7. 安全约束
 

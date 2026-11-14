@@ -125,8 +125,9 @@ antispam-eval *args:
 
 # Staging release acceptance: full run against the deployed staging stack (no local bot).
 # Add `--record-status <sha>` to write the GitHub commit status that production promotion requires.
+# Every run creates a group of its own (--fresh-group): the staging database persists between runs.
 e2e-staging *args:
-    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging-release.env.tpl -- akkiabot-e2e run {{ args }}
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging-release.env.tpl -- akkiabot-e2e run --fresh-group {{ args }}
 
 # Regenerate the OpenAPI document and the frontend API types (commit both)
 gen-api:

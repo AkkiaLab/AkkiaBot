@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from akkiabot_e2e.config import E2EConfig
@@ -16,7 +17,7 @@ from akkiabot_e2e.errors import (
     SafetyError,
     ScenarioSkipped,
 )
-from akkiabot_e2e.group import GroupRegistry, prepare_group
+from akkiabot_e2e.group import GroupRegistry, fresh_group_title, prepare_group
 from akkiabot_e2e.langfuse import LangfuseProbe
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Secret
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 Connect = Callable[[str, Secret], Awaitable[Account]]
 #: Returns which of the given message ids the bot stored in ``message_log`` for a chat.
 MessageLogProbe = Callable[[int, Sequence[int]], Awaitable[set[int]]]
+
+FRESH_GROUP_NOTE = (
+    "--fresh-group：本次新建专用测试群（被测 bot 的数据库长期保留，成员发言数按群累计，"
+    "复用旧群会使成员发言超过 3 条而被反垃圾豁免）"
+)
 
 
 def check_identities(config: E2EConfig, admin: UserInfo, member: UserInfo) -> None:
@@ -61,8 +67,16 @@ async def run_acceptance(
     traces: TraceProbe | None = None,
     registry: GroupRegistry | None = None,
     web: WebProbe | None = None,
+    fresh_group: bool = False,
 ) -> Report:
-    """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests)."""
+    """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests).
+
+    ``fresh_group`` creates a new group for this run (see :func:`fresh_group_title`)
+    instead of reusing the allowlisted one; it needs ``registry`` like ``allow_create``.
+    """
+    if fresh_group:
+        config = replace(config, chat_title=fresh_group_title(config.chat_title, run_id))
+        allow_create = True
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
     report = Report(run_id=run_id, status="failed", started_at=datetime.now(UTC).isoformat())
     async with AsyncExitStack() as stack:
@@ -100,6 +114,8 @@ async def run_acceptance(
 
         report.chat = {"id": group.chat.id, "title": group.chat.title, "created": group.created}
         report.setup = list(group.actions)
+        if fresh_group:
+            report.setup.insert(0, FRESH_GROUP_NOTE)
         ctx = ScenarioContext(
             admin=admin,
             member=member,

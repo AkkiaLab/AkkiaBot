@@ -98,6 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--create-group", action="store_true", help="没有可用测试群时创建一个")
     run.add_argument(
+        "--fresh-group",
+        action="store_true",
+        help=(
+            "本次运行新建专用测试群（标题带运行标识），不复用白名单中的旧群；"
+            "用于数据库长期保留的被测 bot（staging），--record-status 时自动启用"
+        ),
+    )
+    run.add_argument(
         "--serve", action="store_true", help="在本进程旁启动 akkiabot serve 作为被测 bot"
     )
     run.add_argument("--report-dir", type=Path, default=None)
@@ -314,6 +322,9 @@ async def _run_live(
     web: HttpWebProbe | None,
 ) -> Report:
     run_id = run_dir.name
+    # A deployed bot keeps its database between runs: release acceptance always
+    # starts from a group of its own (see group.fresh_group_title).
+    fresh_group = args.fresh_group or bool(args.record_status)
     # The group allowlist and the pending create-group operation live in 1Password.
     registry = VaultGroupRegistry(_vault())
     async with session_lock():
@@ -328,6 +339,7 @@ async def _run_live(
                     allow_create=args.create_group,
                     registry=registry,
                     web=web,
+                    fresh_group=fresh_group,
                 )
 
             if args.record_status:
@@ -349,6 +361,7 @@ async def _run_live(
                 registry=registry,
                 message_log=server.logged_message_ids,
                 web=web,
+                fresh_group=fresh_group,
             )
             report.server_log = str(server.log_path)
             return report
