@@ -3,6 +3,8 @@
 #
 # Run from the directory holding compose.yaml and .env, e.g. from cron:
 #   17 3 * * * cd /opt/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+# cron opens backups/backup.log before this script runs, so create the
+# directory first (once, at deploy time): install -d -m 700 backups
 #
 # Writes backups/akkiabot-<UTC timestamp>.dump (pg_dump custom format) and
 # keeps the newest $BACKUP_KEEP files (default 14). The dump is written to a

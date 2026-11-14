@@ -56,6 +56,8 @@ jobs:
               - *shared
               - deploy/Dockerfile
               - deploy/compose.yaml
+              - deploy/backup.sh
+              - deploy/restore.sh
               - deploy/.env.example
               - deploy/app.env.example
               - .dockerignore
@@ -162,7 +164,7 @@ jobs:
         run: |
           stack="$RUNNER_TEMP/stack"
           mkdir -p "$stack"
-          cp deploy/compose.yaml "$stack/compose.yaml"
+          cp deploy/compose.yaml deploy/backup.sh deploy/restore.sh "$stack/"
           cp deploy/app.env.example "$stack/app.env"
           sed -e 's/^AKKIABOT_IMAGE=.*/AKKIABOT_IMAGE=akkiabot/' \
               -e 's/^AKKIABOT_TAG=.*/AKKIABOT_TAG=ci/' \
@@ -176,6 +178,27 @@ jobs:
           rev="$(docker compose exec -T postgres psql -U akkiabot -d akkiabot -tAc 'select version_num from alembic_version')"
           echo "alembic revision: $rev"
           [[ -n "$rev" ]]
+      # docs/operations.md §6.1 / §5.2 against real PostgreSQL: the first
+      # cron-style backup from a clean directory, then a rollback across a
+      # schema change (a fake newer migration) restored with restore.sh.
+      - name: Backup and migration-rollback drill
+        run: |
+          cd "$RUNNER_TEMP/stack"
+          psql() { docker compose exec -T postgres psql -U akkiabot -d akkiabot -v ON_ERROR_STOP=1 -tAc "$1"; }
+          old_rev="$(psql 'select version_num from alembic_version')"
+          install -d -m 700 backups
+          /bin/sh -c "cd '$PWD' && ./backup.sh >> backups/backup.log 2>&1"
+          cat backups/backup.log
+          dump="$(ls backups/akkiabot-*.dump)"
+          # "Upgrade": a newer migration adds a table and a column and bumps the revision.
+          psql "create table rollback_probe (id int); alter table chat add column rollback_probe int; update alembic_version set version_num = 'ffff_newer'"
+          ./restore.sh "$dump" | tee restore.log
+          grep -q "alembic revision: $old_rev\$" restore.log
+          [[ "$(psql "select count(*) from information_schema.tables where table_name = 'rollback_probe'")" == 0 ]]
+          [[ "$(psql "select count(*) from information_schema.columns where table_name = 'chat' and column_name = 'rollback_probe'")" == 0 ]]
+          # The old image's migrate is a no-op on the restored schema.
+          docker compose run --rm migrate
+          [[ "$(psql 'select version_num from alembic_version')" == "$old_rev" ]]
       - name: Compose logs on failure
         if: failure()
         run: cd "$RUNNER_TEMP/stack" && docker compose logs --no-color || true

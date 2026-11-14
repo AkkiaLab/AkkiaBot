@@ -44,7 +44,8 @@ flowchart LR
 ├── .env                        # compose 变量，来自 deploy/.env.example；chmod 600
 ├── app.env                     # 应用配置，来自 deploy/app.env.example；chmod 600
 ├── backup.sh                   # 来自仓库 deploy/backup.sh
-└── backups/                    # pg_dump 备份（backup.sh 创建）
+├── restore.sh                  # 来自仓库 deploy/restore.sh
+└── backups/                    # pg_dump 备份及 backup.log（部署时用 install -d -m 700 创建）
 ```
 
 `.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。生产密钥由负责人保管（不放在 `AkkiaBot-Staging` vault）。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
@@ -129,7 +130,10 @@ cd /opt/akkiabot/production
 
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
-curl -fsSLo backup.sh "$base/backup.sh" && chmod +x backup.sh
+curl -fsSLo backup.sh "$base/backup.sh"
+curl -fsSLo restore.sh "$base/restore.sh"
+chmod +x backup.sh restore.sh
+install -d -m 700 backups                           # 定时备份的日志也写在这里，必须先建好
 curl -fsSLo .env "$base/.env.example"
 curl -fsSLo app.env "$base/app.env.example"
 chmod 600 .env app.env
@@ -173,7 +177,8 @@ docker compose logs --tail 50 app                   # JSON 日志，含 "startin
 
 ```bash
 cd /opt/akkiabot/production
-./backup.sh                                         # 先备份（迁移不可自动回退）
+grep '^AKKIABOT_TAG=' .env                           # 记下当前（旧）sha，回滚时要用
+./backup.sh                                         # 先备份（迁移不可自动回退），记下输出的文件名
 NEW=<新 commit 的完整 sha>
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$NEW/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"       # compose 文件有变化时
@@ -185,8 +190,34 @@ docker compose pull && docker compose up -d --wait
 
 ### 5.2 回滚
 
-- **没有数据库迁移的版本**：把 `AKKIABOT_TAG` 改回旧 sha，必要时恢复对应版本的 `compose.yaml`，再执行 `docker compose up -d --wait`。
-- **包含数据库迁移的版本**：`akkiabot migrate` 只负责升级，旧版本代码不保证能使用新表结构。按 §6.2 恢复升级前的备份，再按上一条切回旧 sha。恢复之后、回滚之前产生的数据会丢失，回滚前先在 issue 中确认。
+先确认新版本是否包含数据库迁移：比较新旧 commit 之间 `packages/core/src/akkiabot_core/db/migrations/versions/` 是否有变化，或者对比 `docker compose exec -T postgres psql -U akkiabot -d akkiabot -tAc 'select version_num from alembic_version'` 与旧版本代码中最新的 revision。
+
+**没有数据库迁移的版本**：把 `AKKIABOT_TAG` 改回旧 sha，必要时恢复对应版本的 `compose.yaml`，再执行 `docker compose up -d --wait`。
+
+**包含数据库迁移的版本**：`akkiabot migrate` 只能升级，旧版本代码不保证能使用新表结构，只能恢复升级前（§5.1 第二步）的备份。恢复之后，升级以来写入的数据会丢失，回滚前先在 issue 中确认。整个过程**不能启动新镜像的 `migrate` 或 `app`**，所以先把 compose 文件和镜像切回旧版本，再恢复数据库，最后启动：
+
+```bash
+cd /opt/akkiabot/production
+OLD=<升级前的完整 sha>
+DUMP=backups/akkiabot-<升级前备份的时间>.dump
+
+# 1. 停止写入
+docker compose stop app cloudflared
+
+# 2. 把 compose 文件和镜像固定为旧版本（此后任何 up 都只会用旧镜像；restore.sh 与版本无关，保留当前文件）
+base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$OLD/deploy"
+curl -fsSLo compose.yaml "$base/compose.yaml"
+sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$OLD/" .env
+docker compose pull
+
+# 3. 恢复升级前的备份：删库重建后再导入，不会残留新迁移加的表或列；不会启动 app
+./restore.sh "$DUMP"                                # 最后一行输出恢复后的 alembic revision
+
+# 4. 确认 revision 与旧版本一致后再启动；旧镜像的 migrate 此时什么也不做
+docker compose up -d --wait
+```
+
+如果第 3 步失败，app 仍处于停止状态，数据库可能是空的或不完整：修复问题后重新执行第 3 步，不要启动 app。按 §4.3 验证回滚结果。
 
 ### 5.3 排障
 
@@ -206,9 +237,12 @@ docker compose pull && docker compose up -d --wait
 
 `backup.sh` 通过 `docker compose exec postgres pg_dump` 生成自定义格式的备份 `backups/akkiabot-<UTC 时间>.dump`（文件权限 600）。dump 会先写入临时文件，成功后才改名，失败时不会留下半截文件。默认保留最近 14 份，可以用 `BACKUP_KEEP` 调整，用 `BACKUP_DIR` 改变目录。
 
-用 cron 每天备份一次：
+用 cron 每天备份一次。cron 会在脚本运行前打开日志文件，所以 `backups/` 必须事先存在（§4.2 的部署步骤已经创建）：
 
 ```bash
+cd /opt/akkiabot/production
+install -d -m 700 backups                           # 已存在时不会改动内容
+./backup.sh >> backups/backup.log 2>&1 && tail -n 1 backups/backup.log   # 先手动跑一次，确认能生成备份
 crontab -e
 # 每天 03:17（服务器时区）备份生产库
 17 3 * * * cd /opt/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
@@ -218,13 +252,15 @@ crontab -e
 
 ### 6.2 恢复
 
+用于误操作后找回数据，镜像版本不变。跨数据库迁移的版本回滚见 §5.2，不要直接套用本节。
+
 ```bash
 cd /opt/akkiabot/production
-docker compose stop app                              # 停止写入
-docker compose exec -T postgres pg_restore -U akkiabot -d akkiabot --clean --if-exists \
-  < backups/akkiabot-<时间>.dump
-docker compose up -d --wait                          # migrate 会把表结构升级到当前镜像的版本
+./restore.sh backups/akkiabot-<时间>.dump           # 停 app/cloudflared，删库重建并导入，输出 alembic revision
+docker compose up -d --wait                          # 当前镜像的 migrate 会把表结构升级到它的版本
 ```
+
+`restore.sh` 只启动 postgres，不会启动 app 或 migrate；导入失败时会以非零退出码停止（`pg_restore --exit-on-error`）。
 
 建议每季度在预发布环境演练一次恢复：把生产备份复制到预发布服务器，按上面的步骤恢复，确认 `/readyz` 通过。
 
@@ -266,7 +302,10 @@ cd /opt/akkiabot/staging
 
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
-curl -fsSLo backup.sh "$base/backup.sh" && chmod +x backup.sh
+curl -fsSLo backup.sh "$base/backup.sh"
+curl -fsSLo restore.sh "$base/restore.sh"
+chmod +x backup.sh restore.sh
+install -d -m 700 backups                           # 定时备份的日志也写在这里，必须先建好
 curl -fsSLo .env "$base/staging/.env.example"
 curl -fsSLo app.env.tpl "$base/staging/app.env.tpl"
 chmod 600 .env

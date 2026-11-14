@@ -254,7 +254,11 @@ def test_compose_requires_secrets() -> None:
 FAKE_DOCKER = """#!/usr/bin/env bash
 echo "$*" >> "$FAKE_DOCKER_LOG"
 if [[ "${FAKE_DOCKER_FAIL:-}" == 1 ]]; then exit 3; fi
-printf 'PGDMP-fake-dump'
+case "$*" in
+  *" pg_dump "*) printf 'PGDMP-fake-dump' ;;
+  *" pg_restore "*) cat > "$FAKE_RESTORE_INPUT" ;;
+  *" psql "*) echo 0001 ;;
+esac
 """
 
 
@@ -270,6 +274,7 @@ def backup_env(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     env = {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "FAKE_DOCKER_LOG": str(tmp_path / "docker.log"),
+        "FAKE_RESTORE_INPUT": str(tmp_path / "restore-input"),
     }
     return work, env
 
@@ -324,3 +329,123 @@ def test_backup_rejects_bad_keep(backup_env: tuple[Path, dict[str, str]]) -> Non
     work, env = backup_env
     result = _run_backup(work, {**env, "BACKUP_KEEP": "0"})
     assert result.returncode == 2
+
+
+def _cron_command() -> str:
+    """The backup command of the crontab line documented in docs/operations.md §6.1."""
+    lines = [
+        line
+        for line in OPERATIONS.read_text(encoding="utf-8").splitlines()
+        if "./backup.sh" in line and re.match(r"^(\S+\s+){5}cd ", line)
+    ]
+    assert len(lines) == 1, lines
+    return lines[0].split(maxsplit=5)[5]
+
+
+def test_documented_cron_line_needs_backups_dir_first(
+    backup_env: tuple[Path, dict[str, str]],
+) -> None:
+    """cron's shell opens backups/backup.log before backup.sh can create the directory."""
+    work, env = backup_env
+    shutil.copy(DEPLOY / "backup.sh", work / "backup.sh")
+    command = _cron_command().replace("/opt/akkiabot/production", str(work))
+
+    # Without the directory the redirection fails and backup.sh never runs.
+    failed = subprocess.run(["/bin/sh", "-c", command], env=env, check=False, timeout=60)
+    assert failed.returncode != 0
+    assert not Path(env["FAKE_DOCKER_LOG"]).exists()
+
+    # The documented init step (deploy §4.2 / §6.1) makes the first scheduled run work.
+    init = "install -d -m 700 backups"
+    text = OPERATIONS.read_text(encoding="utf-8")
+    assert text.count(init) >= 3, "init step missing from deploy / staging / backup sections"
+    assert init in (DEPLOY / "backup.sh").read_text(encoding="utf-8")
+    subprocess.run(["/bin/sh", "-c", init], cwd=work, env=env, check=True, timeout=60)
+    assert (work / "backups").stat().st_mode & 0o777 == 0o700
+    ok = subprocess.run(["/bin/sh", "-c", command], env=env, check=False, timeout=60)
+    assert ok.returncode == 0
+    assert len(list((work / "backups").glob("akkiabot-*.dump"))) == 1
+    assert "backup: wrote backups/akkiabot-" in (work / "backups" / "backup.log").read_text(
+        encoding="utf-8"
+    )
+
+
+# ---------------------------------------------------------------- restore
+
+
+def _run_restore(work: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(DEPLOY / "restore.sh"), *args],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def test_restore_recreates_database_without_starting_app(
+    backup_env: tuple[Path, dict[str, str]],
+) -> None:
+    work, env = backup_env
+    dump = work / "old.dump"
+    dump.write_bytes(b"PGDMP-old-schema")
+    result = _run_restore(work, env, "old.dump")
+    assert result.returncode == 0, result.stderr
+    assert "alembic revision: 0001" in result.stdout
+    assert Path(env["FAKE_RESTORE_INPUT"]).read_bytes() == b"PGDMP-old-schema"
+
+    calls = Path(env["FAKE_DOCKER_LOG"]).read_text(encoding="utf-8").splitlines()
+    expected = [
+        "compose stop app cloudflared",
+        "compose up -d --wait postgres",
+        "compose exec -T postgres dropdb -U akkiabot --if-exists --force akkiabot",
+        "compose exec -T postgres createdb -U akkiabot -O akkiabot akkiabot",
+        "compose exec -T postgres pg_restore -U akkiabot -d akkiabot --exit-on-error",
+    ]
+    assert calls[: len(expected)] == expected
+    assert all("psql" in c for c in calls[len(expected) :])
+    # Never runs (new-image) migrate or app.
+    starts = [c for c in calls if c.startswith(("compose up", "compose run", "compose start"))]
+    assert starts == ["compose up -d --wait postgres"]
+    assert not [c for c in calls if "migrate" in c]
+
+
+def test_restore_stops_on_failure(backup_env: tuple[Path, dict[str, str]]) -> None:
+    work, env = backup_env
+    (work / "old.dump").write_bytes(b"PGDMP")
+    result = _run_restore(work, {**env, "FAKE_DOCKER_FAIL": "1"}, "old.dump")
+    assert result.returncode != 0
+    assert Path(env["FAKE_DOCKER_LOG"]).read_text(encoding="utf-8").count("\n") == 1
+
+
+@pytest.mark.parametrize("args", [(), ("missing.dump",), ("a", "b")])
+def test_restore_rejects_bad_arguments(
+    backup_env: tuple[Path, dict[str, str]], args: tuple[str, ...]
+) -> None:
+    work, env = backup_env
+    result = _run_restore(work, env, *args)
+    assert result.returncode == 2
+    assert not Path(env["FAKE_DOCKER_LOG"]).exists()
+
+
+def test_documented_migration_rollback_order() -> None:
+    """§5.2: pin the old image before restoring; never start anything before the restore."""
+    text = OPERATIONS.read_text(encoding="utf-8")
+    section = text[text.index("### 5.2 回滚") : text.index("### 5.3")]
+    block = section[section.index("```bash") : section.rindex("```")]
+    steps = [line for line in block.splitlines() if line and not line.startswith("#")]
+
+    def first(fragment: str) -> int:
+        return next(i for i, line in enumerate(steps) if fragment in line)
+
+    stop = first("docker compose stop app cloudflared")
+    pin = first("AKKIABOT_TAG=$OLD/")
+    compose = first('curl -fsSLo compose.yaml "$base/compose.yaml"')
+    restore = first('./restore.sh "$DUMP"')
+    start = first("docker compose up -d --wait")
+    assert stop < compose < restore
+    assert stop < pin < restore < start
+    before_restore = steps[:restore]
+    assert not [s for s in before_restore if re.search(r"compose (up|run|start)\b", s)]
