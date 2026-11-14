@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,9 +53,18 @@ class FieldValue:
 
 
 class Vault:
-    def __init__(self, name: str = DEFAULT_VAULT, *, run: OpRunner = run_op) -> None:
+    def __init__(
+        self,
+        name: str = DEFAULT_VAULT,
+        *,
+        run: OpRunner = run_op,
+        readback_attempts: int = 5,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.name = name
         self._run = run
+        self._readback_attempts = readback_attempts
+        self._sleep = sleep
 
     def _error(self, action: str, stderr: bytes, secrets: Iterable[str]) -> ConfigError:
         detail = stderr.decode("utf-8", "replace").strip()
@@ -102,8 +112,17 @@ class Vault:
         if code != 0:
             raise self._error(f"写入 1Password 条目 {self.name}/{item} ", err, secrets)
         for label, field_value in values.items():
-            if self.read(item, label) != field_value.value:
-                raise ConfigError(f"回读 {self.name}/{item}/{label} 的值与写入不一致")
+            self._verify(item, label, field_value.value)
+
+    def _verify(self, item: str, label: str, expected: str) -> None:
+        # 1Password is eventually consistent: a read right after an edit may still
+        # return the previous value (seen live on 2026-11-14), so retry briefly.
+        for attempt in range(self._readback_attempts):
+            if self.read(item, label) == expected:
+                return
+            if attempt + 1 < self._readback_attempts:
+                self._sleep(1.0 * (attempt + 1))
+        raise ConfigError(f"回读 {self.name}/{item}/{label} 的值与写入不一致")
 
     def add_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
         """Merge ``ids`` into a comma-separated id list field (``0`` placeholders dropped)."""
