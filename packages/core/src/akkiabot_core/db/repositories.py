@@ -249,19 +249,26 @@ class CaptchaChallengeRepository:
             .limit(1)
         )
 
-    async def resolve(self, challenge_id: uuid.UUID, status: CaptchaStatus) -> bool:
-        """Move a *pending* challenge to ``status``.
+    async def resolve(
+        self, challenge_id: uuid.UUID, status: CaptchaStatus, *, now: datetime | None = None
+    ) -> bool:
+        """Move a *pending* challenge to ``status`` (compare-and-set).
 
-        Returns ``False`` if it was already resolved (compare-and-set), so a
-        challenge can only be passed once even under concurrent requests.
+        Returns ``False`` if it was already resolved, so a challenge can only be
+        passed once even under concurrent requests. Only ``EXPIRED`` may be set
+        once ``expires_at`` is reached; ``PASSED`` / ``FAILED`` on an overdue
+        challenge are rejected even before the expiry job has run.
         """
+        if status is CaptchaStatus.PENDING:
+            raise ValueError("cannot resolve a challenge to PENDING")
+        conditions = [
+            CaptchaChallenge.id == challenge_id,
+            CaptchaChallenge.status == CaptchaStatus.PENDING,
+        ]
+        if status is not CaptchaStatus.EXPIRED:
+            conditions.append(CaptchaChallenge.expires_at > (now or utcnow()))
         result = await self.session.execute(
-            update(CaptchaChallenge)
-            .where(
-                CaptchaChallenge.id == challenge_id,
-                CaptchaChallenge.status == CaptchaStatus.PENDING,
-            )
-            .values(status=status)
+            update(CaptchaChallenge).where(*conditions).values(status=status)
         )
         assert isinstance(result, CursorResult)  # noqa: S101
         return result.rowcount == 1

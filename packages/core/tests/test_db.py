@@ -222,6 +222,47 @@ async def test_captcha_challenge_lifecycle(session: AsyncSession) -> None:
     assert await repo.get_pending(SUPERGROUP, BIG_USER) is None
 
 
+@pytest.mark.parametrize("status", [CaptchaStatus.PASSED, CaptchaStatus.FAILED])
+async def test_captcha_cannot_pass_after_expiry(
+    session: AsyncSession, status: CaptchaStatus
+) -> None:
+    repo = CaptchaChallengeRepository(session)
+    challenge = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    await session.commit()
+
+    # exactly at expires_at counts as expired
+    assert await repo.resolve(challenge.id, status, now=challenge.expires_at) is False
+    # overdue but not yet swept by expire_due: real clock
+    overdue = await repo.create(SUPERGROUP, BIG_USER + 1, ttl=timedelta(seconds=-1))
+    await session.commit()
+    assert await repo.resolve(overdue.id, status) is False
+
+    # still pending, so it can be expired
+    assert await repo.resolve(challenge.id, CaptchaStatus.EXPIRED) is True
+    assert await repo.resolve(overdue.id, CaptchaStatus.EXPIRED) is True
+    await session.commit()
+    session.expunge_all()
+    for cid in (challenge.id, overdue.id):
+        loaded = await repo.get(cid)
+        assert loaded is not None
+        assert loaded.status is CaptchaStatus.EXPIRED
+
+
+async def test_captcha_can_pass_just_before_expiry(session: AsyncSession) -> None:
+    repo = CaptchaChallengeRepository(session)
+    challenge = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    await session.commit()
+    just_before = challenge.expires_at - timedelta(microseconds=1)
+    assert await repo.resolve(challenge.id, CaptchaStatus.PASSED, now=just_before) is True
+
+
+async def test_captcha_resolve_to_pending_rejected(session: AsyncSession) -> None:
+    repo = CaptchaChallengeRepository(session)
+    challenge = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    with pytest.raises(ValueError, match="PENDING"):
+        await repo.resolve(challenge.id, CaptchaStatus.PENDING)
+
+
 async def test_captcha_expire_due(session: AsyncSession) -> None:
     repo = CaptchaChallengeRepository(session)
     old = await repo.create(SUPERGROUP, 1, ttl=timedelta(minutes=5))
