@@ -65,6 +65,13 @@ COMMAND_TOTAL = Counter(
     namespace=NAMESPACE,
     registry=REGISTRY,
 )
+WHOIS_LOOKUP_TOTAL = Counter(
+    "whois_lookup_total",
+    "whois lookup outcomes: per provider ok/error, cache hit, all providers exhausted.",
+    ["provider", "result"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
 
 
 def count_update(update_type: str) -> None:
@@ -73,6 +80,10 @@ def count_update(update_type: str) -> None:
 
 def count_command(command: str, result: str = "ok") -> None:
     COMMAND_TOTAL.labels(command=command, result=result).inc()
+
+
+def count_whois_lookup(provider: str, result: str) -> None:
+    WHOIS_LOOKUP_TOTAL.labels(provider=provider, result=result).inc()
 
 
 type _AsyncFn[**P, R] = Callable[P, Awaitable[R]]

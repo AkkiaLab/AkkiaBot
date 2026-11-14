@@ -16,6 +16,7 @@ from akkiabot_core.observability import (
     configure_logging,
     count_command,
     count_update,
+    count_whois_lookup,
     get_log_context,
     init_sentry,
     log_context,
@@ -216,6 +217,12 @@ def test_counters_and_exposition() -> None:
     assert 'akkiabot_command_total{command="unit",result="ok"}' in text
     assert "akkiabot_updates_total" in text
     assert "process_cpu_seconds_total" in text or "python_info" in text
+
+
+def test_whois_lookup_counter() -> None:
+    before = sample("whois_lookup_total", provider="ipinfo", result="ok")
+    count_whois_lookup("ipinfo", "ok")
+    assert sample("whois_lookup_total", provider="ipinfo", result="ok") == before + 1
 
 
 # ------------------------------------------------------------------- sentry

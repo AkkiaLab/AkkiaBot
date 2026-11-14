@@ -9,6 +9,7 @@ from akkiabot_core.observability.metrics import (
     REGISTRY,
     count_command,
     count_update,
+    count_whois_lookup,
     render_metrics,
     track_handler,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "configure_logging",
     "count_command",
     "count_update",
+    "count_whois_lookup",
     "get_log_context",
     "init_sentry",
     "log_context",

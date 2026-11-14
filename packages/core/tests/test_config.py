@@ -27,6 +27,7 @@ def test_loads_groups_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE", "0.25")
     monkeypatch.setenv("WEBAPP_INIT_DATA_MAX_AGE", "600")
     monkeypatch.setenv("LLM_MODEL", "doubao-pro")
+    monkeypatch.setenv("WHOIS_RATE_LIMIT", "3")
 
     s = load_settings()
 
@@ -39,6 +40,8 @@ def test_loads_groups_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.observability.sentry_dsn is None
     assert s.webapp.init_data_max_age == 600
     assert s.llm.model == "doubao-pro"
+    assert s.whois.rate_limit == 3
+    assert s.whois.ipinfo_token is None
 
 
 @pytest.mark.usefixtures("required_env")
@@ -86,6 +89,8 @@ def test_blank_optional_value_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
         ("OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE", "1.5"),
         ("OBSERVABILITY_LOG_LEVEL", "verbose"),
         ("WEBAPP_INIT_DATA_MAX_AGE", "0"),
+        ("WHOIS_RATE_LIMIT", "0"),
+        ("WHOIS_TIMEOUT", "-1"),
         ("WEBAPP_URL", "not a url"),
     ],
 )
@@ -100,11 +105,12 @@ def test_invalid_values_rejected(monkeypatch: pytest.MonkeyPatch, env: str, valu
 def test_secrets_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_API_KEY", "sk-llm-key")
     monkeypatch.setenv("TURNSTILE_SECRET_KEY", "ts-secret")
+    monkeypatch.setenv("WHOIS_IPINFO_TOKEN", "ipinfo-secret")
     monkeypatch.setenv("OBSERVABILITY_SENTRY_DSN", "https://pub@o1.ingest.sentry.io/1")
     s = load_settings()
 
     rendered = repr(s) + str(s) + str(s.redacted())
-    for secret in (TOKEN, "s3cr3t-pw", "sk-llm-key", "ts-secret", "pub@o1"):
+    for secret in (TOKEN, "s3cr3t-pw", "sk-llm-key", "ts-secret", "ipinfo-secret", "pub@o1"):
         assert secret not in rendered
     assert s.redacted()["db"]["url"] == "postgresql+asyncpg://akkiabot:***@db:5432/akkiabot"
 

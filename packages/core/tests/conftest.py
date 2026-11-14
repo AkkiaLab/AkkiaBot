@@ -35,6 +35,7 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
             "REDIS",
             "LLM",
             "TURNSTILE",
+            "WHOIS",
             "WEBAPP",
             "CORS",
             "OBSERVABILITY",
