@@ -1,3 +1,9 @@
+import logging
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
+from pathlib import Path
+
 import pytest
 
 import akkiabot_antispam
@@ -5,6 +11,15 @@ import akkiabot_core
 import akkiabot_server
 import akkiabot_whois
 from akkiabot_server.main import main
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging() -> Iterator[None]:
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)
 
 
 def test_server_depends_on_all_packages() -> None:
@@ -24,3 +39,32 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--version"])
     assert exc.value.code == 0
     assert capsys.readouterr().out == "akkiabot 0.1.0\n"
+
+
+def test_migrate_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "bot.db"
+    monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{db}")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)  # not needed for migrate
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["migrate"]) == 0
+
+    with closing(sqlite3.connect(db)) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert {"chat", "chat_member", "message_log", "captcha_challenge"} <= tables
+    assert version == ("0001",)
+    assert '"message": "migrations complete"' in capsys.readouterr().out
+
+
+def test_migrate_rejects_bad_db_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DB_URL", "mysql://root:hunter2@db/bot")
+    monkeypatch.chdir(tmp_path)
+    assert main(["migrate"]) == 2
+    out = capsys.readouterr().out
+    assert "invalid database configuration" in out
+    assert "hunter2" not in out
