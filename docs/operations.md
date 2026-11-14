@@ -93,6 +93,16 @@ flowchart LR
 | `TELEGRAM_START_PAYLOAD_TTL` | `600` | 一次性 `/start` 深链 payload 的有效秒数。 |
 | `DB_ECHO` | `false` | 打印 SQL，仅用于排障，生产保持关闭。 |
 | `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` | 空 | OpenAI 兼容接口，反垃圾使用（M5）。 |
+| `ANTISPAM_TIMEOUT` | `45` | 单条消息判定的总耗时上限（秒）；超时则放行该消息。 |
+| `ANTISPAM_STRUCTURED_OUTPUT` | `auto` | `auto`：使用 JSON 结构化输出，接口不支持时退回 0/1 回答；`json_schema`：只用结构化输出，不退回；`off`：只用 0/1 回答。 |
+| `ANTISPAM_PROMPT_FILE` | 空 | 替换内置基础提示词的 UTF-8 文件（输出格式说明会自动追加）。这是容器内路径，使用时需要在 compose 中把文件挂载进 app 容器。 |
+| `ANTISPAM_PROMPT_VERSION` | 空 | `ANTISPAM_PROMPT_FILE` 的版本标签，默认为 `custom-<哈希>`。 |
+| `ANTISPAM_EXEMPT_MESSAGE_COUNT` | `3` | 已记录消息数超过该值的成员不再检测。 |
+| `ANTISPAM_PURGE_DELAY` | `5` | 判定为垃圾后，等待多少秒再删除该成员已记录的历史消息。 |
+| `ANTISPAM_NOTICE_TTL` | `60` | “已删除垃圾消息”提示在多少秒后自动删除。 |
+| `ANTISPAM_REPORT_RATE_LIMIT`、`ANTISPAM_REPORT_RATE_WINDOW` | `3`、`300` | 普通成员在 `ANTISPAM_REPORT_RATE_WINDOW` 秒内最多发起 `ANTISPAM_REPORT_RATE_LIMIT` 次 `/spam` 举报。 |
+| `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | 空 | Langfuse LLM 调用追踪；两个都设置时才启用。 |
+| `LANGFUSE_HOST` | 空 | Langfuse 地址；为空时使用 Langfuse Cloud（EU）。 |
 | `WHOIS_IPINFO_TOKEN` | 空 | ipinfo token；为空时 `/ip` 只使用 ip-api。 |
 | `WHOIS_TIMEOUT` | `5` | 单次查询超时（秒）。 |
 | `WHOIS_CACHE_TTL`、`WHOIS_CACHE_SIZE` | `3600`、`1024` | 进程内查询缓存的秒数和条数。 |
@@ -116,7 +126,7 @@ flowchart LR
 
 ### 4.1 前置条件
 
-- Linux 服务器（x86_64），可以访问 `ghcr.io`、`api.telegram.org` 和 Cloudflare。
+- Linux 服务器（x86_64），出站可以访问 `ghcr.io`、`api.telegram.org`（TCP 443）和 Cloudflare 隧道边缘（TCP 7844），完整列表见 §7。
 - Docker Engine 和 Compose 插件 v2.24 或更高版本：`docker compose version`。
 - 执行部署的用户能运行 docker（属于 `docker` 组，或者使用 root）。
 - 本环境的 Cloudflare tunnel token（§7）。
@@ -229,7 +239,7 @@ docker compose up -d --wait
 | `up` 报 `required variable ... is missing a value` | `.env` 中缺少该项，按 §3.1 填写。 |
 | `migrate` 退出码非 0 | `docker compose logs migrate`；常见原因是数据库密码与已初始化的卷不一致。 |
 | app 不健康 | `docker compose logs app`。`invalid configuration` 表示 `app.env` 缺项或格式错误；`/readyz` 返回 503 时，`checks` 字段会标出不可用的依赖。 |
-| cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。日志中的 `Registered tunnel connection` 应带 `protocol=http2`；反复出现 `Connection terminated` 时，检查出站 TCP 443 是否稳定。 |
+| cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。日志中的 `Registered tunnel connection` 应带 `protocol=http2`；反复出现 `Connection terminated` 时，检查到 Cloudflare 边缘的出站 TCP 7844 是否被防火墙拦截或不稳定（见 §7）。 |
 | bot 不回复，日志有 `Conflict: terminated by other getUpdates request` | 同一个 token 有另一个进程在拉取（Go 版 core 或另一套环境），停掉其中一个。 |
 
 常用命令：`docker compose logs -f app`、`docker compose restart app`、`docker compose down`（停止，保留数据卷）。**不要执行 `docker compose down -v`**，它会删除数据库卷。
@@ -284,7 +294,18 @@ Mini App 和 API 不同源，后端通过 `CORS_ALLOW_ORIGINS` 放行 `https://b
 3. Public Hostname 只添加一条：子域名 `bot-api`（预发布为 `bot-api-staging`），域名 `akkia.moe`，类型 `HTTP`，URL 为 `app:8000`。Cloudflare 会自动创建对应的 CNAME 记录。
 4. **不要**添加指向 `app:9464` 或其他服务的规则。
 
-compose 中的 cloudflared 固定使用 HTTP/2（TCP 443）连接 Cloudflare（`TUNNEL_TRANSPORT_PROTOCOL=http2`），不使用默认的 QUIC（UDP 7844）：预发布主机上 QUIC 连接多次超时断开，健康检查随之反复失败。服务器只需要允许出站 TCP 443。
+compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANSPORT_PROTOCOL=http2`），不使用默认的 QUIC：预发布主机上 QUIC 连接多次超时断开，健康检查随之反复失败。两种协议的隧道连接都使用 **7844** 端口，区别只是 TCP 或 UDP（见 [Cloudflare 防火墙说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)）。
+
+服务器需要的出站流量：
+
+| 用途 | 目标 | 端口 |
+| --- | --- | --- |
+| 隧道连接（HTTP/2） | Cloudflare 边缘 `region1.v2.argotunnel.com`、`region2.v2.argotunnel.com` | **TCP 7844** |
+| cloudflared 的 API 调用（注册、更新检查等） | `api.cloudflare.com`、`update.argotunnel.com` | TCP 443 |
+| Telegram Bot API、ipinfo / ip-api、Turnstile 校验、Sentry 等 | 各服务的 HTTPS 地址 | TCP 443 |
+| 拉取镜像 | `ghcr.io`、Docker Hub | TCP 443 |
+
+只放行 TCP 443 时，隧道无法建立。如果日后改回 QUIC，还需要放行 UDP 7844。
 
 ## 8. 预发布环境
 
