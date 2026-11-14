@@ -41,6 +41,7 @@ just dev   # 启动 postgres / redis 和 Vite 开发服务器
 
 - `master` 推送（改动涉及前端时）或手动触发：GitHub 环境 `webapp-production`，以 `--branch=master` 上传，即 Pages 生产部署，`bot.akkia.moe` 随之更新；
 - PR：GitHub 环境 `webapp-preview`，以 PR 分支名上传，得到预览地址（`<分支>.<项目>.pages.dev`），在 PR 时间线的 “View deployment” 中打开；
+- master 推送和手动触发还会用 `webapp-preview` 环境（预发布 API、staging Turnstile）的配置再构建一份，上传到固定别名 `staging.akkiabot-webapp.pages.dev`，作为预发布 bot 的 Mini App 地址（`deploy/staging/app.env.tpl` 中的 `WEBAPP_URL` / `CORS_ALLOW_ORIGINS`）；
 - 当前环境没有 `CLOUDFLARE_API_TOKEN`（尚未配置，或来自 fork 的 PR）时只构建和检查，跳过上传；有 token 但缺少下列变量时失败。
 
 GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，见 BOT-4 中负责人的决定）：

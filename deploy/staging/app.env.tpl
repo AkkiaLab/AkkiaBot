@@ -17,9 +17,11 @@ TELEGRAM_TEST_ENVIRONMENT=true
 # --- whois (/ip)
 WHOIS_IPINFO_TOKEN=op://AkkiaBot/staging-services/ipinfo_token
 
-# --- captcha / Mini App (filled in once M6/M7 land; staging preview of the webapp)
-WEBAPP_URL=
-CORS_ALLOW_ORIGINS=
+# --- captcha / Mini App: the staging build of the webapp, published to the
+# fixed Pages alias by .github/workflows/webapp-deploy.yml (docs/webapp.md)
+TURNSTILE_SECRET_KEY=op://AkkiaBot/staging-turnstile/secret_key
+WEBAPP_URL=https://staging.akkiabot-webapp.pages.dev
+CORS_ALLOW_ORIGINS=https://staging.akkiabot-webapp.pages.dev
 
 # --- observability
 OBSERVABILITY_LOG_LEVEL=INFO
