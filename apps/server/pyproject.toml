@@ -1,0 +1,22 @@
+[project]
+name = "akkiabot-server"
+version = "0.1.0"
+description = "AkkiaBot 后端服务：Telegram 机器人运行时与 HTTP API"
+requires-python = ">=3.13"
+dependencies = [
+  "akkiabot-core",
+  "akkiabot-antispam",
+  "akkiabot-whois",
+]
+
+[project.scripts]
+akkiabot = "akkiabot_server.main:main"
+
+[tool.uv.sources]
+akkiabot-core = { workspace = true }
+akkiabot-antispam = { workspace = true }
+akkiabot-whois = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.9,<1"]
+build-backend = "uv_build"
