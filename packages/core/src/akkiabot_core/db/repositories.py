@@ -255,6 +255,42 @@ class CaptchaChallengeRepository:
             .limit(1)
         )
 
+    async def list_pending(self, chat_id: int, user_id: int) -> Sequence[CaptchaChallenge]:
+        """Every pending challenge of the member, oldest first."""
+        result = await self.session.scalars(
+            select(CaptchaChallenge)
+            .where(
+                CaptchaChallenge.chat_id == chat_id,
+                CaptchaChallenge.user_id == user_id,
+                CaptchaChallenge.status == CaptchaStatus.PENDING,
+            )
+            .order_by(CaptchaChallenge.created_at)
+        )
+        return result.all()
+
+    async def set_group_message(self, challenge_id: uuid.UUID, message_id: int) -> None:
+        """Remember the group prompt so it can be deleted once the challenge ends."""
+        await self.session.execute(
+            update(CaptchaChallenge)
+            .where(CaptchaChallenge.id == challenge_id)
+            .values(group_message_id=message_id)
+        )
+
+    async def reopen(self, challenge_id: uuid.UUID, *, now: datetime | None = None) -> bool:
+        """Undo a ``PASSED`` claim (the follow-up Telegram call failed) so the
+        user can retry. Only while the challenge has not expired."""
+        result = await self.session.execute(
+            update(CaptchaChallenge)
+            .where(
+                CaptchaChallenge.id == challenge_id,
+                CaptchaChallenge.status == CaptchaStatus.PASSED,
+                CaptchaChallenge.expires_at > (now or utcnow()),
+            )
+            .values(status=CaptchaStatus.PENDING)
+        )
+        assert isinstance(result, CursorResult)  # noqa: S101
+        return result.rowcount == 1
+
     async def resolve(
         self, challenge_id: uuid.UUID, status: CaptchaStatus, *, now: datetime | None = None
     ) -> bool:

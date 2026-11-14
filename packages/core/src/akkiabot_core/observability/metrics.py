@@ -87,6 +87,21 @@ TELEGRAM_API_ERRORS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+CAPTCHA_TOTAL = Counter(
+    "captcha_total",
+    "Join captcha outcomes: passed, timeout, or failed (a rejected verification attempt).",
+    ["result"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+CAPTCHA_DURATION_SECONDS = Histogram(
+    "captcha_duration_seconds",
+    "Time from joining (challenge created) to passing the captcha.",
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+    buckets=(5, 10, 20, 30, 45, 60, 90, 120, 180, 240, 300, 600),
+)
+
 
 def count_update(update_type: str) -> None:
     UPDATES_TOTAL.labels(type=update_type).inc()
@@ -108,6 +123,15 @@ def count_moderation_action(action: str, amount: int = 1) -> None:
 
 def count_telegram_api_error(method: str) -> None:
     TELEGRAM_API_ERRORS_TOTAL.labels(method=method).inc()
+
+
+def count_captcha(result: str) -> None:
+    """``result`` is ``passed`` / ``timeout`` / ``failed``."""
+    CAPTCHA_TOTAL.labels(result=result).inc()
+
+
+def observe_captcha_duration(seconds: float) -> None:
+    CAPTCHA_DURATION_SECONDS.observe(max(seconds, 0.0))
 
 
 type _AsyncFn[**P, R] = Callable[P, Awaitable[R]]

@@ -7,11 +7,13 @@ from akkiabot_core.observability.context import get_log_context, log_context, ne
 from akkiabot_core.observability.logging import configure_logging
 from akkiabot_core.observability.metrics import (
     REGISTRY,
+    count_captcha,
     count_command,
     count_moderation_action,
     count_telegram_api_error,
     count_update,
     count_whois_lookup,
+    observe_captcha_duration,
     render_metrics,
     track_handler,
 )
@@ -31,6 +33,7 @@ def setup_observability(
 __all__ = [
     "REGISTRY",
     "configure_logging",
+    "count_captcha",
     "count_command",
     "count_moderation_action",
     "count_telegram_api_error",
@@ -40,6 +43,7 @@ __all__ = [
     "init_sentry",
     "log_context",
     "new_trace_id",
+    "observe_captcha_duration",
     "render_metrics",
     "setup_observability",
     "track_handler",

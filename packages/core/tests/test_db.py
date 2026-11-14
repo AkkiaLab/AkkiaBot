@@ -312,3 +312,32 @@ async def test_naive_datetime_rejected(session: AsyncSession) -> None:
             user_id=1,
             created_at=datetime(2026, 1, 1),
         )
+
+
+async def test_captcha_list_pending_and_group_message(session: AsyncSession) -> None:
+    repo = CaptchaChallengeRepository(session)
+    first = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    second = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    other = await repo.create(SUPERGROUP, BIG_USER + 1, ttl=timedelta(minutes=5))
+    await repo.set_group_message(second.id, 4242)
+    assert await repo.resolve(first.id, CaptchaStatus.EXPIRED) is True
+    await session.commit()
+    session.expunge_all()
+
+    pending = await repo.list_pending(SUPERGROUP, BIG_USER)
+    assert [c.id for c in pending] == [second.id]
+    assert pending[0].group_message_id == 4242
+    assert [c.id for c in await repo.list_pending(SUPERGROUP, BIG_USER + 1)] == [other.id]
+
+
+async def test_captcha_reopen_only_unexpired_passed(session: AsyncSession) -> None:
+    repo = CaptchaChallengeRepository(session)
+    challenge = await repo.create(SUPERGROUP, BIG_USER, ttl=timedelta(minutes=5))
+    await session.commit()
+
+    assert await repo.reopen(challenge.id) is False  # still pending: nothing to undo
+    assert await repo.resolve(challenge.id, CaptchaStatus.PASSED) is True
+    assert await repo.reopen(challenge.id, now=challenge.expires_at) is False  # too late
+    assert await repo.reopen(challenge.id) is True
+    assert await repo.resolve(challenge.id, CaptchaStatus.PASSED) is True  # can be retried
+    await session.commit()

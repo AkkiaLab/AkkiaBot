@@ -14,6 +14,7 @@ from akkiabot_core.config import ObservabilitySettings
 from akkiabot_core.observability import (
     REGISTRY,
     configure_logging,
+    count_captcha,
     count_command,
     count_moderation_action,
     count_telegram_api_error,
@@ -23,6 +24,7 @@ from akkiabot_core.observability import (
     init_sentry,
     log_context,
     new_trace_id,
+    observe_captcha_duration,
     render_metrics,
     setup_observability,
     track_handler,
@@ -243,6 +245,19 @@ def test_moderation_and_api_error_counters() -> None:
     errors = sample("telegram_api_errors_total", method="deleteMessages")
     count_telegram_api_error("deleteMessages")
     assert sample("telegram_api_errors_total", method="deleteMessages") == errors + 1
+
+
+def test_captcha_metrics() -> None:
+    passed = sample("captcha_total", result="passed")
+    count = sample("captcha_duration_seconds_count")
+    total = sample("captcha_duration_seconds_sum")
+    count_captcha("passed")
+    observe_captcha_duration(12.5)
+    observe_captcha_duration(-1)  # clock skew never records a negative duration
+    assert sample("captcha_total", result="passed") == passed + 1
+    assert sample("captcha_duration_seconds_count") == count + 2
+    assert sample("captcha_duration_seconds_sum") == total + 12.5
+    assert sample("captcha_duration_seconds_bucket", le="20.0") >= 1
 
 
 # ------------------------------------------------------------------- sentry
