@@ -12,6 +12,7 @@ from akkiabot_server.runtime import Runtime
 from akkiabot_server.services.chat_settings import Toggle
 from akkiabot_server.testing import (
     BOT_USER,
+    ApiError,
     FakeBotApi,
     UpdateFactory,
     member_responder,
@@ -326,3 +327,71 @@ async def test_warn_ban_failure_keeps_count(
         member = await ChatMemberRepository(session).get(CHAT, TARGET_ID)
         assert member is not None
         assert (member.warn_count, member.restriction) == (1, Restriction.NONE)
+
+
+# ------------------------------------------- target lookup failures (fail closed)
+
+
+def _flaky_target(table: dict[int, dict[str, Any]], error: ApiError) -> Any:
+    """``getChatMember`` that works for everyone except the target."""
+    known = member_responder(table)
+
+    def respond(params: dict[str, Any]) -> Any:
+        if int(params["user_id"]) == OTHER_ADMIN_ID:
+            raise error
+        return known(params)
+
+    return respond
+
+
+LOOKUP_ERRORS = {
+    "rate_limited": ApiError("Too Many Requests: retry after 5", status=429, retry_after=5),
+    "api_error": ApiError("Internal Server Error", status=500),
+    "bad_request": ApiError("Bad Request: user not found"),
+}
+
+
+# PTB itself warns (retry_after will become a timedelta) when it builds RetryAfter.
+@pytest.mark.filterwarnings("ignore::telegram.warnings.PTBDeprecationWarning")
+@pytest.mark.parametrize("command", ["/ban", "/warn"])
+@pytest.mark.parametrize("error", list(LOOKUP_ERRORS))
+async def test_unknown_target_rights_stop_the_action(
+    runtime: Runtime,
+    api: FakeBotApi,
+    group: Group,
+    members: dict[int, dict[str, Any]],
+    command: str,
+    error: str,
+) -> None:
+    # The target is really an admin; if its lookup fails we must not treat it as a member.
+    await _enable_warn(runtime, group)
+    async with session_scope(runtime.session_factory) as session:
+        await MessageLogRepository(session).add(CHAT, 777, user_id=OTHER_ADMIN_ID)
+    api.respond("getChatMember", _flaky_target(members, LOOKUP_ERRORS[error]))
+    api.clear()
+    failed = metric_value("akkiabot_command_total", command=command[1:], result="failed")
+
+    await runtime.application.process_update(
+        group.command(command, by=OWNER_ID, reply_to=group.said(OTHER_ADMIN_ID))
+    )
+
+    assert api.sent_texts() == ["获取成员信息失败，请稍后再试。"]
+    assert api.calls_to("banChatMember") == []
+    assert api.calls_to("deleteMessages") == []
+    assert metric_value("akkiabot_command_total", command=command[1:], result="failed") == (
+        failed + 1
+    )
+    async with session_scope(runtime.session_factory) as session:
+        assert await ChatMemberRepository(session).get(CHAT, OTHER_ADMIN_ID) is None
+        assert await MessageLogRepository(session).list_message_ids(CHAT, OTHER_ADMIN_ID) == [777]
+
+
+async def test_target_who_left_can_still_be_banned(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    # Telegram reports departed users explicitly as "left": that is a known, non-admin state.
+    del members[TARGET_ID]
+    await runtime.application.process_update(
+        group.command("/ban", by=OWNER_ID, reply_to=group.said(TARGET_ID))
+    )
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]

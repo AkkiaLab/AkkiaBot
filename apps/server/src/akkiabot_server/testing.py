@@ -46,10 +46,14 @@ class ApiCall:
 class ApiError(Exception):
     """Raise (or return) from a responder to make the Bot API call fail."""
 
-    def __init__(self, description: str, *, status: int = 400) -> None:
+    def __init__(
+        self, description: str, *, status: int = 400, retry_after: int | None = None
+    ) -> None:
         super().__init__(description)
         self.description = description
         self.status = status
+        self.retry_after = retry_after
+        """Sent as ``parameters.retry_after`` (PTB then raises ``RetryAfter``)."""
 
 
 type Responder = Callable[[dict[str, Any]], Any]
@@ -129,7 +133,13 @@ class FakeBotApi(BaseRequest):
             else:
                 result = True  # deleteMessage, setMyCommands, setWebhook…
         except ApiError as exc:
-            body = {"ok": False, "error_code": exc.status, "description": exc.description}
+            body: dict[str, Any] = {
+                "ok": False,
+                "error_code": exc.status,
+                "description": exc.description,
+            }
+            if exc.retry_after is not None:
+                body["parameters"] = {"retry_after": exc.retry_after}
             return exc.status, json.dumps(body).encode()
         return 200, json.dumps({"ok": True, "result": result}).encode()
 

@@ -16,8 +16,6 @@ from akkiabot_server.bot.types import Context
 from akkiabot_server.services.chats import GROUP_TYPES
 from akkiabot_server.services.moderation import (
     Authorization,
-    MemberInfo,
-    MemberRole,
     ModerationApiError,
     RateLimitedError,
     WarnDisabledError,
@@ -83,11 +81,13 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> _
     api = PtbModerationApi(context.bot)
     try:
         actor_info = await api.get_member(chat.id, actor.id)
+        # Users who left are reported explicitly (``left`` / ``kicked``). Any error
+        # means the target's rights are unknown, so never assume "plain member".
+        target_info = await api.get_member(chat.id, target.id)
     except (ModerationApiError, RateLimitedError):
-        logger.warning("moderation: actor lookup failed", exc_info=True)
+        logger.warning("moderation: member lookup failed", exc_info=True)
         await message.reply_text(LOOKUP_FAILED)
         return "failed"
-    target_info = await _target_info(api, chat.id, target.id)
 
     match authorize(actor_info, target_info):
         case Authorization.ACTOR_FORBIDDEN:
@@ -100,15 +100,6 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> _
             return "protected"
         case Authorization.ALLOWED:
             return _Request(message, chat.id, actor, target, target_message)
-
-
-async def _target_info(api: PtbModerationApi, chat_id: int, user_id: int) -> MemberInfo:
-    try:
-        return await api.get_member(chat_id, user_id)
-    except (ModerationApiError, RateLimitedError):
-        # Typically the user already left; they cannot be an admin then.
-        logger.warning("moderation: target lookup failed, treating as member", exc_info=True)
-        return MemberInfo(MemberRole.MEMBER)
 
 
 def mention(user: User) -> str:
