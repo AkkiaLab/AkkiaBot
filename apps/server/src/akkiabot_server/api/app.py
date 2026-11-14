@@ -1,4 +1,4 @@
-"""FastAPI application: health probes and the Telegram webhook endpoint."""
+"""FastAPI application: health probes, captcha API and the Telegram webhook."""
 
 from __future__ import annotations
 
@@ -9,15 +9,29 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from telegram import Update
 
 from akkiabot_server import __version__
+from akkiabot_server.api import captcha, health
 from akkiabot_server.runtime import WEBHOOK_PATH, Runtime
 
 logger = logging.getLogger(__name__)
 
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"  # noqa: S105 - header name
+
+
+def _base_app(**kwargs: Any) -> FastAPI:
+    """Routes shared by the real app and the OpenAPI export."""
+    app = FastAPI(title="AkkiaBot", version=__version__, **kwargs)
+    app.include_router(health.router)
+    app.include_router(captcha.router)
+    return app
+
+
+def openapi_document() -> dict[str, Any]:
+    """The public API contract (input of ``just gen-api``); needs no settings."""
+    return _base_app().openapi()
 
 
 def create_app(runtime: Runtime) -> FastAPI:
@@ -29,21 +43,19 @@ def create_app(runtime: Runtime) -> FastAPI:
         finally:
             await runtime.stop()
 
-    app = FastAPI(title="AkkiaBot", version=__version__, lifespan=lifespan)
+    app = _base_app(lifespan=lifespan)
+    app.state.runtime = runtime
 
-    @app.get("/healthz", tags=["health"])
-    async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
-        """Liveness: the process is up and serving HTTP."""
-        return {"status": "ok"}
-
-    @app.get("/readyz", tags=["health"])
-    async def readyz() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """Readiness: database and cache are reachable."""
-        checks = await runtime.readiness()
-        ok = all(checks.values())
-        return JSONResponse(
-            {"status": "ok" if ok else "unavailable", "checks": checks},
-            status_code=status.HTTP_200_OK if ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+    origins = runtime.settings.cors.allow_origins
+    if origins:
+        # Only the configured Mini App origins (production: https://bot.akkia.moe).
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type"],
+            allow_credentials=False,
+            max_age=600,
         )
 
     telegram = runtime.settings.telegram
