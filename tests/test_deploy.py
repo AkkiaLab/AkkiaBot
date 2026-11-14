@@ -189,6 +189,13 @@ def test_staging_template_uses_test_bot_and_op_references() -> None:
         assert keys[key].startswith("op://AkkiaBot-Staging/"), key
 
 
+def test_staging_template_comments_have_no_references() -> None:
+    """``op inject`` resolves every reference, including ones inside comments."""
+    for line in (DEPLOY / "staging" / "app.env.tpl").read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            assert "op://" not in line, line
+
+
 def test_operations_documents_every_setting() -> None:
     text = OPERATIONS.read_text(encoding="utf-8")
     missing = sorted(name for name in _settings_env_names() if f"`{name}`" not in text)

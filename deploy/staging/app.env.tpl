@@ -4,7 +4,8 @@
 #
 #   umask 077 && op inject -i app.env.tpl -o app.env
 #
-# Only op:// paths and non-secret settings live here.
+# Only 1Password secret references and non-secret settings live here; keep
+# the reference prefix out of comments (op inject resolves it everywhere).
 
 # --- telegram: the test bot, Telegram test environment (/bot<token>/test/)
 TELEGRAM_BOT_TOKEN=op://AkkiaBot-Staging/runtime/bot_token

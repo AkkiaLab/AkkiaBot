@@ -333,4 +333,8 @@ uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e
 
 （`m2.message-log` 场景需要读取本地进程的日志，只在 `--serve` 下运行。）
 
+反过来，开发分支用 `just e2e`（带 `--serve`）验收时，预发布栈的 app 也在拉取同一个测试 bot 的更新，需要先在预发布目录执行 `docker compose stop app`，验收结束后再 `docker compose up -d --wait`。
+
+在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
+
 1Password 中的测试 bot token 更新后（例如重新执行 `just e2e-bootstrap-bot`），重新执行 `op inject` 和 `docker compose up -d --wait`。
