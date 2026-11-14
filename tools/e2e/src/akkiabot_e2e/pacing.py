@@ -102,6 +102,11 @@ class PacedAccount:
             self._label("create_supergroup"), lambda: self.inner.create_supergroup(title, about)
         )
 
+    async def chat_about(self, chat_id: int) -> str:
+        return await self.pacer.call(
+            self._label("chat_about"), lambda: self.inner.chat_about(chat_id)
+        )
+
     async def participant_role(self, chat_id: int, user_id: int) -> Role | None:
         return await self.pacer.call(
             self._label("participant_role"), lambda: self.inner.participant_role(chat_id, user_id)

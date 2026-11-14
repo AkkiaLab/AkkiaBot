@@ -53,6 +53,7 @@ class FakeChat:
     messages: dict[int, Msg] = field(default_factory=dict)
     banned: set[int] = field(default_factory=set)
     next_id: int = 1
+    about: str = ""
 
 
 def rendered(*parts: str | tuple[str]) -> tuple[str, tuple[Entity, ...]]:
@@ -394,7 +395,12 @@ class FakeAccount:
     async def create_supergroup(self, title: str, about: str) -> ChatRef:
         self._op("create_supergroup")
         chat = self.world.add_chat(title, self.user)
+        chat.about = about
         return ChatRef(chat.id, chat.title)
+
+    async def chat_about(self, chat_id: int) -> str:
+        self._op("chat_about")
+        return self._chat(chat_id).about
 
     async def participant_role(self, chat_id: int, user_id: int) -> Role | None:
         self._op("participant_role")
