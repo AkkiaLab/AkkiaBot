@@ -203,3 +203,47 @@ async def test_cleanup_job_is_scheduled_and_runs(runtime: Runtime) -> None:
 
     async with session_scope(runtime.session_factory) as session:
         assert await session.scalar(select(func.count()).select_from(MessageLog)) == 0
+
+
+async def test_chat_is_recreated_after_rolled_back_first_message(
+    runtime: Runtime, updates: UpdateFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a failed first transaction must not mark the chat as known."""
+    calls = 0
+    real_add = MessageLogRepository.add
+
+    async def flaky_add(self: MessageLogRepository, *args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("db hiccup")
+        await real_add(self, *args, **kwargs)
+
+    monkeypatch.setattr(MessageLogRepository, "add", flaky_add)
+    group = updates.group(GROUP_ID, "Flaky")
+    errors = metric_value("akkiabot_handler_errors_total", handler="record_message")
+
+    await runtime.application.process_update(updates.message("first", chat=group))
+    assert metric_value("akkiabot_handler_errors_total", handler="record_message") == errors + 1
+    assert await _chats(runtime) == []  # rolled back
+
+    await runtime.application.process_update(updates.message("second", chat=group))
+    assert [c.id for c in await _chats(runtime)] == [GROUP_ID]
+    assert len(await _logged(runtime)) == 1
+
+
+async def test_known_chat_skips_lookup(
+    runtime: Runtime, updates: UpdateFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await runtime.application.process_update(updates.message("first"))
+    lookups = 0
+    real_get = ChatRepository.get
+
+    async def counting_get(self: ChatRepository, chat_id: int) -> Any:
+        nonlocal lookups
+        lookups += 1
+        return await real_get(self, chat_id)
+
+    monkeypatch.setattr(ChatRepository, "get", counting_get)
+    await runtime.application.process_update(updates.message("second"))
+    assert lookups == 0

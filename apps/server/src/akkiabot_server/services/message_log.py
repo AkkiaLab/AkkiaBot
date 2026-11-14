@@ -49,13 +49,14 @@ class MessageRecorder:
     async def record(self, message: IncomingMessage) -> bool:
         """Store the message id and bump the sender's counters; returns whether
         anything was recorded."""
-        if message.chat_type in GROUP_TYPES:
-            async with session_scope(self._session_factory) as session:
-                await self._chats.ensure(
-                    session, message.chat_id, type=message.chat_type, title=message.chat_title
-                )
-                if not should_record(message):
-                    return False
+        if message.chat_type not in GROUP_TYPES:
+            return False
+        recorded = should_record(message)
+        async with session_scope(self._session_factory) as session:
+            await self._chats.ensure(
+                session, message.chat_id, type=message.chat_type, title=message.chat_title
+            )
+            if recorded:
                 assert message.sender_id is not None  # noqa: S101 - checked by should_record
                 await MessageLogRepository(session).add(
                     message.chat_id,
@@ -66,8 +67,9 @@ class MessageRecorder:
                 await ChatMemberRepository(session).record_message(
                     message.chat_id, message.sender_id, at=message.date
                 )
-            return True
-        return False
+        # Only after the commit succeeded: a rollback must not hide the chat.
+        self._chats.remember(message.chat_id)
+        return recorded
 
     async def cleanup(self, retention: timedelta, *, now: datetime | None = None) -> int:
         """Delete ``message_log`` rows older than ``retention``."""

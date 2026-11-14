@@ -16,7 +16,9 @@ GROUP_TYPES = frozenset({"group", "supergroup"})
 class ChatDirectory:
     """Writes a ``chat`` row the first time a group is seen.
 
-    Chat ids already known to this process skip the database entirely.
+    Chat ids already known to this process skip the database entirely. An id
+    only becomes "known" through :meth:`remember`, which callers invoke after
+    their transaction committed — a rolled-back insert must be retried.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -26,19 +28,26 @@ class ChatDirectory:
     async def ensure(
         self, session: AsyncSession, chat_id: int, *, type: str, title: str | None
     ) -> None:
+        """Insert the chat inside the caller's transaction if it is missing.
+
+        Call :meth:`remember` once that transaction has committed.
+        """
         if chat_id in self._known:
             return
         repo = ChatRepository(session)
         if await repo.get(chat_id) is None:
             await repo.upsert(chat_id, type=type, title=title)
             logger.info("new chat recorded", extra={"chat_type": type})
+
+    def remember(self, chat_id: int) -> None:
+        """Mark ``chat_id`` as persisted (only after a successful commit)."""
         self._known.add(chat_id)
 
     async def refresh(self, chat_id: int, *, type: str, title: str | None) -> None:
         """Insert or update type/title (bot membership changed, title changed…)."""
         async with session_scope(self._session_factory) as session:
             await ChatRepository(session).upsert(chat_id, type=type, title=title)
-        self._known.add(chat_id)
+        self.remember(chat_id)  # committed when session_scope exited
 
     async def settings(self, chat_id: int) -> ChatSettings:
         async with session_scope(self._session_factory) as session:
