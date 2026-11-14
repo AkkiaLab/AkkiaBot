@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import html
 import logging
 
@@ -193,7 +194,12 @@ async def handle_chat_member(update: Update, context: Context) -> None:
             extra={"target_user_id": user.id, "captcha": result.outcome.value},
         )
         if result.outcome is JoinOutcome.CHALLENGED and context.job_queue is not None:
-            context.job_queue.run_once(
+            # Schedule from an empty contextvars context: APScheduler re-arms its
+            # wakeup timer from the caller's context, so scheduling here would
+            # tag every later job-run log line with this update's chat_id /
+            # user_id / handler (and pollute filtering logs by chat_id).
+            contextvars.Context().run(
+                context.job_queue.run_once,
                 captcha_timeout,
                 when=deps.captcha.timeout + 1,
                 name=f"{TIMEOUT_JOB}:{result.challenge_id}",
