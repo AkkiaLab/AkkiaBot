@@ -133,6 +133,20 @@ class PacedAccount:
     async def leave(self, chat_id: int) -> int | None:
         return await self.pacer.call(self._label("leave"), lambda: self.inner.leave(chat_id))
 
+    async def is_banned(self, chat_id: int, user_id: int) -> bool:
+        return await self.pacer.call(
+            self._label("is_banned"), lambda: self.inner.is_banned(chat_id, user_id)
+        )
+
+    async def unban(self, chat_id: int, user_id: int) -> None:
+        await self.pacer.call(self._label("unban"), lambda: self.inner.unban(chat_id, user_id))
+
+    async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
+        await self.pacer.before_send()
+        return await self.pacer.call(
+            self._label("click"), lambda: self.inner.click(chat_id, message_id, data)
+        )
+
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
         await self.pacer.before_send()
         return await self.pacer.call(

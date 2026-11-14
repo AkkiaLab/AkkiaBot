@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 Role = Literal["creator", "admin", "member"]
 
 #: Admin rights the bot needs in the test group. ``delete_messages`` is used by
-#: M2 (service messages); ``ban_users`` is granted ahead of M4/M5 (ban / warn / spam).
+#: M2 (service messages); ``ban_users`` by M4 (/ban, /warn) and M5 (/spam).
 BOT_ADMIN_RIGHTS: frozenset[str] = frozenset({"delete_messages", "ban_users"})
 
 
@@ -43,6 +43,15 @@ class Entity:
 
 
 @dataclass(frozen=True, slots=True)
+class Button:
+    """An inline keyboard button: either a URL or a callback button."""
+
+    text: str
+    url: str | None = None
+    data: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Msg:
     id: int
     chat_id: int
@@ -52,6 +61,12 @@ class Msg:
     entities: tuple[Entity, ...] = field(default_factory=tuple)
     service: str | None = None
     """Service action name (e.g. ``"chat_joined_by_link"``); ``None`` for normal messages."""
+    buttons: tuple[Button, ...] = ()
+    """Inline keyboard buttons, row by row."""
+
+    def button(self, label: str) -> Button | None:
+        """The first button whose text contains ``label``."""
+        return next((b for b in self.buttons if label in b.text), None)
 
 
 def entity_text(text: str, entity: Entity) -> str:
@@ -100,7 +115,21 @@ class Account(Protocol):
         """Leave; returns the id of the resulting service message, if any."""
         ...
 
-    async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg: ...
+    async def is_banned(self, chat_id: int, user_id: int) -> bool:
+        """Whether ``user_id`` is in the chat's banned (kicked) list."""
+        ...
+
+    async def unban(self, chat_id: int, user_id: int) -> None:
+        """Lift a ban (the user can join again; they are not re-added)."""
+        ...
+
+    async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
+        """Send ``text``; for a private chat with a user or bot, ``chat_id`` is their user id."""
+        ...
+
+    async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
+        """Press a callback button; returns the bot's answer text (``None`` if none)."""
+        ...
 
     async def history(self, chat_id: int, *, min_id: int, limit: int = 50) -> list[Msg]:
         """Messages with ``id > min_id``, oldest first."""

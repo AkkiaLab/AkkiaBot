@@ -82,6 +82,10 @@ async def prepare_group(
         await admin.promote(chat_id, bot.id, current | BOT_ADMIN_RIGHTS)
         actions.append(f"授予 bot 管理员权限：{', '.join(sorted(BOT_ADMIN_RIGHTS))}")
 
+    if await admin.is_banned(chat_id, member_user.id):
+        # Left over by an interrupted M4 run (/warn, /ban ban the member, then restore it).
+        await admin.unban(chat_id, member_user.id)
+        actions.append("解除普通成员账号的封禁（上次运行中断时遗留）")
     if await member.find_chat(chat_id) is None:
         link = await admin.export_invite_link(chat_id)
         await member.join_by_link(link)

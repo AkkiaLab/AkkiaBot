@@ -31,9 +31,11 @@ from akkiabot_server.bot.commands import COMMANDS
 from akkiabot_server.bot.deps import BotDeps
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
+from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.chats import ChatDirectory
 from akkiabot_server.services.ip_lookup import build_ip_lookup
 from akkiabot_server.services.message_log import MessageRecorder
+from akkiabot_server.services.moderation import ModerationService
 from akkiabot_server.services.start_payload import StartPayloadStore
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class Runtime:
             redis_url = settings.redis.url
             cache = create_cache(redis_url.get_secret_value() if redis_url else None)
         chats = ChatDirectory(session_factory)
+        chat_settings = ChatSettingsService(session_factory, cache)
         http = httpx.AsyncClient(
             timeout=settings.whois.timeout,
             headers={"User-Agent": f"AkkiaBot/{__version__}"},
@@ -99,6 +102,8 @@ class Runtime:
             chats=chats,
             messages=MessageRecorder(session_factory, chats),
             ip_lookup=build_ip_lookup(settings.whois, http),
+            chat_settings=chat_settings,
+            moderation=ModerationService(session_factory, chat_settings),
         )
         application = build_application(
             deps,

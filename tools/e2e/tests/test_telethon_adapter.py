@@ -32,6 +32,40 @@ def test_message_conversion_keeps_reply_and_code_entities() -> None:
     assert code_spans(msg) == ["-1001234"]
 
 
+def test_inline_buttons() -> None:
+    # Seen live in the test environment (2026-11-14): KeyboardInlineButton(type=InlineButtonType*).
+    current = types.ReplyInlineMarkup(
+        rows=[
+            types.KeyboardInlineButtonRow(
+                buttons=[
+                    types.KeyboardInlineButton(
+                        text="go", type=types.InlineButtonTypeUrl(url="https://t.me/b?start=x")
+                    )
+                ]
+            ),
+            types.KeyboardInlineButtonRow(
+                buttons=[
+                    types.KeyboardInlineButton(
+                        text="✅ 警告", type=types.InlineButtonTypeCallback(data=b"cfg:-1:warn:0")
+                    )
+                ]
+            ),
+        ]
+    )
+    message = types.Message(
+        id=1, peer_id=types.PeerUser(5), date=NOW, message="menu", reply_markup=current
+    )
+    msg = _msg(5, message)
+    assert [(b.text, b.url, b.data) for b in msg.buttons] == [
+        ("go", "https://t.me/b?start=x", None),
+        ("✅ 警告", None, b"cfg:-1:warn:0"),
+    ]
+    assert msg.button("警告") == msg.buttons[1]
+    assert (
+        _msg(5, types.Message(id=2, peer_id=types.PeerUser(5), date=NOW, message="x")).buttons == ()
+    )
+
+
 def test_service_message_id_from_updates() -> None:
     service = types.MessageService(
         id=99,

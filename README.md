@@ -68,8 +68,10 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 - 指标：`/metrics` 只在独立端口 `OBSERVABILITY_METRICS_HOST:OBSERVABILITY_METRICS_PORT`（默认 `127.0.0.1:9464`）提供，不经公网 tunnel 暴露；容器内由 compose 内网访问时把 host 设为 `0.0.0.0` 且不要发布该端口。
 - 命令：`bot/commands/__init__.py` 中的 `COMMANDS` 是唯一的声明式列表，同时生成命令处理器、`set_my_commands` 菜单和 `/help` 文本。需要私聊深链的功能用 `StartPayloadStore.create()` 生成一次性 payload（基于 `Cache.pop`，默认 `TELEGRAM_START_PAYLOAD_TTL=600` 秒），并通过 `BotDeps.on_start(kind, handler)` 注册分发。
 - 群消息：记录 `message_log`（只存 ID）与成员发言计数；首次见到某个群时写入 `chat`；按群配置 `delete_service_messages`（默认开启）删除入群、退群、置顶等系统消息。`message_log` 由定时任务按 `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS`（默认 30 天）清理。
-- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
-- Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更）；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
+- 群配置：`services/chat_settings.py` 读写 `chat.settings`（可移植 JSON 列，`ChatSettings` 校验）；读取经共享缓存（5 分钟），写入提交后删除缓存项。`/config` 由群主或具有“封禁成员”权限的管理员在群内发起 → 一次性深链（绑定该群和该用户）→ 私聊中的 inline 开关（反垃圾、入群验证、警告、删除系统消息），每次点击都重新校验发起人在群内的权限。
+- 群管理：`/ban`、`/warn` 必须回复要处理的成员的消息使用，规则在 `services/moderation.py`：操作者须为群主或具有“封禁成员”权限的管理员，目标不能是群主或管理员，匿名管理员需关闭匿名。`/ban` 封禁后按 `message_log` 分批（每批 100 条、最多 4 个并发）删除该成员的历史消息，遇到 429 按 `retry_after` 退避重试；`/warn` 需先在 `/config` 开启，达到 `max_warn_count`（默认 3）后自动封禁、删除历史并清零。所有操作写入 `chat_member.restriction`（`admin_ban` / `warn_ban`）。
+- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
+- Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更、按钮回调），`member_responder()` 用来模拟 `getChatMember`；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
 
 ### 数据库与测试
 

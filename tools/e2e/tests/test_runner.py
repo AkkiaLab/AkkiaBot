@@ -62,7 +62,7 @@ async def test_first_run_creates_group_and_all_scenarios_pass(
 
     assert report.status == "passed", report.to_markdown(Redactor())
     assert set(statuses(report).values()) == {"passed"}
-    (chat,) = world.chats.values()
+    (chat,) = [c for c in world.chats.values() if c.id < 0]  # plus the private chat with the bot
     assert report.chat == {"id": chat.id, "title": config.chat_title, "created": True}
     assert chat.members == {ADMIN.id: "creator", BOT.id: "admin", MEMBER.id: "member"}
     assert chat.rights[BOT.id] == BOT_ADMIN_RIGHTS
@@ -264,6 +264,12 @@ def test_select_scenarios() -> None:
     assert [s.name for s in select_scenarios(["m3"])] == ["m3.ip", "m3.ip-reply"]
     assert [s.name for s in select_scenarios(["m2.help,m3.ip"])] == ["m2.help", "m3.ip"]
     assert select_scenarios(None)[-1].name == "m2.service-message"
+    assert [s.name for s in select_scenarios(["m4"])] == [
+        "m4.permissions",
+        "m4.config",
+        "m4.warn",
+        "m4.ban",
+    ]
     with pytest.raises(ValueError, match="m9"):
         select_scenarios(["m9"])
 
@@ -363,3 +369,81 @@ async def test_missing_service_message_id_is_not_a_pass(
     expected = "退群" if missing == "leave" else "入群"
     assert f"没有返回{expected}系统消息 id" in report.results[0].detail
     assert report.status == "failed"
+
+
+# ------------------------------------------------------------------ M4
+
+
+def _group_chat(world: FakeTelegram) -> int:
+    (chat,) = [c for c in world.chats.values() if c.id < 0]
+    return chat.id
+
+
+async def test_m4_scenarios_pass_and_restore_the_member(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
+    report = await run(world, config, scenarios=select_scenarios(["m4", "m2.help"]))
+    assert report.status == "passed", report.to_markdown(Redactor())
+    chat = world.chats[_group_chat(world)]
+    # Banned twice (warn limit, /ban) and restored each time, so later scenarios still work.
+    assert chat.members[MEMBER.id] == "member"
+    assert chat.banned == set()
+    assert world.calls.count("unban") == 2
+    assert world.bot is not None
+    assert world.bot.settings[chat.id]["warn"] is True
+
+
+async def test_m4_warn_enables_the_switch_when_run_alone(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
+    report = await run(world, config, scenarios=select_scenarios(["m4.warn"]))
+    assert statuses(report) == {"m4.warn": "passed"}, report.to_markdown(Redactor())
+
+
+@pytest.mark.parametrize(
+    ("knob", "value", "scenario", "detail"),
+    [
+        ("members_can_moderate", True, "m4.permissions", "普通成员 /config 应被拒绝"),
+        ("stale_menu", True, "m4.config", "菜单在"),
+        ("no_purge", True, "m4.ban", "只删除了 0 条消息"),
+        ("no_purge", True, "m4.warn", "没有被删除"),
+        ("no_ban", True, "m4.ban", "只删除了 0 条消息"),
+        ("no_ban", True, "m4.warn", "封禁列表"),
+        ("warn_limit", 2, "m4.permissions", None),  # a different limit is still fine
+    ],
+)
+async def test_m4_regressions_are_caught(
+    world: FakeTelegram,
+    config: E2EConfig,
+    knob: str,
+    value: object,
+    scenario: str,
+    detail: str | None,
+) -> None:
+    assert world.bot is not None
+    setattr(world.bot, knob, value)
+    report = await run(world, config, scenarios=select_scenarios([scenario]))
+    (result,) = report.results
+    if detail is None:
+        assert result.status == "passed", report.to_markdown(Redactor())
+        return
+    assert result.status == "failed", report.to_markdown(Redactor())
+    assert detail in (result.detail or "")
+    # Whatever failed, the member is back in the group.
+    chat = world.chats[_group_chat(world)]
+    assert chat.members.get(MEMBER.id) == "member"
+
+
+async def test_member_left_banned_by_an_interrupted_run_is_restored(world: FakeTelegram) -> None:
+    chat = world.add_chat("AkkiaBot E2E 自动验收群", ADMIN)
+    chat.members[BOT.id] = "admin"
+    chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
+    chat.banned.add(MEMBER.id)
+    config = load_config(live_env(E2E_ALLOWED_CHAT_IDS=str(chat.id)))
+
+    report = await run(world, config, allow_create=False, scenarios=select_scenarios(["m2.help"]))
+
+    assert report.status == "passed", report.to_markdown(Redactor())
+    assert any("解除普通成员账号的封禁" in step for step in report.setup)
+    assert chat.banned == set()
+    assert chat.members[MEMBER.id] == "member"
