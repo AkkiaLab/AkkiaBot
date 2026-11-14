@@ -262,4 +262,6 @@ def test_sentry_initialised_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["environment"] == "production"
     assert captured["traces_sample_rate"] == 0.1
     assert captured["release"] == "akkiabot@0.1.0"
-    assert captured["send_default_pii"] is False
+    # SDK defaults: no PII is collected.
+    assert "send_default_pii" not in captured
+    assert "data_collection" not in captured

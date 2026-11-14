@@ -71,6 +71,10 @@ async def test_is_cache(backend: Backend) -> None:
     assert isinstance(backend.cache, Cache)
 
 
+async def test_ping(backend: Backend) -> None:
+    assert await backend.cache.ping() is True
+
+
 async def test_get_missing(backend: Backend) -> None:
     assert await backend.cache.get("nope") is None
     assert await backend.cache.pop("nope") is None

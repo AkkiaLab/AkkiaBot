@@ -13,6 +13,7 @@ callers must log :meth:`Settings.redacted` / ``safe_url`` instead of raw values.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -39,6 +40,8 @@ _SETTINGS_CONFIG = SettingsConfigDict(
 )
 
 
+_WEBHOOK_SECRET = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
 # Supported (backend, async driver) pairs; validated together.
 _SUPPORTED_DB_DRIVERS = frozenset({("postgresql", "asyncpg"), ("sqlite", "aiosqlite")})
 
@@ -58,6 +61,45 @@ class _Group(BaseModel):
 class TelegramSettings(_Group):
     bot_token: SecretStr
     """Bot API token from @BotFather. Required."""
+    mode: Literal["polling", "webhook"] = "polling"
+    """How updates are received. ``webhook`` needs ``webhook_url`` and ``webhook_secret``."""
+    webhook_url: AnyHttpUrl | None = None
+    """Public base URL of the API, e.g. ``https://bot-api.akkia.moe``; the bot
+    registers ``<webhook_url>/telegram/webhook`` with Telegram."""
+    webhook_secret: SecretStr | None = None
+    """Sent back by Telegram in ``X-Telegram-Bot-Api-Secret-Token``
+    (1-256 chars of ``A-Z a-z 0-9 _ -``)."""
+
+    message_log_retention_days: int = Field(default=30, ge=1)
+    """``message_log`` rows older than this are removed by a periodic job."""
+    message_log_cleanup_interval: int = Field(default=3600, ge=60)
+    """Seconds between two retention cleanup runs."""
+    start_payload_ttl: int = Field(default=600, gt=0)
+    """Default lifetime (seconds) of a one-time ``/start`` deep-link payload."""
+
+    @field_validator("webhook_secret")
+    @classmethod
+    def _check_secret(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not _WEBHOOK_SECRET.fullmatch(value.get_secret_value()):
+            raise ValueError("webhook_secret 只能包含 A-Z a-z 0-9 _ -，长度 1-256")
+        return value
+
+    @model_validator(mode="after")
+    def _webhook_complete(self) -> TelegramSettings:
+        if self.mode == "webhook" and (self.webhook_url is None or self.webhook_secret is None):
+            raise ValueError(
+                "webhook 模式需要同时配置 TELEGRAM_WEBHOOK_URL 与 TELEGRAM_WEBHOOK_SECRET"
+            )
+        return self
+
+
+class ServerSettings(_Group):
+    # ``SERVER_*`` is a common prefix outside this app (``SERVER_SOFTWARE``,
+    # ``SERVER_NAME``…), so unknown keys are ignored instead of failing startup.
+    model_config = ConfigDict(extra="ignore", frozen=True, hide_input_in_errors=True)
+
+    host: str = "0.0.0.0"  # noqa: S104 - the API is meant to be reachable (behind the tunnel)
+    port: int = Field(default=8000, ge=1, le=65535)
 
 
 class DatabaseSettings(_Group):
@@ -122,6 +164,10 @@ class ObservabilitySettings(_Group):
     sentry_environment: str = "development"
     sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     metrics_enabled: bool = True
+    metrics_host: str = "127.0.0.1"
+    """Bind address of the separate ``/metrics`` listener. Keep it on a private
+    interface; it must never be routed through the public tunnel."""
+    metrics_port: int = Field(default=9464, ge=0, le=65535)
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -136,6 +182,7 @@ class Settings(BaseSettings):
 
     telegram: TelegramSettings
     db: DatabaseSettings
+    server: ServerSettings = Field(default_factory=ServerSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
     turnstile: TurnstileSettings = Field(default_factory=TurnstileSettings)
@@ -180,6 +227,7 @@ __all__ = [
     "LlmSettings",
     "ObservabilitySettings",
     "RedisSettings",
+    "ServerSettings",
     "Settings",
     "TelegramSettings",
     "TurnstileSettings",
