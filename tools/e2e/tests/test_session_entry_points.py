@@ -29,7 +29,7 @@ from akkiabot_e2e.transport import Account, UserInfo
 
 
 class FakeVault:
-    name = "AkkiaBot-Staging"
+    name = "AkkiaBot"
 
     def __init__(self) -> None:
         self.fields: dict[str, dict[str, str]] = {}
@@ -102,7 +102,8 @@ async def test_bootstrap_does_not_connect_while_lock_is_held(harness: Harness) -
     assert harness.connected == ["admin"]
     assert harness.accounts[0].closed
     assert re.search(r"@akkiabot_e2e_[0-9a-f]{6}_bot", message)
-    assert harness.vault.fields["runtime"] == {"bot_token": MOCK_BOT_TOKEN}
+    assert harness.vault.fields["e2e-bot"]["bot_token"] == MOCK_BOT_TOKEN
+    assert harness.vault.fields["e2e-bot"]["bot_username"].endswith("_bot")
     assert MOCK_BOT_TOKEN not in message
 
 
@@ -110,7 +111,7 @@ async def test_bootstrap_honours_short_flood_wait(harness: Harness) -> None:
     harness.world.floods["send"] = [5]
     await cli._bootstrap_bot(bootstrap_env(E2E_FLOOD_MAX_WAIT="30"), force=False)
     assert 6 in harness.slept  # waited flood seconds + 1, then retried
-    assert harness.vault.fields["telegram-e2e"]["bot_username"].endswith("_bot")
+    assert harness.vault.fields["e2e-bot"]["bot_username"].endswith("_bot")
 
 
 async def test_bootstrap_stops_on_long_flood_wait_and_writes_nothing(harness: Harness) -> None:

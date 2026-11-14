@@ -45,7 +45,7 @@ from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import Connect, run_acceptance
 from akkiabot_e2e.scenarios import SCENARIOS, select_scenarios
 from akkiabot_e2e.transport import UserInfo
-from akkiabot_e2e.vault import E2E_ITEM, RUNTIME_ITEM, FieldValue, Vault, shred_file
+from akkiabot_e2e.vault import BOT_ITEM, E2E_ITEM, FieldValue, Vault, shred_file
 
 EXIT_PASSED, EXIT_FAILED, EXIT_USAGE, EXIT_SKIPPED = 0, 1, 2, 77
 DEFAULT_ENV_FILE = Path("tools/e2e/staging.env.tpl")
@@ -222,8 +222,13 @@ async def _bootstrap_bot(env: Mapping[str, str], force: bool) -> str:
             finally:
                 await admin.close()
         vault = _vault()
-        vault.set_fields(RUNTIME_ITEM, {"bot_token": FieldValue(token)})
-        vault.set_fields(E2E_ITEM, {"bot_username": FieldValue(username, concealed=False)})
+        vault.set_fields(
+            BOT_ITEM,
+            {
+                "bot_token": FieldValue(token),
+                "bot_username": FieldValue(username, concealed=False),
+            },
+        )
         await check_test_bot(Secret(token), username, http)
     return (
         f"已在测试环境创建 @{username}，token 已写入 1Password（值未显示）并通过测试环境 getMe 校验"

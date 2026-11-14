@@ -432,7 +432,7 @@ HAM_TEXTS = ("今天天气真好啊", "周末有人一起去爬山吗", "这个�
 def require_antispam(ctx: ScenarioContext) -> None:
     if not ctx.antispam:
         raise ScenarioSkipped(
-            "被测 bot 未配置 LLM（1Password runtime/llm_api_key、llm_model），无法验收反垃圾"
+            "被测 bot 未配置 LLM（1Password staging-services/llm_api_key、llm_model），无法验收反垃圾"
         )
 
 

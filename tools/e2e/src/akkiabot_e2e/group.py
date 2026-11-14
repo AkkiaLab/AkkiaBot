@@ -71,7 +71,7 @@ class GroupRegistry(Protocol):
 
 
 class VaultGroupRegistry:
-    """:class:`GroupRegistry` backed by the ``telegram-e2e`` 1Password item."""
+    """:class:`GroupRegistry` backed by the ``e2e-telegram`` 1Password item."""
 
     def __init__(self, vault: Vault) -> None:
         self.vault = vault
@@ -101,8 +101,8 @@ class TestGroup:
 
 _MANUAL_RECOVERY = (
     "不会自动认领，也不会再建新群。请在群主测试账号的客户端中确认哪个是本工具创建的测试群，"
-    "把它的 id 写入 1Password 的 telegram-e2e/allowed_chat_ids，"
-    "再把 telegram-e2e/pending_group_operation 清空后重新运行（不要删除群）"
+    "把它的 id 写入 1Password 的 e2e-telegram/allowed_chat_ids，"
+    "再把 e2e-telegram/pending_group_operation 清空后重新运行（不要删除群）"
 )
 
 

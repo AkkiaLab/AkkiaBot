@@ -41,32 +41,44 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 
 ## 3. 1Password：权限边界与字段
 
-- 专用 vault `AkkiaBot-Staging` 只存放测试环境的配置。生产配置以后放在另一个 vault，本工具不涉及生产。
-- **权限边界**（负责人于 2026-11-14 决定，取代此前的“只读”要求）：
-  - 测试 vault 的服务账号**可以读写**，工具会自动写回会话、测试 bot token、群 id 等配置。
-  - 测试密钥**可以在 Multica 内部共享**（智能体之间、issue 交接）。
+- 所有环境共用一个 vault `AkkiaBot`（负责人于 2026-11-14 决定，取代此前的独立测试 vault `AkkiaBot-Staging`）。条目按 `<环境>-<用途>` 命名：`e2e-*` 是 Telegram 测试环境验收专用，`staging-*` 同时供本地开发（dev）和预发布环境使用，`prod-*` 是生产环境专用。
+- Cloudflare：dev/staging 共用一个 token（`staging-cloudflare/api_token`，包含 DNS、Tunnel、Pages、Turnstile 权限），prod 使用另一个 token（`prod-cloudflare/api_token`）。
+- **权限边界**（负责人于 2026-11-14 决定）：
+  - 服务账号对 vault **可以读写**，工具会自动写回会话、测试 bot token、群 id 等配置。
+  - 测试和预发布密钥**可以在 Multica 内部共享**（智能体之间、issue 交接）。
   - **仓库是公开的**：仓库、PR、CI 日志和工具输出中都不能出现任何凭据，凭据值也不能出现在命令行参数中。
-  - 生产环境的授权范围不变。
+  - 本工具只读写 `e2e-*` 条目，引用 `staging-services`，从不涉及 `prod-*`。
 - 工具读写 vault 的流程：
   1. 把条目 JSON 读进内存，替换要更新的字段；
   2. 把 JSON **通过标准输入**交给 `op item create -` 或 `op item edit`；
-  3. 用 `op read` 回读，并在内存中比对。
+  3. 用 `op read` 回读，并在内存中比对（1Password 是最终一致的，回读最多重试 5 次）。
 
   凭据值不会进入命令行参数、终端输出或报告；`op` 的错误输出会先脱敏再显示。这一流程已在 1Password CLI 2.42 上实际验证。
 
-### 条目 `runtime`（被测 bot）
+### 条目一览
+
+| 条目 | 用途 |
+| --- | --- |
+| `e2e-telegram` | 用户账号自动化（见下表） |
+| `e2e-bot` | 验收用测试环境 bot：`bot_token`（`just e2e-bootstrap-bot` 写入）、`bot_username` |
+| `staging-services` | dev/staging 共用的第三方服务配置（见下表） |
+| `staging-bot` | 预发布环境的 bot：`bot_token`、`bot_username`、`environment`（与 `e2e-bot` 不是同一个 bot） |
+| `staging-cloudflare` | dev/staging 共用的 Cloudflare：`api_token`、`account_id`，以及预发布 tunnel 的 `cloudflared_token`、`tunnel_id` |
+| `prod-cloudflare` | 生产环境 Cloudflare：`api_token`（负责人填写）、`account_id` |
+| `prod-bot` | 生产 bot：`bot_token`（负责人填写） |
+
+### 条目 `staging-services`（dev/staging 共用的第三方服务）
 
 | 字段 | 类型 | 内容 | 由谁写入 |
 | --- | --- | --- | --- |
-| `bot_token` | 密码 | 测试环境 bot 的 token | `just e2e-bootstrap-bot` |
-| `sentry_dsn` | 密码 | Sentry 测试项目的 DSN；为空时不启用 Sentry | Sentry handoff 完成后写入 |
+| `sentry_dsn` | 密码 | Sentry 测试项目 `akkia/akkiabot-staging` 的 DSN；为空时不启用 Sentry | 已写入 |
 | `ipinfo_token` | 密码 | ipinfo token（M3 的 `/ip` 使用，对应配置 `WHOIS_IPINFO_TOKEN`） | 已写入 |
-| `llm_base_url`、`llm_model` | 文本 | M5 反垃圾使用的 OpenAI 兼容接口地址与模型（`LLM_BASE_URL`、`LLM_MODEL`） | 负责人填写（字段已建好，2026-11-14） |
-| `llm_api_key` | 密码 | 上述接口的 API key（`LLM_API_KEY`）；为空时 M5 场景记为未执行 | 负责人填写 |
-| `langfuse_public_key`、`langfuse_secret_key` | 密码 | Langfuse 测试项目的密钥（`LANGFUSE_*`）：bot 用于上报，验收工具用同一组密钥只读查询 `antispam.classify` 记录 | 负责人填写 |
-| `langfuse_host` | 文本 | Langfuse 地址；为空时为 Langfuse Cloud（`https://cloud.langfuse.com`） | 负责人填写（可选） |
+| `llm_base_url`、`llm_model` | 文本 | M5 反垃圾使用的 OpenAI 兼容接口地址与模型（`LLM_BASE_URL`、`LLM_MODEL`） | 已写入 |
+| `llm_api_key` | 密码 | 上述接口的 API key（`LLM_API_KEY`）；为空时 M5 场景记为未执行 | 已写入 |
+| `langfuse_public_key`、`langfuse_secret_key` | 密码 | Langfuse 测试项目的密钥（`LANGFUSE_*`）：bot 用于上报，验收工具用同一组密钥只读查询 `antispam.classify` 记录 | 已写入 |
+| `langfuse_host` | 文本 | Langfuse 地址；为空时为 Langfuse Cloud（`https://cloud.langfuse.com`） | 已写入 |
 
-### 条目 `telegram-e2e`（用户账号自动化）
+### 条目 `e2e-telegram`（用户账号自动化）
 
 | 字段 | 类型 | 内容 | 由谁写入 |
 | --- | --- | --- | --- |
@@ -74,7 +86,6 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | `environment` | 文本 | 固定为 `test`，用于标识本条目 | 已写入 |
 | `admin_session`、`member_session` | 密码 | 两个测试环境账号的会话 | `just e2e-login admin\|member` |
 | `allowed_user_ids` | 文本 | 两个测试账号的 user id，逗号分隔 | `just e2e-login` 自动合并 |
-| `bot_username` | 文本 | 测试 bot 的用户名 | `just e2e-bootstrap-bot` |
 | `allowed_chat_ids` | 文本 | 测试群的 id，逗号分隔 | `just e2e --create-group` 建群后立即自动合并 |
 | `pending_group_operation` | 文本 | 未完成的建群操作标识；平时为空 | `just e2e --create-group` 建群前写入、完成后清空（见 6.1 节）；字段不存在时自动创建，`op run` 模板不引用它 |
 
@@ -121,7 +132,7 @@ just e2e-login member   # 普通成员账号
 
 按提示输入手机号、官方客户端（测试模式）收到的验证码，以及两步验证密码（密码输入不回显）。验证码和密码只在终端里输入，**不要发到 issue 或评论里**。登录成功后：
 
-- 会话直接写入 `telegram-e2e/<role>_session`，并经过回读校验；终端不会显示会话内容。
+- 会话直接写入 `e2e-telegram/<role>_session`，并经过回读校验；终端不会显示会话内容。
 - 账号的 user id 自动合并到 `allowed_user_ids`。
 - 如果写入 1Password 失败，会话会暂存到 `~/.config/akkiabot/e2e/<role>.session`（权限 600）。排除故障后执行 `just e2e-session-store <role>`，写入成功后该文件会被覆盖并删除。
 
@@ -171,7 +182,7 @@ uv run akkiabot-e2e list    # 列出所有场景
 
 建群涉及 Telegram 和 1Password 两个系统，不能原子完成。`--create-group` 按以下顺序执行，任何一步中断后都可以安全重跑：
 
-1. 生成一个建群操作标识（12 位十六进制），写入 1Password 的 `telegram-e2e/pending_group_operation` 并回读。**写入失败时直接停止，不创建任何群。**
+1. 生成一个建群操作标识（12 位十六进制），写入 1Password 的 `e2e-telegram/pending_group_operation` 并回读。**写入失败时直接停止，不创建任何群。**
 2. 创建超级群，把 `[akkiabot-e2e op:<操作标识>]` 写进群简介（about），作为该群属于这次操作的凭证。
 3. 群创建后立即把群 id 合并进 `allowed_chat_ids`，然后才邀请 bot、授权和让成员入群。
 4. 清空 `pending_group_operation`。清空失败不影响本次运行，报告中会注明；残留的标识只会匹配带有同一标识的群，下次建群时沿用它即可。
@@ -256,7 +267,7 @@ Sentry 测试项目通过 Sentry 的 agent handoff 接入：
 1. 负责人在 Sentry 中生成一次性 handoff code。
 2. 智能体按 <https://sentry.io/agent-handoff/> 的说明，把 code 放在请求体中，向该端点 POST 一次。
 3. 按返回的指引完成配置。
-4. 把 DSN 写入 `runtime/sentry_dsn`，并发送一条测试事件进行验证。
+4. 把 DSN 写入 `staging-services/sentry_dsn`，并发送一条测试事件进行验证。
 
 handoff code 只能使用一次，而且很快就会过期；请求和返回内容中的凭据都不回显。
 
