@@ -20,7 +20,7 @@ from akkiabot_e2e.config import ApiCredentials
 from akkiabot_e2e.errors import E2EError, FloodWait, SafetyError
 from akkiabot_e2e.login import Ask
 from akkiabot_e2e.redaction import Secret
-from akkiabot_e2e.transport import ChatRef, Entity, Msg, Role, UserInfo
+from akkiabot_e2e.transport import Button, ChatRef, Entity, Msg, Role, UserInfo
 
 #: Telethon logs connection details at INFO/DEBUG; keep only warnings, whatever the root level.
 THIRD_PARTY_LOGGERS = ("telethon",)
@@ -33,6 +33,7 @@ _ENTITY_KINDS = {
     types.MessageEntityTextUrl: "text_link",
     types.MessageEntityUrl: "url",
     types.MessageEntityBotCommand: "bot_command",
+    types.MessageEntityMentionName: "mention_name",
 }
 _INVITE_TTL = timedelta(hours=1)
 
@@ -131,6 +132,25 @@ def _service_message_id(updates: Any) -> int | None:
     return None
 
 
+def _buttons(message: Any) -> tuple[Button, ...]:
+    markup = getattr(message, "reply_markup", None)
+    if not isinstance(markup, types.ReplyInlineMarkup):
+        return ()
+    buttons: list[Button] = []
+    for row in markup.rows:
+        for button in row.buttons:
+            # The current layer wraps the kind: KeyboardInlineButton(text, type=InlineButtonType*).
+            kind = getattr(button, "type", None)
+            buttons.append(
+                Button(
+                    text=button.text,
+                    url=getattr(kind, "url", None),
+                    data=getattr(kind, "data", None),
+                )
+            )
+    return tuple(buttons)
+
+
 def _msg(chat_id: int, message: Any) -> Msg:
     reply_to = getattr(message, "reply_to", None)
     entities = tuple(
@@ -148,6 +168,7 @@ def _msg(chat_id: int, message: Any) -> Msg:
         reply_to_id=getattr(reply_to, "reply_to_msg_id", None),
         entities=entities,
         service=service,
+        buttons=_buttons(message),
     )
 
 
@@ -308,6 +329,37 @@ class TelethonAccount:
             self._client(functions.channels.LeaveChannelRequest(await self._chat(chat_id)))
         )
         return _service_message_id(updates)
+
+    async def is_banned(self, chat_id: int, user_id: int) -> bool:
+        participant = await self._participant(chat_id, user_id)
+        if not isinstance(participant, types.ChannelParticipantBanned):
+            return False
+        return bool(participant.banned_rights.view_messages)
+
+    async def unban(self, chat_id: int, user_id: int) -> None:
+        # Empty rights remove the user from the banned list (Bot API ``unbanChatMember``).
+        await _guard(
+            self._client(
+                functions.channels.EditBannedRequest(
+                    channel=await self._chat(chat_id),
+                    participant=await self._user_in(chat_id, user_id),
+                    banned_rights=types.ChatBannedRights(until_date=None),
+                )
+            )
+        )
+
+    async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
+        try:
+            answer: Any = await _guard(
+                self._client(
+                    functions.messages.GetBotCallbackAnswerRequest(
+                        peer=await self._chat(chat_id), msg_id=message_id, data=data
+                    )
+                )
+            )
+        except errors.BotResponseTimeoutError:
+            return None
+        return getattr(answer, "message", None)
 
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
         message = await _guard(
