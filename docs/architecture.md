@@ -169,7 +169,7 @@ flowchart LR
 
 **一句话**：Python 3.13 单体后端（python-telegram-bot + FastAPI + SQLAlchemy 2 async + PostgreSQL），用 uv workspace 管理；前端是 Vite + React 的 Telegram Mini App（纯静态），用 pnpm 管理并部署到 Cloudflare Pages；用 ruff / pyright / pytest / Biome / Vitest 和 GitHub Actions 保证质量；后端以 Docker 镜像加 docker compose 部署；可观测性由 Sentry（错误）、Langfuse（LLM）和 Grafana（日志、指标）三部分组成。
 
-> 2026-11-14 成员已确认：后端用 Python、生产数据库用 PostgreSQL、前端部署到 Cloudflare Pages、对外域名使用 `bot.akkia.moe`、接入 Sentry + Langfuse + Grafana。
+> 2026-11-14 成员已确认：后端用 Python、生产数据库用 PostgreSQL、前端部署到 Cloudflare Pages（`bot.akkia.moe`）、后端 API 使用 `bot-api.akkia.moe`、接入 Sentry + Langfuse + Grafana Cloud。
 
 | 领域 | 选择 | 理由 | 主要备选与取舍 |
 | --- | --- | --- | --- |
@@ -192,8 +192,8 @@ flowchart LR
 | 任务入口 | **just**（`justfile`） | `just lint` / `just test` / `just dev` 统一调度 Python 与前端两侧命令 | Makefile：可以用，但跨平台和变量处理差一些 |
 | Git hooks | **pre-commit**（ruff、biome、gitleaks、基础检查） | 延续现有习惯，并增加密钥扫描 | lefthook |
 | CI | **GitHub Actions**：按路径触发 lint、type、test；在 main 上构建镜像并推送 GHCR；Renovate 自动升级依赖 | 延续现有 GHCR 流程，修复旧 workflow 已失效的问题 | — |
-| 部署 | **后端**：Docker 镜像 + **docker compose**（app、postgres、redis、cloudflared、alloy），通过 cloudflared tunnel 暴露为 `api.bot.akkia.moe`；**前端**：构建产物部署到 **Cloudflare Pages**，自定义域名 `bot.akkia.moe`（已确认） | 后端沿用现有部署方式；前端走 CDN 边缘缓存，加载最快。Mini App 是纯静态 SPA，所有数据都通过调用后端 API 获取，满足 Pages 只托管静态文件的前提 | 前端随后端镜像托管：同源、不需要 CORS，但每次加载都要回源到后端服务器，速度更慢 |
-| 可观测性 | **Sentry**（异常与性能）、**Langfuse**（LLM 调用、提示词、耗时、token 用量）、**Grafana**：日志 → Loki，指标 → Prometheus 格式的 `/metrics`，由 **Grafana Alloy** 统一采集并推送（已确认） | 三者各管一块，互不重叠；Alloy 一个 agent 同时采集容器日志和指标，Grafana Cloud 或自建 LGTM 都能对接 | 全量 OpenTelemetry（traces → Tempo）：后续需要分布式追踪时再加，目前是单进程，收益不大 |
+| 部署 | **后端**：Docker 镜像 + **docker compose**（app、postgres、redis、cloudflared、alloy），通过 cloudflared tunnel 暴露为 `bot-api.akkia.moe`；**前端**：构建产物部署到 **Cloudflare Pages**，自定义域名 `bot.akkia.moe`（已确认） | 后端沿用现有部署方式；前端走 CDN 边缘缓存，加载最快。Mini App 是纯静态 SPA，所有数据都通过调用后端 API 获取，满足 Pages 只托管静态文件的前提 | 前端随后端镜像托管：同源、不需要 CORS，但每次加载都要回源到后端服务器，速度更慢 |
+| 可观测性 | **Sentry**（异常与性能）、**Langfuse**（LLM 调用、提示词、耗时、token 用量）、**Grafana**：日志 → Loki，指标 → Prometheus 格式的 `/metrics`，由 **Grafana Alloy** 统一采集并推送（已确认） | 三者各管一块，互不重叠；Alloy 一个 agent 同时采集容器日志和指标；后端使用 **Grafana Cloud**（已确认），免运维，免费额度足够当前规模 | 全量 OpenTelemetry（traces → Tempo）：后续需要分布式追踪时再加，目前是单进程，收益不大 |
 
 ## 5. Monorepo 结构
 
@@ -306,7 +306,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 - **数据库迁移**：通过独立命令 `akkiabot migrate`（容器启动前执行）完成，不在应用进程内用 subprocess 调用 alembic。
 - **域名与前端**：
   - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。`main` 分支自动发布到生产环境，PR 生成预览地址。
-  - `api.bot.akkia.moe` → cloudflared tunnel → 后端容器，提供 `/api/v1/...`。
+  - `bot-api.akkia.moe` → cloudflared tunnel → 后端容器，提供 `/api/v1/...`。
   - 前端在构建时通过 `VITE_API_BASE_URL` 注入 API 地址；后端的 CORS 只放行 `https://bot.akkia.moe`（以及配置里列出的预览域名）。
   - Mini App 的鉴权依赖请求中携带的 Telegram initData，而不是 Cookie，所以跨域不涉及凭据共享，配置很简单。
   - 备选：也可以用 Cloudflare Worker 把 `bot.akkia.moe/api/*` 转发给 tunnel，做到同源，但多一层需要维护，目前不需要。
@@ -318,8 +318,8 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 | --- | --- | --- |
 | 异常、慢请求 | `sentry-sdk`（FastAPI 集成 + logging 集成），PTB handler 的异常统一上报 | Sentry |
 | LLM 调用 | `langfuse` 包装的 OpenAI 客户端：记录提示词版本、输入输出、耗时、token 用量和判定结果 | Langfuse |
-| 日志 | 结构化 JSON 日志输出到 stdout，字段包含 `chat_id`、`user_id`、`update_id`、`handler`、`trace_id` 等；Alloy 采集 Docker 日志并推送 | Grafana Loki |
-| 指标 / 埋点 | `prometheus-client` 暴露 `/metrics`（只在内网可访问，不经 tunnel 暴露）；Alloy 抓取后推送 | Grafana（Prometheus / Mimir） |
+| 日志 | 结构化 JSON 日志输出到 stdout，字段包含 `chat_id`、`user_id`、`update_id`、`handler`、`trace_id` 等；Alloy 采集 Docker 日志并推送 | Grafana Cloud（Loki） |
+| 指标 / 埋点 | `prometheus-client` 暴露 `/metrics`（只在内网可访问，不经 tunnel 暴露）；Alloy 抓取后推送 | Grafana Cloud（Prometheus） |
 
 首批业务指标（命名前缀 `akkiabot_`）：
 

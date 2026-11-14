@@ -15,16 +15,16 @@
 
 | # | 问题 | 决策 |
 | --- | --- | --- |
-| 1 | 线上现状与数据迁移 | 线上运行的是 Go 版（core + llm + fe）。正式上线时做**一次性配置迁移**，允许手动操作，不要求新旧数据结构一致 → 见 M10 |
+| 1 | 线上现状与数据迁移 | 线上运行的是 Go 版（core + llm + fe），数据库为 **SQLite**。正式上线时做**一次性配置迁移**，允许手动操作，不要求新旧数据结构一致 → 见 M10 |
 | 2 | 后端语言 | Python |
 | 3 | 生产数据库 | PostgreSQL |
 | 4 | 消息正文 | 默认只存消息 ID，命中反垃圾时保存正文用于审计 |
 | 5 | 群配置交互 | 第一阶段用 inline 按钮（M4）；Mini App 配置面板作为后续优化（M11） |
 | 6 | 对外反垃圾 API | 没有第三方调用方，不再提供 |
 | 7 | 入群验证超时 | 时限 5 分钟，超时后维持禁言 |
-| 8 | LLM 与可观测性 | 继续使用 OpenAI 兼容 client；保留 Langfuse 与 Sentry，**新增 Grafana**（日志、指标、埋点）→ 见 M9 |
+| 8 | LLM 与可观测性 | 继续使用 OpenAI 兼容 client；保留 Langfuse 与 Sentry，**新增 Grafana Cloud**（日志、指标、埋点）→ 见 M9 |
 | 9 | whois | 有 ipinfo token；只用在线 API（ipinfo → ip-api），不使用离线库 |
-| 10 | 前端托管与域名 | 前端（纯静态 SPA）部署到 Cloudflare Pages：`bot.akkia.moe`；后端 API 使用 `api.bot.akkia.moe` |
+| 10 | 前端托管与域名 | 前端（纯静态 SPA）部署到 Cloudflare Pages：`bot.akkia.moe`；后端 API 使用 `bot-api.akkia.moe` |
 | 11 | 旧仓库归档 | 正式切换上线后再归档，不在编码完成时归档 |
 
 ## 依赖关系
@@ -171,17 +171,17 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M8 · 生产部署环境　`S`
 
 - **范围**
-  - `deploy/compose.yaml`：app、postgres、redis、cloudflared（`api.bot.akkia.moe` → app）；`akkiabot migrate` 作为启动前的步骤；数据卷与 PostgreSQL 备份说明（例如定时 `pg_dump`）。
+  - `deploy/compose.yaml`：app、postgres、redis、cloudflared（`bot-api.akkia.moe` → app）；`akkiabot migrate` 作为启动前的步骤；数据卷与 PostgreSQL 备份说明（例如定时 `pg_dump`）。
   - `/metrics` 端口不经过 tunnel 暴露。
-  - 运维手册 `docs/operations.md`：配置项说明、部署与回滚、DNS 规划（`bot.akkia.moe` → Pages，`api.bot.akkia.moe` → tunnel）。
-  - 使用测试 bot 和 `api` 预发布子域名（例如 `api-staging.bot.akkia.moe`）搭一套预发布环境，作为 M9、M10 的演练场。
+  - 运维手册 `docs/operations.md`：配置项说明、部署与回滚、DNS 规划（`bot.akkia.moe` → Pages，`bot-api.akkia.moe` → tunnel）。
+  - 使用测试 bot 和预发布子域名（例如 `bot-api-staging.akkia.moe`）搭一套预发布环境，作为 M9、M10 的演练场。
 - **依赖**：M2（可以和 M3–M7 并行推进，随功能合入持续验证）。
 - **验收标准**：在一台干净的机器上按照运维手册，用 GHCR 镜像完成部署，健康检查通过；预发布环境中的测试 bot 能正常响应。
 
 ### M9 · Grafana 接入与看板　`M`
 
 - **范围**
-  - `deploy/observability/`：Grafana Alloy 配置，负责采集 Docker 容器的 JSON 日志并推送到 Loki，抓取 `/metrics` 并推送到 Prometheus 兼容端点（Mimir / Grafana Cloud）；加入 compose。
+  - `deploy/observability/`：Grafana Alloy 配置，负责采集 Docker 容器的 JSON 日志并推送到 Loki，抓取 `/metrics` 并推送到 Grafana Cloud 的 Prometheus 端点；Grafana Cloud 的 stack 地址和 token 通过环境变量注入，不进仓库；加入 compose。
   - Grafana dashboard（JSON 纳入版本管理）：
     - 总览：update 量、handler 耗时 P50/P95、错误率；
     - 入群验证漏斗：发起 → 通过 / 超时 / 失败；
@@ -197,7 +197,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 
 - **范围**
   - **一次性配置迁移**（不要求新旧结构一致，允许手动操作）：
-    - 编写 `akkiabot import-legacy` 脚本，读取 Go 版数据库（MySQL 或 SQLite 二选一，由连接串决定），把 `telegram_chats` 的 `EnableCaptcha`、`EnableAntiSpam`、`EnableWarn`、`MaxWarnCount` 映射为新的 `chat.settings`；把 `telegram_chat_members` 的 `WarnCount` 写入新的 `chat_member`；支持 `--dry-run`，并输出差异报告。
+    - 编写 `akkiabot import-legacy` 脚本，直接读取 Go 版的 SQLite 文件（`botlab_core/data/sqlite.db` 的只读副本），把 `telegram_chats` 的 `EnableCaptcha`、`EnableAntiSpam`、`EnableWarn`、`MaxWarnCount` 映射为新的 `chat.settings`；把 `telegram_chat_members` 的 `WarnCount` 写入新的 `chat_member`；支持 `--dry-run`，并输出差异报告。
     - 如果脚本在实际数据上不划算，退而求其次：导出成 CSV 后手动导入，或者让管理员在各群里重新执行 `/config`，并在运维手册中写明。
     - 切换时如果还有处于 captcha 禁言中的成员，脚本把他们列出来，由管理员手动处理（新系统中没有对应的 challenge）。
   - 切换步骤（写入运维手册）：
@@ -217,9 +217,6 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 - **依赖**：M10（在新系统稳定运行之后再做）。
 - **验收标准**：非管理员无法读取或修改配置；修改后立即对机器人行为生效。
 
-## 剩余待确认事项
+## 待确认事项
 
-不阻塞 M0 开工，可以在对应任务开始前确认：
-
-1. **Grafana 部署形态**（M9 之前）：使用 Grafana Cloud（免费额度通常够这个规模用，免运维），还是自建 Loki + Prometheus + Grafana？Alloy 配置两种都支持，只是推送地址不同。
-2. **Go 版生产数据库类型**（M10 之前）：是 MySQL 还是 SQLite？这只影响迁移脚本读取哪种数据库，到时提供连接方式或一份导出文件即可。
+目前没有。实现过程中遇到新的问题，会在对应任务的 issue 中提出。
