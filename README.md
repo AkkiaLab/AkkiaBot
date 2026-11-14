@@ -39,13 +39,24 @@ just typecheck   # pyright + tsc
 just test        # pytest + vitest
 just dev         # 启动本地 postgres / redis（deploy/compose.dev.yaml）和 Mini App 开发服务器
 just dev-down    # 停止本地服务
+just services    # 只启动本地 postgres / redis
+just migrate     # 对 DB_URL 执行数据库迁移（等同 `akkiabot migrate`）
+just db-revision "说明"  # 修改模型后自动生成新的 Alembic 迁移
+just test-integration  # 连同 compose 中的 PostgreSQL / Redis 一起跑 pytest
 just gen-api     # 由后端 OpenAPI 生成前端类型（M2 引入 HTTP API 后启用）
 just docker-build  # 构建后端镜像并运行，打印版本号
 ```
 
 只改一侧时，可以用 `just lint-py` / `just lint-web`、`just test-py` / `just test-web` 等子命令；`just test-py -k smoke` 会把参数透传给 pytest。
 
-本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。
+本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。变量名为 `<分组>_<字段>`（如 `TELEGRAM_BOT_TOKEN`、`DB_URL`、`OBSERVABILITY_SENTRY_DSN`），完整定义见 `packages/core/src/akkiabot_core/config.py`；必填项（`TELEGRAM_BOT_TOKEN`、`DB_URL`）缺失时启动即报错。
+
+日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。
+
+### 数据库与测试
+
+- 迁移脚本位于 `packages/core/src/akkiabot_core/db/migrations/`（随包发布，镜像内可直接执行 `akkiabot migrate`）。迁移不在应用进程内自动执行，部署时需在启动应用前运行。
+- `just test` 默认只用 SQLite 与内存 / fakeredis 运行；设置 `AKKIABOT_TEST_DATABASE_URL`、`AKKIABOT_TEST_REDIS_URL`（或使用 `just test-integration`）后，同一套迁移、repository 和缓存契约测试也会在 PostgreSQL / Redis 上运行。**测试会清空该数据库的 public schema**，不要指向有数据的库。CI 中两者都会运行。
 
 ### 模块边界
 
