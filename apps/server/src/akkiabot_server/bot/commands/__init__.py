@@ -15,6 +15,7 @@ from akkiabot_server.bot.commands.moderation import (
     ban_command,
     warn_command,
 )
+from akkiabot_server.bot.commands.spam import SPAM_DOCS, SPAM_USAGE, spam_command
 from akkiabot_server.bot.registry import Command
 
 COMMANDS: tuple[Command, ...] = (
@@ -48,6 +49,7 @@ COMMANDS: tuple[Command, ...] = (
     ),
     Command("ban", "封禁用户", ban_command, usage=BAN_USAGE, docs=BAN_DOCS),
     Command("warn", "警告用户", warn_command, usage=WARN_USAGE, docs=WARN_DOCS),
+    Command("spam", "举报垃圾信息", spam_command, usage=SPAM_USAGE, docs=SPAM_DOCS),
 )
 
 __all__ = ["COMMANDS"]

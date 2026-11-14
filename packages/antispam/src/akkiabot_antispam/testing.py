@@ -96,3 +96,31 @@ class FakeLlm:
         if isinstance(reply, httpx2.Response):
             return reply
         return reply(body)
+
+
+class RecordingTracer:
+    """A :class:`~akkiabot_antispam.tracing.Tracer` that keeps every generation in memory."""
+
+    def __init__(self) -> None:
+        self.generations: list[dict[str, Any]] = []
+        self.flushed = 0
+        self.closed = False
+
+    def start(self, **kwargs: Any) -> _RecordedGeneration:
+        record: dict[str, Any] = {"start": kwargs, "end": None}
+        self.generations.append(record)
+        return _RecordedGeneration(record)
+
+    def flush(self) -> None:
+        self.flushed += 1
+
+    def shutdown(self) -> None:
+        self.closed = True
+
+
+class _RecordedGeneration:
+    def __init__(self, record: dict[str, Any]) -> None:
+        self._record = record
+
+    def end(self, **kwargs: Any) -> None:
+        self._record["end"] = kwargs
