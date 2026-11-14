@@ -44,6 +44,9 @@
 
 ### 分支保护
 
-截至 2026-11-14 的核实结果：master 由仓库 ruleset `master 保护`（id 27269655）保护，包含禁止删除、禁止非快进、要求 PR（仅 squash、评审线程须全部解决）。该 ruleset **没有** `required_status_checks` 规则，所以 `ci-ok` 和 `secret-scan` 目前都**不是**合并前必须通过的检查。另外，仓库已开启 GitHub secret scanning 和 push protection。
+master 由仓库 ruleset `master 保护`（id 27269655）保护，包含禁止删除、禁止非快进、要求 PR（仅 squash、评审线程须全部解决），以及必需状态检查。
 
-要把它们设为必需检查，需要仓库管理员在该 ruleset 中增加一条 `required_status_checks` 规则，检查项为 `secret-scan` 和 `ci-ok`，来源为 GitHub Actions。在管理员完成修改并回读确认前，不能认为这两项已经是必需检查。
+- 必需检查：`secret-scan` 和 `ci-ok`，来源为 GitHub Actions（integration_id 15368），不要求分支保持最新（`strict_required_status_checks_policy: false`）。
+- 变更记录：2026-11-14 核实时 ruleset 中没有任何必需检查。负责人在 BOT-24 中授权后，由 Engineer 在原有三条规则后追加了 `required_status_checks` 规则，其他字段不变，并通过 `gh api repos/AkkiaLab/AkkiaBot/rules/branches/master` 回读确认生效。
+- 仓库已开启 GitHub secret scanning 和 push protection。
+- 修改检查名称（job 的 `name`）前，要先同步修改 ruleset，否则所有 PR 都会因为等不到这两项检查而无法合并。
