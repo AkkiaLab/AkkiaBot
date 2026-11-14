@@ -52,6 +52,18 @@ def new_operation_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def fresh_group_title(base: str, run_id: str) -> str:
+    """Title of the group a ``--fresh-group`` run creates for itself.
+
+    A long-running bot keeps per-chat state (member message counts, switches,
+    warnings) across runs, so reusing one group makes later runs differ from the
+    first: the member soon has more than 3 recorded messages and is exempt from
+    the spam check. A group of its own gives every run the state of a first run.
+    The run id makes the title unique, so the group is never matched by another run.
+    """
+    return f"{base} {run_id}"
+
+
 class GroupRegistry(Protocol):
     """Durable store for the chat allowlist and the pending create-group operation."""
 
