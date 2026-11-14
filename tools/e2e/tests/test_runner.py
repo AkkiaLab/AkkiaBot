@@ -376,11 +376,11 @@ def test_cli_live_run_saves_private_redacted_report(
     (chat,) = [c for c in world.chats.values() if c.id < 0]
     # Pending operation recorded before creating, id registered, then the operation cleared.
     read, begin, register, clear = FakeVault.log
-    assert read == ("read", "telegram-e2e", "pending_group_operation")
-    assert begin[:3] == ("set", "telegram-e2e", "pending_group_operation")
+    assert read == ("read", "e2e-telegram", "pending_group_operation")
+    assert begin[:3] == ("set", "e2e-telegram", "pending_group_operation")
     assert operation_marker(begin[3]) in chat.about
-    assert register == ("add_ids", "telegram-e2e", "allowed_chat_ids", str(chat.id))
-    assert clear == ("clear", "telegram-e2e", "pending_group_operation")
+    assert register == ("add_ids", "e2e-telegram", "allowed_chat_ids", str(chat.id))
+    assert clear == ("clear", "e2e-telegram", "pending_group_operation")
 
 
 @pytest.mark.parametrize("missing", ["leave", "join"])

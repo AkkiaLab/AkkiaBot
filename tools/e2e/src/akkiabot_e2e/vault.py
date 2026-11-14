@@ -24,9 +24,9 @@ from typing import Any
 
 from akkiabot_e2e.errors import ConfigError
 
-DEFAULT_VAULT = "AkkiaBot-Staging"
-RUNTIME_ITEM = "runtime"
-E2E_ITEM = "telegram-e2e"
+DEFAULT_VAULT = "AkkiaBot"
+BOT_ITEM = "e2e-bot"
+E2E_ITEM = "e2e-telegram"
 
 #: Runs ``argv`` with ``stdin`` bytes; returns (exit code, stdout, stderr).
 OpRunner = Callable[[Sequence[str], bytes | None], tuple[int, bytes, bytes]]

@@ -2,26 +2,26 @@
 # Only op:// paths live here; values are resolved by `op run` at run time and
 # exist only in the child process environment. Field list: docs/e2e-acceptance.md.
 
-# --- bot under test (vault AkkiaBot-Staging, item "runtime"); test-environment bot only
-TELEGRAM_BOT_TOKEN=op://AkkiaBot-Staging/runtime/bot_token
-OBSERVABILITY_SENTRY_DSN=op://AkkiaBot-Staging/runtime/sentry_dsn
-WHOIS_IPINFO_TOKEN=op://AkkiaBot-Staging/runtime/ipinfo_token
+# --- bot under test (vault AkkiaBot, item "e2e-bot"; shared dev/staging services in "staging-services"); test-environment bot only
+TELEGRAM_BOT_TOKEN=op://AkkiaBot/e2e-bot/bot_token
+OBSERVABILITY_SENTRY_DSN=op://AkkiaBot/staging-services/sentry_dsn
+WHOIS_IPINFO_TOKEN=op://AkkiaBot/staging-services/ipinfo_token
 # M5 antispam: OpenAI-compatible LLM + Langfuse (also read by the M5 Langfuse check)
-LLM_BASE_URL=op://AkkiaBot-Staging/runtime/llm_base_url
-LLM_API_KEY=op://AkkiaBot-Staging/runtime/llm_api_key
-LLM_MODEL=op://AkkiaBot-Staging/runtime/llm_model
-LANGFUSE_PUBLIC_KEY=op://AkkiaBot-Staging/runtime/langfuse_public_key
-LANGFUSE_SECRET_KEY=op://AkkiaBot-Staging/runtime/langfuse_secret_key
-LANGFUSE_HOST=op://AkkiaBot-Staging/runtime/langfuse_host
+LLM_BASE_URL=op://AkkiaBot/staging-services/llm_base_url
+LLM_API_KEY=op://AkkiaBot/staging-services/llm_api_key
+LLM_MODEL=op://AkkiaBot/staging-services/llm_model
+LANGFUSE_PUBLIC_KEY=op://AkkiaBot/staging-services/langfuse_public_key
+LANGFUSE_SECRET_KEY=op://AkkiaBot/staging-services/langfuse_secret_key
+LANGFUSE_HOST=op://AkkiaBot/staging-services/langfuse_host
 
-# --- user-account automation (item "telegram-e2e")
-E2E_API_ID=op://AkkiaBot-Staging/telegram-e2e/api_id
-E2E_API_HASH=op://AkkiaBot-Staging/telegram-e2e/api_hash
-E2E_BOT_USERNAME=op://AkkiaBot-Staging/telegram-e2e/bot_username
-E2E_ADMIN_SESSION=op://AkkiaBot-Staging/telegram-e2e/admin_session
-E2E_MEMBER_SESSION=op://AkkiaBot-Staging/telegram-e2e/member_session
-E2E_ALLOWED_USER_IDS=op://AkkiaBot-Staging/telegram-e2e/allowed_user_ids
-E2E_ALLOWED_CHAT_IDS=op://AkkiaBot-Staging/telegram-e2e/allowed_chat_ids
+# --- user-account automation (item "e2e-telegram")
+E2E_API_ID=op://AkkiaBot/e2e-telegram/api_id
+E2E_API_HASH=op://AkkiaBot/e2e-telegram/api_hash
+E2E_BOT_USERNAME=op://AkkiaBot/e2e-bot/bot_username
+E2E_ADMIN_SESSION=op://AkkiaBot/e2e-telegram/admin_session
+E2E_MEMBER_SESSION=op://AkkiaBot/e2e-telegram/member_session
+E2E_ALLOWED_USER_IDS=op://AkkiaBot/e2e-telegram/allowed_user_ids
+E2E_ALLOWED_CHAT_IDS=op://AkkiaBot/e2e-telegram/allowed_chat_ids
 
 # --- plain settings (optional; defaults shown)
 # Bot API test endpoints (/bot<token>/test/); `run --serve` forces this anyway.
