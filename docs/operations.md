@@ -289,9 +289,19 @@ Mini App 和 API 不同源，后端通过 `CORS_ALLOW_ORIGINS` 放行 `https://b
 | --- | --- |
 | 目录 | `/opt/akkiabot/staging`（可以和生产在同一台机器上，也可以单独一台） |
 | `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
-| `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：测试环境的测试 bot（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot-Staging` vault |
+| `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot-Staging` vault |
 | 域名 | `bot-api-staging.akkia.moe` |
 | 镜像 | 一般跟随 `latest`，或者设为待发布到生产的 sha，用来提前验证 |
+
+1Password `AkkiaBot-Staging` vault 的 `staging` 条目保存预发布专用的配置：
+
+| 字段 | 内容 |
+| --- | --- |
+| `bot_token`、`bot_username` | staging bot（测试环境 BotFather 创建，当前为 `@akkiabot_staging_669a8d_bot`）。它和 e2e 自动验收用的 bot（`runtime` 条目）是两个不同的 bot，所以 `just e2e --serve` 不会和预发布栈争抢 update。 |
+| `cloudflared_token`、`tunnel_id` | 预发布 tunnel `akkiabot-staging` 的 token 和 ID |
+| `environment` | 固定为 `test` |
+
+tunnel 和 DNS 记录可以按 §7 在控制台创建，也可以用 `cloudflare` 条目中的 API token（权限：Account · Cloudflare Tunnel · Edit，Zone · DNS · Edit，Zone · Zone · Read，范围仅 `akkia.moe`）通过 Cloudflare API 创建，效果相同：远程管理的 tunnel，ingress 只有 `bot-api-staging.akkia.moe → http://app:8000`，其余请求返回 `http_status:404`；外加一条代理的 CNAME `bot-api-staging` → `<tunnel_id>.cfargotunnel.com`。
 
 步骤（在预发布机器上执行，需要能访问 `AkkiaBot-Staging` vault 的 1Password CLI，例如设置了该 vault 服务账号的 `OP_SERVICE_ACCOUNT_TOKEN`）：
 
@@ -310,9 +320,12 @@ curl -fsSLo .env "$base/staging/.env.example"
 curl -fsSLo app.env.tpl "$base/staging/app.env.tpl"
 chmod 600 .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
-# 用编辑器在 .env 中填入预发布 tunnel 的 CLOUDFLARED_TOKEN
 
-umask 077 && op inject -i app.env.tpl -o app.env     # 值只写入 app.env，不会输出到终端
+# 密钥只经过 op inject 写入文件，不出现在终端、命令行参数或 shell 历史里
+umask 077
+op inject -f -i app.env.tpl -o app.env
+sed -i '/^CLOUDFLARED_TOKEN=/d' .env
+echo 'CLOUDFLARED_TOKEN={{ op://AkkiaBot-Staging/staging/cloudflared_token }}' | op inject >> .env
 docker compose pull && docker compose up -d --wait
 ```
 
@@ -325,16 +338,10 @@ curl -fsS https://bot-api-staging.akkia.moe/healthz
 curl -s -o /dev/null -w '%{http_code}\n' https://bot-api-staging.akkia.moe/metrics   # 404
 ```
 
-测试 bot 是否正常响应，可以用 Telegram 测试环境的账号私聊它，也可以用仓库的自动验收（`just e2e`，方法见 `docs/e2e-acceptance.md`）。注意：`just e2e` 默认会在本机用 `--serve` 启动一个 bot 进程，和预发布栈使用同一个测试 bot token 时会争抢 update。对预发布栈做验收时不要带 `--serve`，直接对已运行的 bot 执行：
+staging bot 是否正常响应：用 Telegram 测试环境的账号私聊 staging bot，发送 `/start`、`/help`、`/id`，确认都有回复。
 
-```bash
-uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run
-```
-
-（`m2.message-log` 场景需要读取本地进程的日志，只在 `--serve` 下运行。）
-
-反过来，开发分支用 `just e2e`（带 `--serve`）验收时，预发布栈的 app 也在拉取同一个测试 bot 的更新，需要先在预发布目录执行 `docker compose stop app`，验收结束后再 `docker compose up -d --wait`。
+不要用 `just e2e` 去验收预发布栈：e2e 工具读取的是 `runtime` 条目中的 e2e bot，验收的是本机进程，不是预发布栈。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
-1Password 中的测试 bot token 更新后（例如重新执行 `just e2e-bootstrap-bot`），重新执行 `op inject` 和 `docker compose up -d --wait`。
+1Password 中 `staging` 条目的值更新后，重新执行上面的两条 `op inject` 和 `docker compose up -d --wait`。

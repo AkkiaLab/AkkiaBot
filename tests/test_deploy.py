@@ -189,6 +189,14 @@ def test_staging_template_uses_test_bot_and_op_references() -> None:
         assert keys[key].startswith("op://AkkiaBot-Staging/"), key
 
 
+def test_staging_uses_its_own_bot() -> None:
+    """The e2e bot (item ``runtime``) is polled by ``just e2e --serve``; staging must not share it."""
+    keys = _env_keys(DEPLOY / "staging" / "app.env.tpl")
+    assert keys["TELEGRAM_BOT_TOKEN"] == "op://AkkiaBot-Staging/staging/bot_token"
+    e2e = _env_keys(REPO_ROOT / "tools" / "e2e" / "staging.env.tpl")
+    assert keys["TELEGRAM_BOT_TOKEN"] != e2e["TELEGRAM_BOT_TOKEN"]
+
+
 def test_staging_template_comments_have_no_references() -> None:
     """``op inject`` resolves every reference, including ones inside comments."""
     for line in (DEPLOY / "staging" / "app.env.tpl").read_text(encoding="utf-8").splitlines():
