@@ -65,12 +65,14 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
   - `.pre-commit-config.yaml`（ruff、biome、gitleaks、基础检查）、`.editorconfig`、`.env.example`。
   - `deploy/Dockerfile`（后端镜像，多阶段构建）、`deploy/compose.dev.yaml`（postgres、redis）。
   - GitHub Actions：`ci.yml`（PR 上按路径过滤运行 lint、type、test、镜像构建）、`release.yml`（master 分支推送 `ghcr.io/akkialab/akkiabot:<sha>` 和 `:latest`）；Renovate 配置。
+  - PR 规范：`.github/pull_request_template.md`（第一行为 `Closes BOT-`，下面列出验收标准清单）；`pr-title.yml` workflow 检查 PR 标题是否符合 `BOT-<编号>: ...`，以及正文是否含有 `Closes BOT-<编号>`，不符合时检查失败。
   - 补充 README 中的开发说明。
 - **依赖**：无（本 PR 合并后即可开始）。
 - **验收标准**
   - 全新克隆后执行 `just setup && just lint && just typecheck && just test` 全部通过。
   - 在 PR 上 CI 为绿色；`docker build -f deploy/Dockerfile .` 成功，容器能启动并打印版本号后退出。
   - import-linter 能拦截违反依赖方向的导入（附带一个反例测试或文档说明）。
+  - 标题不含 `BOT-<编号>` 的测试 PR 会被 `pr-title` 检查标红。
 
 ### M1 · core 基础设施：配置、日志、数据库、缓存、可观测性基线　`M`
 
