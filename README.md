@@ -52,7 +52,7 @@ just docker-build  # 构建后端镜像并运行，打印版本号
 
 本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。变量名为 `<分组>_<字段>`（如 `TELEGRAM_BOT_TOKEN`、`DB_URL`、`OBSERVABILITY_SENTRY_DSN`），完整定义见 `packages/core/src/akkiabot_core/config.py`；必填项（`TELEGRAM_BOT_TOKEN`、`DB_URL`）缺失时启动即报错。
 
-日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。
+日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。Bot API 的 URL 中含有 bot token，`Runtime.build()` 因此把 `httpx`、`httpcore` 日志固定在 WARNING，把 PTB 的 `telegram.Bot`、`telegram.ext.ExtBot` 固定在 INFO，即使根日志级别设为 DEBUG 也不会输出这些 URL；启动失败的错误信息也会先改写 token 再记录。
 
 ### 运行机器人
 

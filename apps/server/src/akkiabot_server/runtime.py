@@ -37,6 +37,23 @@ logger = logging.getLogger(__name__)
 
 WEBHOOK_PATH = "/telegram/webhook"
 
+# Bot API URLs embed the bot token (``/bot<token>/getMe``), and some loggers
+# print them verbatim: httpx logs every request line at INFO, and PTB's Bot
+# logs "Set Bot API URL: …" at DEBUG when constructed. Cap those loggers
+# whatever the root level is (callers keep known secrets out of the logs; the
+# logging module does no redaction).
+_TOKEN_LEAKING_LOGGERS = {
+    "httpx": logging.WARNING,
+    "httpcore": logging.WARNING,
+    "telegram.Bot": logging.INFO,
+    "telegram.ext.ExtBot": logging.INFO,
+}
+
+
+def silence_token_leaking_logs() -> None:
+    for name, level in _TOKEN_LEAKING_LOGGERS.items():
+        logging.getLogger(name).setLevel(level)
+
 
 @dataclass(slots=True)
 class Runtime:
@@ -57,6 +74,7 @@ class Runtime:
         request: BaseRequest | None = None,
         get_updates_request: BaseRequest | None = None,
     ) -> Runtime:
+        silence_token_leaking_logs()  # before the bot is constructed or sends anything
         engine = create_engine(settings.db.url, echo=settings.db.echo)
         session_factory = create_session_factory(engine)
         if cache is None:
