@@ -42,6 +42,8 @@ jobs:
               - tests/**
               - scripts/**
               - tools/**
+              - deploy/**
+              - docs/operations.md
             web:
               - *shared
               - apps/webapp/**
@@ -53,6 +55,9 @@ jobs:
             docker:
               - *shared
               - deploy/Dockerfile
+              - deploy/compose.yaml
+              - deploy/.env.example
+              - deploy/app.env.example
               - .dockerignore
               - "**/pyproject.toml"
               - uv.lock
@@ -150,6 +155,30 @@ jobs:
           out="$(docker run --rm akkiabot:ci)"
           echo "$out"
           [[ "$out" =~ ^akkiabot\ [0-9]+\.[0-9]+\.[0-9]+ ]]
+      # Production compose stack with the image just built: postgres + redis
+      # healthy, then the one-shot `migrate` service applies every migration.
+      # app/cloudflared need a real bot token / tunnel and are not started here.
+      - name: Compose stack smoke test (postgres, redis, migrate)
+        run: |
+          stack="$RUNNER_TEMP/stack"
+          mkdir -p "$stack"
+          cp deploy/compose.yaml "$stack/compose.yaml"
+          cp deploy/app.env.example "$stack/app.env"
+          sed -e 's/^AKKIABOT_IMAGE=.*/AKKIABOT_IMAGE=akkiabot/' \
+              -e 's/^AKKIABOT_TAG=.*/AKKIABOT_TAG=ci/' \
+              -e 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci0compose0smoke/' \
+              -e 's/^CLOUDFLARED_TOKEN=.*/CLOUDFLARED_TOKEN=fake-tunnel-token-for-tests/' \
+              deploy/.env.example > "$stack/.env"
+          cd "$stack"
+          docker compose config --quiet
+          docker compose up -d --wait postgres redis
+          docker compose run --rm migrate
+          rev="$(docker compose exec -T postgres psql -U akkiabot -d akkiabot -tAc 'select version_num from alembic_version')"
+          echo "alembic revision: $rev"
+          [[ -n "$rev" ]]
+      - name: Compose logs on failure
+        if: failure()
+        run: cd "$RUNNER_TEMP/stack" && docker compose logs --no-color || true
 
   # Credential scan (docs/secret-scanning.md). Fixed check name `secret-scan`; not
   # path-filtered, so it runs for every PR and push. Scans every commit reachable
