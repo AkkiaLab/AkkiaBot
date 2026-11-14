@@ -31,12 +31,14 @@ from akkiabot_server.bot.commands import COMMANDS
 from akkiabot_server.bot.deps import BotDeps
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
+from akkiabot_server.services.captcha import CaptchaService
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.chats import ChatDirectory
 from akkiabot_server.services.ip_lookup import build_ip_lookup
 from akkiabot_server.services.message_log import MessageRecorder
 from akkiabot_server.services.moderation import ModerationService
 from akkiabot_server.services.start_payload import StartPayloadStore
+from akkiabot_server.services.turnstile import HttpTurnstileVerifier, TurnstileVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,18 @@ _TOKEN_LEAKING_LOGGERS = {
 def silence_token_leaking_logs() -> None:
     for name, level in _TOKEN_LEAKING_LOGGERS.items():
         logging.getLogger(name).setLevel(level)
+
+
+def _turnstile(settings: Settings, http: httpx.AsyncClient) -> TurnstileVerifier | None:
+    turnstile = settings.turnstile
+    if turnstile.secret_key is None:
+        return None
+    return HttpTurnstileVerifier(
+        http,
+        secret_key=turnstile.secret_key.get_secret_value(),
+        verify_url=str(turnstile.verify_url),
+        timeout=turnstile.timeout,
+    )
 
 
 @dataclass(slots=True)
@@ -93,17 +107,25 @@ class Runtime:
             timeout=settings.whois.timeout,
             headers={"User-Agent": f"AkkiaBot/{__version__}"},
         )
+        start_payloads = StartPayloadStore(cache, default_ttl=settings.telegram.start_payload_ttl)
         deps = BotDeps(
             settings=settings,
             commands=CommandRegistry(COMMANDS),
-            start_payloads=StartPayloadStore(
-                cache, default_ttl=settings.telegram.start_payload_ttl
-            ),
+            start_payloads=start_payloads,
             chats=chats,
             messages=MessageRecorder(session_factory, chats),
             ip_lookup=build_ip_lookup(settings.whois, http),
             chat_settings=chat_settings,
             moderation=ModerationService(session_factory, chat_settings),
+            captcha=CaptchaService(
+                session_factory,
+                chat_settings,
+                start_payloads,
+                bot_token=settings.telegram.bot_token.get_secret_value(),
+                timeout=settings.webapp.captcha_timeout,
+                init_data_max_age=settings.webapp.init_data_max_age,
+                turnstile=_turnstile(settings, http),
+            ),
         )
         application = build_application(
             deps,

@@ -255,6 +255,56 @@ class CaptchaChallengeRepository:
             .limit(1)
         )
 
+    async def list_pending(self, chat_id: int, user_id: int) -> Sequence[CaptchaChallenge]:
+        """Every pending challenge of the member, oldest first."""
+        result = await self.session.scalars(
+            select(CaptchaChallenge)
+            .where(
+                CaptchaChallenge.chat_id == chat_id,
+                CaptchaChallenge.user_id == user_id,
+                CaptchaChallenge.status == CaptchaStatus.PENDING,
+            )
+            .order_by(CaptchaChallenge.created_at)
+        )
+        return result.all()
+
+    async def set_group_message(self, challenge_id: uuid.UUID, message_id: int) -> None:
+        """Remember the group prompt so it can be deleted once the challenge ends."""
+        await self.session.execute(
+            update(CaptchaChallenge)
+            .where(CaptchaChallenge.id == challenge_id)
+            .values(group_message_id=message_id)
+        )
+
+    async def release_claim(
+        self, challenge_id: uuid.UUID, *, now: datetime | None = None
+    ) -> CaptchaStatus | None:
+        """Undo a ``PASSED`` claim whose follow-up Telegram call failed.
+
+        Back to ``PENDING`` (the user may retry) while the challenge has not
+        expired; otherwise straight to ``EXPIRED``, so it is never left behind
+        as "passed" for a member who is in fact still muted. Returns the new
+        status, or ``None`` if the challenge was not ``PASSED``.
+        """
+        now = now or utcnow()
+        for status, still_valid in (
+            (CaptchaStatus.PENDING, CaptchaChallenge.expires_at > now),
+            (CaptchaStatus.EXPIRED, CaptchaChallenge.expires_at <= now),
+        ):
+            result = await self.session.execute(
+                update(CaptchaChallenge)
+                .where(
+                    CaptchaChallenge.id == challenge_id,
+                    CaptchaChallenge.status == CaptchaStatus.PASSED,
+                    still_valid,
+                )
+                .values(status=status)
+            )
+            assert isinstance(result, CursorResult)  # noqa: S101
+            if result.rowcount == 1:
+                return status
+        return None
+
     async def resolve(
         self, challenge_id: uuid.UUID, status: CaptchaStatus, *, now: datetime | None = None
     ) -> bool:

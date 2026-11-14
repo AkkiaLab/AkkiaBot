@@ -47,6 +47,7 @@ jobs:
             web:
               - *shared
               - apps/webapp/**
+              - tools/api-types/**
               - package.json
               - pnpm-lock.yaml
               - pnpm-workspace.yaml
@@ -129,6 +130,11 @@ jobs:
       - run: just setup-web
       - name: Lint (biome)
         run: just lint-web
+      - name: Generated API types are up to date
+        # apps/webapp/openapi.json itself is checked against the backend by pytest.
+        run: |
+          pnpm --filter @akkiabot/api-types gen-api
+          git diff --exit-code -- apps/webapp/src/api/schema.d.ts
       - name: Typecheck (tsc)
         run: just typecheck-web
       - name: Test (vitest)

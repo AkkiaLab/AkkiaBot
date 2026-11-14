@@ -26,14 +26,19 @@ async def start_command(update: Update, context: Context) -> str | None:
         return None
 
     deps = get_deps(context)
-    payload = await deps.start_payloads.consume(context.args[0])
-    handler = deps.start_handlers.get(payload.kind) if payload else None
-    if payload is None or handler is None:
-        if payload is not None:
-            logger.warning("no handler for start payload", extra={"kind": payload.kind})
+    token = context.args[0]
+    payload = await deps.start_payloads.peek(token)
+    route = deps.start_handlers.get(payload.kind) if payload else None
+    if payload is not None and route is not None and not route.reusable:
+        # One-time link: whoever consumes it first wins (``pop`` is atomic).
+        payload = await deps.start_payloads.consume(token)
+    elif payload is not None and route is None:
+        logger.warning("no handler for start payload", extra={"kind": payload.kind})
+        await deps.start_payloads.consume(token)
+    if payload is None or route is None:
         await message.reply_text(START_INVALID)
         return "invalid_payload"
-    await handler(update, context, payload)
+    await route.handler(update, context, payload)
     return None
 
 

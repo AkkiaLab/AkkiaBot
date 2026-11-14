@@ -153,7 +153,13 @@ class WhoisSettings(_Group):
 
 
 class TurnstileSettings(_Group):
+    """Cloudflare Turnstile server-side validation (captcha)."""
+
     secret_key: SecretStr | None = None
+    """Turnstile secret key. Without it ``/api/v1/captcha/verify`` answers 503."""
+    verify_url: AnyHttpUrl = AnyHttpUrl("https://challenges.cloudflare.com/turnstile/v0/siteverify")
+    timeout: float = Field(default=10.0, gt=0)
+    """Per-request timeout (seconds) of the siteverify call."""
 
 
 class WebAppSettings(_Group):
@@ -161,6 +167,9 @@ class WebAppSettings(_Group):
     """Public URL of the Mini App, e.g. ``https://bot.akkia.moe``."""
     init_data_max_age: int = Field(default=3600, gt=0)
     """Seconds an initData payload stays valid after ``auth_date``."""
+    captcha_timeout: int = Field(default=300, ge=30)
+    """Seconds a new member has to pass the join captcha; afterwards the
+    challenge times out and the member stays muted."""
 
 
 class CorsSettings(_Group):

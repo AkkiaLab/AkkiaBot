@@ -114,9 +114,10 @@ e2e-bootstrap-bot *args:
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
 
-# Regenerate frontend API types from the backend OpenAPI schema
+# Regenerate the OpenAPI document and the frontend API types (commit both)
 gen-api:
-    @echo "gen-api: 后端目前只有健康检查接口，业务 API 从 M6 起接入 openapi-typescript，当前无需生成。"
+    uv run akkiabot openapi --output apps/webapp/openapi.json
+    pnpm --filter @akkiabot/api-types gen-api
 
 # Build the backend image and print its version
 docker-build tag="akkiabot:dev":

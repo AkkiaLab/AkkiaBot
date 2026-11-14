@@ -48,7 +48,7 @@ just migrate     # 对 DB_URL 执行数据库迁移（等同 `akkiabot migrate`�
 just serve       # 启动机器人与 HTTP API（等同 `akkiabot serve`，需先 migrate）
 just db-revision "说明"  # 修改模型后自动生成新的 Alembic 迁移
 just test-integration  # 连同 compose 中的 PostgreSQL / Redis 一起跑 pytest
-just gen-api     # 由后端 OpenAPI 生成前端类型（M6 提供业务 API 后启用）
+just gen-api     # 导出后端 OpenAPI（apps/webapp/openapi.json）并生成前端类型（src/api/schema.d.ts），两者都要提交
 just docker-build  # 构建后端镜像并运行，打印版本号
 just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-acceptance.md；CI 不运行）
 ```
@@ -65,13 +65,14 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 
 - 测试环境：`TELEGRAM_TEST_ENVIRONMENT=true` 时 Bot API 改用 Telegram 测试环境端点（`/bot<token>/test/`），只接受测试环境 BotFather 签发的 token；默认 `false` 为生产端点。真实验收只用测试环境，见 [docs/e2e-acceptance.md](docs/e2e-acceptance.md)。
 - 接收更新：默认长轮询（`TELEGRAM_MODE=polling`）；设为 `webhook` 时需同时配置 `TELEGRAM_WEBHOOK_URL`（API 公网地址，机器人注册 `<地址>/telegram/webhook`）与 `TELEGRAM_WEBHOOK_SECRET`（校验 `X-Telegram-Bot-Api-Secret-Token`）。两种方式都显式订阅 `message`、`callback_query`、`chat_member`、`my_chat_member`。
-- HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）。
+- HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）与 `POST /api/v1/captcha/verify`（见下方入群验证）。CORS 只放行 `CORS_ALLOW_ORIGINS` 中列出的来源（生产为 `https://bot.akkia.moe`），未配置时不发送任何 CORS 头。
 - 指标：`/metrics` 只在独立端口 `OBSERVABILITY_METRICS_HOST:OBSERVABILITY_METRICS_PORT`（默认 `127.0.0.1:9464`）提供，不经公网 tunnel 暴露；容器内由 compose 内网访问时把 host 设为 `0.0.0.0` 且不要发布该端口。
 - 命令：`bot/commands/__init__.py` 中的 `COMMANDS` 是唯一的声明式列表，同时生成命令处理器、`set_my_commands` 菜单和 `/help` 文本。需要私聊深链的功能用 `StartPayloadStore.create()` 生成一次性 payload（基于 `Cache.pop`，默认 `TELEGRAM_START_PAYLOAD_TTL=600` 秒），并通过 `BotDeps.on_start(kind, handler)` 注册分发。
 - 群消息：记录 `message_log`（只存 ID）与成员发言计数；首次见到某个群时写入 `chat`；按群配置 `delete_service_messages`（默认开启）删除入群、退群、置顶等系统消息。`message_log` 由定时任务按 `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS`（默认 30 天）清理。
 - 群配置：`services/chat_settings.py` 读写 `chat.settings`（可移植 JSON 列，`ChatSettings` 校验）；读取经共享缓存（5 分钟），写入提交后删除缓存项。`/config` 由群主或具有“封禁成员”权限的管理员在群内发起 → 一次性深链（绑定该群和该用户）→ 私聊中的 inline 开关（反垃圾、入群验证、警告、删除系统消息），每次点击都重新校验发起人在群内的权限。
 - 群管理：`/ban`、`/warn` 必须回复要处理的成员的消息使用，规则在 `services/moderation.py`：操作者须为群主或具有“封禁成员”权限的管理员，目标不能是群主或管理员，匿名管理员需关闭匿名。`/ban` 封禁后按 `message_log` 分批（每批 100 条、最多 4 个并发）删除该成员的历史消息，遇到 429 按 `retry_after` 退避重试；`/warn` 需先在 `/config` 开启，达到 `max_warn_count`（默认 3）后自动封禁、删除历史并清零。所有操作写入 `chat_member.restriction`（`admin_ban` / `warn_ban`）。
-- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
+- 入群验证（`services/captcha.py`、`bot/captcha.py`）：群内开启“入群验证”后，成员身份从非成员变为成员（含带着限制状态重新入群）时，机器人禁言该成员（`chat_member.restriction = captcha_mute`），创建有效期 `WEBAPP_CAPTCHA_TIMEOUT`（默认 300 秒）的 `captcha_challenge`，并在群内发送脱敏称呼的提示和私聊深链。发起人在私聊 `/start` 后得到打开 `<WEBAPP_URL>/captcha?challenge=<id>` 的 Mini App 按钮；他人点击会被拒绝，且不会让链接失效（该 payload 在有效期内可重复使用）。Mini App 调用 `POST /api/v1/captcha/verify`，依次校验 Turnstile（`TURNSTILE_SECRET_KEY`，未配置时 503）、initData（含 `auth_date` 过期）、challenge 存在且未过期未使用、initData 用户与 challenge 一致、该成员当前是 captcha 禁言，然后解除禁言并通过 `answerWebAppQuery` 回执；错误以固定的 `error` 码返回。超时由 JobQueue 处理（每个 challenge 一个定时任务，另有每 30 秒一次的兜底扫描）：challenge 记为 `expired`，**成员保持禁言**，群内提示被删除；退群再入群会生成新的 challenge，管理员仍可手动解除禁言，此时 `chat_member` 同步为 `none`。机器人必须是群管理员（具备“封禁成员”“删除消息”权限）才能收到 `chat_member` 更新并禁言。
+- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；入群验证记 `akkiabot_captcha_total{result=passed|timeout|failed}`（`failed` 为被拒绝的提交）与 `akkiabot_captcha_duration_seconds`（入群到通过的耗时）；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|mute|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
 - Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更、按钮回调），`member_responder()` 用来模拟 `getChatMember`；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
 
 ### 数据库与测试
@@ -94,6 +95,7 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 
 - `ci.yml`：PR 和 master 推送时运行。按改动路径决定执行 Python（lint / typecheck / test）、前端（lint / typecheck / test / build）和镜像构建（含启动冒烟）；`ci-ok` 汇总所有结果，适合作为分支保护的必需检查。
 - `release.yml`：master 推送后构建并推送 `ghcr.io/akkialab/akkiabot:<sha>` 与 `:latest`。
+- 前后端契约：pytest 校验 `apps/webapp/openapi.json` 与后端一致，前端 job 校验 `src/api/schema.d.ts` 与 `openapi.json` 一致；接口变更后运行 `just gen-api` 并提交两者。openapi-typescript 依赖 TypeScript 5 的编译器 API，而前端使用的 TypeScript 7 不再提供，因此它单独放在 `tools/api-types` 这个 pnpm 包里，自带 TypeScript 5。
 - `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。
 - 依赖升级由 Renovate 按 `renovate.json` 每周一提交 PR。
 

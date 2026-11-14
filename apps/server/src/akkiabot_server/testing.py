@@ -159,6 +159,25 @@ class FakeBotApi(BaseRequest):
         return message
 
 
+_MEMBER_PERMISSIONS = (
+    "can_send_messages",
+    "can_send_audios",
+    "can_send_documents",
+    "can_send_photos",
+    "can_send_videos",
+    "can_send_video_notes",
+    "can_send_voice_notes",
+    "can_send_polls",
+    "can_send_other_messages",
+    "can_add_web_page_previews",
+    "can_change_info",
+    "can_invite_users",
+    "can_pin_messages",
+    "can_manage_topics",
+    "can_edit_tag",
+    "can_react_to_messages",
+)
+
 _ADMIN_RIGHTS = (
     "can_be_edited",
     "can_manage_chat",
@@ -203,6 +222,14 @@ class UpdateFactory:
     def chat_member(user: dict[str, Any], status: str = "member", **fields: Any) -> dict[str, Any]:
         """A ``ChatMember``; administrators get full rights unless overridden."""
         member: dict[str, Any] = {"status": status, "user": user}
+        if status == "restricted":
+            # Muted by default; ``is_member=False`` means "restricted and left".
+            member |= dict.fromkeys(_MEMBER_PERMISSIONS, False) | {
+                "is_member": True,
+                "until_date": 0,
+            }
+        if status == "kicked":
+            member["until_date"] = 0
         if status == "administrator":
             member |= dict.fromkeys(_ADMIN_RIGHTS, True) | {"is_anonymous": False}
         elif status == "creator":
@@ -295,6 +322,27 @@ class UpdateFactory:
                 "date": int(time.time()),
                 "old_chat_member": self.chat_member(BOT_USER, old_status),
                 "new_chat_member": self.chat_member(BOT_USER, new_status),
+            }
+        )
+
+    def chat_member_update(
+        self,
+        user: dict[str, Any],
+        *,
+        old: dict[str, Any] | str = "left",
+        new: dict[str, Any] | str = "member",
+        chat: dict[str, Any] | None = None,
+        by: dict[str, Any] | None = None,
+    ) -> Update:
+        """Another user's membership changed (``chat_member``); ``old`` / ``new``
+        are statuses or full ``ChatMember`` dicts (see :meth:`chat_member`)."""
+        return self._update(
+            chat_member={
+                "chat": chat if chat is not None else self.group(),
+                "from": by or user,
+                "date": int(time.time()),
+                "old_chat_member": old if isinstance(old, dict) else self.chat_member(user, old),
+                "new_chat_member": new if isinstance(new, dict) else self.chat_member(user, new),
             }
         )
 

@@ -1,0 +1,14 @@
+{
+  "name": "@akkiabot/api-types",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Generates apps/webapp/src/api/schema.d.ts from apps/webapp/openapi.json (just gen-api).",
+  "type": "module",
+  "scripts": {
+    "gen-api": "openapi-typescript ../../apps/webapp/openapi.json -o ../../apps/webapp/src/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -53,7 +53,16 @@ class StartPayloadStore:
         token is malformed, unknown, expired or already used."""
         if not _TOKEN.fullmatch(token):
             return None
-        raw = await self._cache.pop(KEY_PREFIX + token)
+        return self._parse(await self._cache.pop(KEY_PREFIX + token))
+
+    async def peek(self, token: str) -> StartPayload | None:
+        """Like :meth:`consume` but leaves the payload in place."""
+        if not _TOKEN.fullmatch(token):
+            return None
+        return self._parse(await self._cache.get(KEY_PREFIX + token))
+
+    @staticmethod
+    def _parse(raw: str | None) -> StartPayload | None:
         if raw is None:
             return None
         try:

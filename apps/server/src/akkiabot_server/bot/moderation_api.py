@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 from telegram import Bot, ChatMember, ChatMemberAdministrator
 from telegram.error import RetryAfter, TelegramError
@@ -37,6 +38,17 @@ def _retry_after(exc: RetryAfter) -> float:
         warnings.simplefilter("ignore", PTBDeprecationWarning)
         value = exc.retry_after
     return value if isinstance(value, int | float) else value.total_seconds()
+
+
+@contextmanager
+def translate_errors() -> Iterator[None]:
+    """Map PTB errors to :class:`RateLimitedError` / :class:`ModerationApiError`."""
+    try:
+        yield
+    except RetryAfter as exc:
+        raise RateLimitedError(_retry_after(exc)) from exc
+    except TelegramError as exc:
+        raise ModerationApiError(str(exc)) from exc
 
 
 class PtbModerationApi:
