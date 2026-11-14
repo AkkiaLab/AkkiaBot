@@ -53,6 +53,24 @@ test-py *args:
 test-web:
     pnpm -r test
 
+# Run pytest against the compose postgres/redis (start them with `just dev` or `just services`)
+test-integration *args:
+    AKKIABOT_TEST_DATABASE_URL="postgresql+asyncpg://akkiabot:akkiabot@127.0.0.1:5432/akkiabot" \
+    AKKIABOT_TEST_REDIS_URL="redis://127.0.0.1:6379/15" \
+    uv run pytest {{ args }}
+
+# Apply database migrations to DB_URL (reads .env)
+migrate revision="head":
+    uv run akkiabot migrate {{ revision }}
+
+# Autogenerate a new Alembic revision against DB_URL (database must be at head)
+db-revision message:
+    uv run python -c 'import sys; from akkiabot_core.config import load_database_settings; from akkiabot_core.db.migrate import revision; revision(load_database_settings().url, sys.argv[1])' "{{ message }}"
+
+# Start local postgres/redis only
+services:
+    {{ compose_dev }} up -d --wait
+
 # Start local postgres/redis and the Mini App dev server
 dev:
     {{ compose_dev }} up -d --wait
