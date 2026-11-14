@@ -128,6 +128,8 @@ class FakeBot:
     """Post the prompt but never mute the newcomer."""
     captcha_plain_link: bool = False
     """Answer /start with a URL button instead of a web_app button."""
+    captcha_no_mention: bool = False
+    """Prompt without linking the newcomer."""
     # -- state --
     settings: dict[int, dict[str, bool]] = field(default_factory=dict, init=False)
     warns: dict[tuple[int, int], int] = field(default_factory=dict, init=False)
@@ -167,12 +169,15 @@ class FakeBot:
             chat.restricted.add(user_id)
         token = f"cap{next(self._token_ids)}"
         self.challenges[token] = (chat.id, user_id, str(uuid.uuid4()))
-        user = world.users[user_id]
         link = f"https://t.me/{self.user.username}?start={token}"
+        masked = "成…试"  # the real bot masks the display name
+        offset = len("你好 ".encode("utf-16-le")) // 2
+        mention = () if self.captcha_no_mention else (Entity("mention_name", offset, len(masked)),)
         world.post(
             chat,
             self.user.id,
-            f"你好 {user.first_name} 👋\n请在 5 分钟内完成入群验证。",
+            f"你好 {masked} 👋\n请在 5 分钟内完成入群验证。",
+            entities=mention,
             buttons=(Button("👉点击此处开始入群验证👈", url=link),),
         )
 

@@ -81,6 +81,7 @@ async def test_m7_evidence_never_contains_init_data(world: FakeTelegram, config:
     [
         ("captcha_no_mute", {}, "成员没有被禁言"),
         ("captcha_plain_link", {}, "web_app 按钮"),
+        ("captcha_no_mention", {}, "提及链接"),
         (None, {"cors": False}, "CORS"),
         (None, {"accept_any_token": True}, "400 turnstile_failed"),
         (None, {"page_status": 404}, "HTTP 404"),

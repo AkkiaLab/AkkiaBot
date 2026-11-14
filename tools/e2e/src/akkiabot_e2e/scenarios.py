@@ -639,9 +639,10 @@ async def wait_captcha_prompt(ctx: ScenarioContext, after: int) -> str:
             button = msg.button(CAPTCHA_PROMPT_BUTTON)
             if msg.sender_id == ctx.bot.id and button is not None and button.url:
                 ctx.record("bot 在群内发送验证提示", msg, link=button.url)
+                # The bot masks the display name but links it to the member (text mention).
                 check(
-                    str(ctx.member_user.id) in msg.text or ctx.member_user.first_name in msg.text,
-                    "验证提示没有提到入群成员",
+                    any(e.kind == "mention_name" for e in msg.entities),
+                    "验证提示没有以提及链接的形式提到入群成员",
                 )
                 token = _START_TOKEN.search(button.url)
                 check(
