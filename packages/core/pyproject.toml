@@ -1,0 +1,10 @@
+[project]
+name = "akkiabot-core"
+version = "0.1.0"
+description = "共享基础设施：配置、日志、数据库、缓存、领域模型"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9,<1"]
+build-backend = "uv_build"

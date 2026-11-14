@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      web: ${{ steps.filter.outputs.web }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - justfile
+              - .github/workflows/ci.yml
+            python:
+              - *shared
+              - "**/*.py"
+              - "**/pyproject.toml"
+              - uv.lock
+              - .python-version
+              - apps/server/**
+              - packages/**
+              - tests/**
+              - scripts/**
+            web:
+              - *shared
+              - apps/webapp/**
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - biome.json
+              - .nvmrc
+            docker:
+              - *shared
+              - deploy/Dockerfile
+              - .dockerignore
+              - "**/pyproject.toml"
+              - uv.lock
+              - apps/server/src/**
+              - packages/*/src/**
+
+  python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - uses: extractions/setup-just@v4
+      - run: just setup-py
+      - name: Lint (ruff + import-linter)
+        run: just lint-py
+      - name: Typecheck (pyright)
+        run: just typecheck-py
+      - name: Test (pytest)
+        run: just test-py
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: extractions/setup-just@v4
+      - run: just setup-web
+      - name: Lint (biome)
+        run: just lint-web
+      - name: Typecheck (tsc)
+        run: just typecheck-web
+      - name: Test (vitest)
+        run: just test-web
+      - name: Build
+        run: pnpm --filter @akkiabot/webapp build
+
+  docker:
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          tags: akkiabot:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (prints version and exits)
+        run: |
+          out="$(docker run --rm akkiabot:ci)"
+          echo "$out"
+          [[ "$out" =~ ^akkiabot\ [0-9]+\.[0-9]+\.[0-9]+ ]]
+
+  # Single required check for branch protection: fails if any job failed,
+  # passes when jobs were skipped by the path filter.
+  ci-ok:
+    if: always()
+    needs: [changes, python, web, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then exit 1; fi
+          done

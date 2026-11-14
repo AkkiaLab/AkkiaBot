@@ -1,0 +1,96 @@
+# uv workspace root. This project is not itself a package; it only holds
+# shared dev tooling and the configuration for ruff / pyright / pytest /
+# import-linter.
+[project]
+name = "akkiabot-workspace"
+version = "0.0.0"
+requires-python = ">=3.13"
+
+[dependency-groups]
+dev = [
+  "import-linter>=2.1",
+  "pre-commit>=4.0",
+  "pyright>=1.1.400",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "ruff>=0.11",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/server", "packages/*"]
+
+[tool.uv.sources]
+akkiabot-server = { workspace = true }
+akkiabot-core = { workspace = true }
+akkiabot-antispam = { workspace = true }
+akkiabot-whois = { workspace = true }
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["apps/webapp", "docs"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "ASYNC", "S", "N", "T20",
+]
+ignore = [
+  "E501", # line length is handled by the formatter
+  # Chinese text legitimately uses full-width punctuation.
+  "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S603", "S607"]
+"tests/**" = ["S101", "S603", "S607"]
+"scripts/**" = ["T20"]
+"**/akkiabot_server/main.py" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+
+# -------------------------------------------------------------- pyright
+[tool.pyright]
+include = ["apps/server", "packages", "tests", "scripts"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.venv"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+
+# --------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests", "apps/server/tests", "packages/*/tests"]
+pythonpath = ["."]
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
+
+# -------------------------------------------------------- import-linter
+# Module boundaries from docs/architecture.md §5.1.
+# A counter-example test lives in tests/test_import_contracts.py.
+[tool.importlinter]
+root_packages = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "layers"
+name = "apps/server 位于 packages 之上；core、antispam、whois 互不依赖"
+type = "layers"
+layers = [
+  "akkiabot_server",
+  "akkiabot_core | akkiabot_antispam | akkiabot_whois",
+]
+
+[[tool.importlinter.contracts]]
+id = "packages-no-frameworks"
+name = "packages/* 不依赖 Telegram 框架与 Web 框架"
+type = "forbidden"
+source_modules = ["akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+forbidden_modules = ["telegram", "fastapi", "starlette", "uvicorn"]
+allow_indirect_imports = true

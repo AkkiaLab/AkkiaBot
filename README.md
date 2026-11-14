@@ -7,6 +7,63 @@ AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Clou
 - 架构与技术栈：[docs/architecture.md](docs/architecture.md)
 - 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
 
+## 开发
+
+### 目录结构
+
+```text
+apps/server        后端服务（Python 包 akkiabot_server，入口命令 akkiabot）
+apps/webapp        Telegram Mini App（Vite + React + TypeScript + Tailwind）
+packages/core      akkiabot_core：配置、日志、数据库、缓存、领域模型
+packages/antispam  akkiabot_antispam：LLM 反垃圾分类器（纯库）
+packages/whois     akkiabot_whois：IP 查询 provider 链（纯库）
+deploy/            Dockerfile 与 compose 文件
+scripts/           仓库脚本（如 PR 标题检查）
+tests/             仓库级测试（import-linter 反例、脚本测试）
+```
+
+### 环境要求
+
+- [uv](https://docs.astral.sh/uv/)（会按 `.python-version` 自动准备 Python 3.13）
+- Node.js 22+ 与 pnpm 10（`corepack enable` 后按 `package.json` 的 `packageManager` 自动选择版本）
+- [just](https://github.com/casey/just)
+- Docker（本地数据库与镜像构建，可选）
+
+### 常用命令
+
+```bash
+just setup       # 安装 Python / 前端依赖，并安装 pre-commit 钩子
+just lint        # ruff + import-linter + biome
+just fmt         # 自动格式化并修复可安全修复的问题
+just typecheck   # pyright + tsc
+just test        # pytest + vitest
+just dev         # 启动本地 postgres / redis（deploy/compose.dev.yaml）和 Mini App 开发服务器
+just dev-down    # 停止本地服务
+just gen-api     # 由后端 OpenAPI 生成前端类型（M2 引入 HTTP API 后启用）
+just docker-build  # 构建后端镜像并运行，打印版本号
+```
+
+只改一侧时，可以用 `just lint-py` / `just lint-web`、`just test-py` / `just test-web` 等子命令；`just test-py -k smoke` 会把参数透传给 pytest。
+
+本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。
+
+### 模块边界
+
+依赖方向由 import-linter 在 `just lint` 和 CI 中强制检查（规则见根 `pyproject.toml` 的 `[tool.importlinter]`，说明见[架构文档 §5.1](docs/architecture.md#51-模块边界与依赖方向)）：
+
+- `apps/server` 可以依赖任意 `packages/*`，反之不行；
+- `core`、`antispam`、`whois` 互不依赖；
+- `packages/*` 不能导入 `telegram`、`fastapi`、`starlette`、`uvicorn`。
+
+违反时 `lint-imports` 会输出 `BROKEN` 并以非零状态退出；`tests/test_import_contracts.py` 中的反例测试覆盖了上述每条规则。
+
+### CI 与发布
+
+- `ci.yml`：PR 和 master 推送时运行。按改动路径决定执行 Python（lint / typecheck / test）、前端（lint / typecheck / test / build）和镜像构建（含启动冒烟）；`ci-ok` 汇总所有结果，适合作为分支保护的必需检查。
+- `release.yml`：master 推送后构建并推送 `ghcr.io/akkialab/akkiabot:<sha>` 与 `:latest`。
+- `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。
+- 依赖升级由 Renovate 按 `renovate.json` 每周一提交 PR。
+
 ## License
 
 [Apache-2.0](LICENSE)
