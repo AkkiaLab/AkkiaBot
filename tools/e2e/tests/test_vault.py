@@ -11,6 +11,7 @@ import pytest
 from akkiabot_e2e import cli
 from akkiabot_e2e.errors import ConfigError
 from akkiabot_e2e.files import write_private_file
+from akkiabot_e2e.group import VaultGroupRegistry
 from akkiabot_e2e.testing import ADMIN, MOCK_ADMIN_SESSION, live_env
 from akkiabot_e2e.vault import FieldValue, Vault
 
@@ -130,6 +131,37 @@ def test_add_ids_merges_and_drops_placeholder() -> None:
     assert vault.add_ids("telegram-e2e", "allowed_chat_ids", [-1002]) == [-1002]
     assert vault.add_ids("telegram-e2e", "allowed_chat_ids", [-1001, -1002]) == [-1002, -1001]
     assert labels(op, "telegram-e2e")["allowed_chat_ids"] == ("STRING", "-1002,-1001")
+
+
+def test_group_registry_records_and_clears_the_pending_operation() -> None:
+    op = FakeOp({"telegram-e2e": [{"id": "c", "label": "allowed_chat_ids", "value": "-1001"}]})
+    registry = VaultGroupRegistry(Vault(run=op))
+    assert registry.pending_operation() is None  # field does not exist yet
+
+    registry.begin("0123abcd4567")
+    assert registry.pending_operation() == "0123abcd4567"
+    assert labels(op, "telegram-e2e")["pending_group_operation"] == ("STRING", "0123abcd4567")
+
+    registry.register(-1002)
+    registry.finish()
+    assert registry.pending_operation() is None
+    assert labels(op, "telegram-e2e") == {
+        "allowed_chat_ids": ("STRING", "-1002,-1001"),
+        "pending_group_operation": ("STRING", ""),
+    }
+
+
+def test_clearing_accepts_an_empty_field_that_reads_back_as_missing() -> None:
+    op = FakeOp({"telegram-e2e": [{"id": "p", "label": "pending_group_operation", "value": "x"}]})
+
+    def run(argv, stdin):
+        code, out, err = op(argv, stdin)
+        if argv[1] == "read" and out == b"\n":
+            return 1, b"", b"[ERROR] field has no value"
+        return code, out, err
+
+    Vault(run=run, sleep=lambda _: None).clear_field("telegram-e2e", "pending_group_operation")
+    assert labels(op, "telegram-e2e")["pending_group_operation"] == ("STRING", "")
 
 
 def test_session_store_cli_writes_vault_then_deletes_file(
