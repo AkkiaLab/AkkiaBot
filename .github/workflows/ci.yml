@@ -151,11 +151,32 @@ jobs:
           echo "$out"
           [[ "$out" =~ ^akkiabot\ [0-9]+\.[0-9]+\.[0-9]+ ]]
 
+  # Credential scan (docs/secret-scanning.md). Fixed check name `secret-scan`; not
+  # path-filtered, so it runs for every PR and push. Scans every commit reachable
+  # from the checked-out ref (for a PR: master history + all PR commits), not just
+  # the head tree, with the same pinned gitleaks and rules as pre-commit.
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-gitleaks-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Scan history (gitleaks, redacted)
+        run: uv run --only-group dev pre-commit run gitleaks-history --hook-stage manual --all-files
+
   # Single required check for branch protection: fails if any job failed,
   # passes when jobs were skipped by the path filter.
   ci-ok:
     if: always()
-    needs: [changes, python, web, docker]
+    needs: [changes, python, web, docker, secret-scan]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results

@@ -29,6 +29,10 @@ lint-py:
 lint-web:
     pnpm exec biome check .
 
+# Scan every commit reachable from HEAD for credentials (same as the CI `secret-scan` job)
+secret-scan:
+    uv run pre-commit run gitleaks-history --hook-stage manual --all-files
+
 # Auto-format and apply safe fixes
 fmt:
     uv run ruff check --fix .

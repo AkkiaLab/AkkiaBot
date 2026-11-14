@@ -1,0 +1,14 @@
+# Known historical findings, matched by exact fingerprint (commit:file:rule:line).
+# Fingerprints never contain the value. Each entry needs evidence in
+# docs/secret-scanning.md ("历史基线与例外"); do not add unknown findings here.
+#
+# Telegram Bot API docs example token copied into a test (BOT-7), replaced by BOT-21.
+# Same sha256 prefix as the only token-shaped value on core.telegram.org/bots/api;
+# getMe returned 401 on production and test environment (BOT-24, 2026-11-14).
+5cabac566fc77639719a91f7d75a60331637e9da:packages/core/tests/test_telegram_utils.py:akkiabot-telegram-bot-token-bare:16
+bcfa463dc95394114bbb71309db8c0239f835a69:packages/core/tests/test_telegram_utils.py:akkiabot-telegram-bot-token-bare:16
+# GitHub secret scanning alert #1 value (BOT-7, model-constructed, see BOT-21), replaced by BOT-21.
+# getMe returned 401 on production and test environment (BOT-24, 2026-11-14).
+6a76d7702ab75565c342ab62fe8df4a520cb7557:packages/core/tests/test_observability.py:akkiabot-telegram-bot-token-bare:116
+bcfa463dc95394114bbb71309db8c0239f835a69:packages/core/tests/test_observability.py:akkiabot-telegram-bot-token-bare:116
+e41198a6d64cea7e850bd5333306dacc45b00294:packages/core/tests/test_observability.py:akkiabot-telegram-bot-token-bare:29
