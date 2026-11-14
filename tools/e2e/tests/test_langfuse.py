@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -29,19 +30,21 @@ def probe() -> LangfuseProbe:
     )
 
 
-def page(inputs: list[str], *, page_no: int = 1, pages: int = 1) -> httpx.Response:
+def page(inputs: list[str], *, cursor: str | None = None) -> httpx.Response:
+    # v2 returns input/output as raw (JSON-encoded) strings.
     data = [
-        {"name": "antispam.classify", "input": [{"role": "user", "content": i}]} for i in inputs
+        {"name": "antispam.classify", "input": json.dumps([{"role": "user", "content": i}])}
+        for i in inputs
     ]
-    return httpx.Response(200, json={"data": data, "meta": {"page": page_no, "totalPages": pages}})
+    return httpx.Response(200, json={"data": data, "meta": {"cursor": cursor}})
 
 
 @respx.mock
 async def test_wait_for_markers_pages_and_counts() -> None:
-    route = respx.get(f"{HOST}/api/public/observations")
+    route = respx.get(f"{HOST}/api/public/v2/observations")
     route.side_effect = [
-        page(["广告（E2E spam run1）"], pages=2),
-        page(["天气（E2E ham0 run1）", "广告（E2E spam run1）"], page_no=2, pages=2),
+        page(["广告（E2E spam run1）"], cursor="next"),
+        page(["天气（E2E ham0 run1）", "广告（E2E spam run1）"]),
     ]
     p = probe()
     counts = await p.wait_for_markers(["spam run1", "ham0 run1"], since=SINCE)
@@ -53,12 +56,14 @@ async def test_wait_for_markers_pages_and_counts() -> None:
     assert request.url.params["name"] == "antispam.classify"
     assert request.url.params["type"] == "GENERATION"
     assert request.url.params["fromStartTime"] == SINCE.isoformat()
+    assert "cursor" not in request.url.params
+    assert route.calls[1].request.url.params["cursor"] == "next"
     assert MOCK_SECRET_KEY not in str(request.url)
 
 
 @respx.mock
 async def test_wait_for_markers_polls_until_ingested() -> None:
-    respx.get(f"{HOST}/api/public/observations").side_effect = [page([]), page(["x spam run1"])]
+    respx.get(f"{HOST}/api/public/v2/observations").side_effect = [page([]), page(["x spam run1"])]
     p = probe()
     counts = await p.wait_for_markers(["spam run1"], since=SINCE, poll_interval=0)
     await p.aclose()
@@ -67,7 +72,7 @@ async def test_wait_for_markers_polls_until_ingested() -> None:
 
 @respx.mock
 async def test_wait_for_markers_gives_up() -> None:
-    respx.get(f"{HOST}/api/public/observations").mock(return_value=page([]))
+    respx.get(f"{HOST}/api/public/v2/observations").mock(return_value=page([]))
     p = probe()
     counts = await p.wait_for_markers(["spam run1"], since=SINCE, max_wait=0, poll_interval=0)
     await p.aclose()
@@ -76,7 +81,7 @@ async def test_wait_for_markers_gives_up() -> None:
 
 @respx.mock
 async def test_http_error_is_a_failed_check() -> None:
-    respx.get(f"{HOST}/api/public/observations").mock(return_value=httpx.Response(401))
+    respx.get(f"{HOST}/api/public/v2/observations").mock(return_value=httpx.Response(401))
     p = probe()
     with pytest.raises(CheckFailed, match="HTTP 401"):
         await p.generations(since=SINCE)

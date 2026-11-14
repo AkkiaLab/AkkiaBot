@@ -1,6 +1,7 @@
 """Read-only Langfuse check for M5: was every spam classification traced?
 
-Uses the Langfuse public API (``GET /api/public/observations``, HTTP basic
+Uses the Langfuse public API (``GET /api/public/v2/observations``; the v1
+list endpoint answers 410 Gone on current Langfuse Cloud, HTTP basic
 auth with the project's public / secret key). Only observation inputs are
 inspected, to find the run-specific marker the scenarios put into every test
 message; keys never appear in URLs, logs or the report.
@@ -44,26 +45,25 @@ class LangfuseProbe:
     async def generations(self, *, since: datetime, name: str = GENERATION_NAME) -> list[Any]:
         """All generation observations named ``name`` that started after ``since``."""
         found: list[Any] = []
-        page = 1
+        cursor: str | None = None
         while True:
-            response = await self._client.get(
-                "/api/public/observations",
-                params={
-                    "name": name,
-                    "type": "GENERATION",
-                    "fromStartTime": since.isoformat(),
-                    "limit": 100,
-                    "page": page,
-                },
-            )
+            params: dict[str, Any] = {
+                "name": name,
+                "type": "GENERATION",
+                "fromStartTime": since.isoformat(),
+                "fields": "core,io",
+                "limit": 100,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response = await self._client.get("/api/public/v2/observations", params=params)
             if response.status_code != 200:
                 raise CheckFailed(f"Langfuse 查询失败：HTTP {response.status_code}")
             body = response.json()
             found += body.get("data", [])
-            total_pages = int(body.get("meta", {}).get("totalPages", 1) or 1)
-            if page >= total_pages:
+            cursor = (body.get("meta") or {}).get("cursor")
+            if not cursor:
                 return found
-            page += 1
 
     async def wait_for_markers(
         self,
