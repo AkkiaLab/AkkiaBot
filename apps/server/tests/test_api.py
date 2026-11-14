@@ -15,7 +15,7 @@ from akkiabot_server.api import create_app
 from akkiabot_server.api.app import SECRET_HEADER
 from akkiabot_server.bot.application import ALLOWED_UPDATES
 from akkiabot_server.runtime import Runtime
-from akkiabot_server.testing import FakeBotApi, UpdateFactory
+from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_WEBHOOK_SECRET = "test-webhook-secret_123"
@@ -77,10 +77,14 @@ async def test_readiness_reports_failing_dependency(
 async def test_polling_mode_requests_explicit_updates(
     settings: Settings, api: FakeBotApi, build: Callable[[Settings], Runtime]
 ) -> None:
+    polls = metric_value("akkiabot_telegram_poll_total", result="ok")
     runtime = build(settings)
     async with serve(runtime) as client:
         await _wait_for(lambda: bool(api.calls_to("getUpdates")))
         assert (await client.post("/telegram/webhook", json={})).status_code == 404
+        # Every long poll feeds the "bot stopped receiving updates" alert.
+        await _wait_for(lambda: metric_value("akkiabot_telegram_poll_total", result="ok") > polls)
+        assert metric_value("akkiabot_telegram_poll_last_success_timestamp_seconds") > 0
     assert api.calls_to("getUpdates")[0]["allowed_updates"] == list(ALLOWED_UPDATES)
     assert set(ALLOWED_UPDATES) == {"message", "callback_query", "chat_member", "my_chat_member"}
     assert api.calls_to("setWebhook") == []

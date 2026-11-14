@@ -50,6 +50,7 @@ from akkiabot_core.db import (
 from akkiabot_core.db.types import utcnow
 from akkiabot_core.observability import (
     count_captcha,
+    count_captcha_started,
     count_moderation_action,
     count_telegram_api_error,
     observe_captcha_duration,
@@ -277,6 +278,7 @@ class CaptchaService:
             challenge = _Snapshot.of(
                 await challenges.create(chat_id, user_id, ttl=timedelta(seconds=self.timeout))
             )
+        count_captcha_started()
         for old in superseded:
             await self._delete_prompt(api, old)
 

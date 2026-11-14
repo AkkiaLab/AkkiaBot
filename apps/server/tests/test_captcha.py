@@ -259,6 +259,7 @@ async def flow(
 
 
 async def test_join_mutes_and_posts_redacted_prompt(flow: Flow, api: FakeBotApi) -> None:
+    started = metric_value("akkiabot_captcha_started_total")
     await flow.join(name="Newbie Person")
 
     assert flow.restricts() == [(NEWBIE, False)]
@@ -277,6 +278,7 @@ async def test_join_mutes_and_posts_redacted_prompt(flow: Flow, api: FakeBotApi)
     assert job_queue is not None
     assert job_queue.get_jobs_by_name(f"{TIMEOUT_JOB}:{challenge.id}")
     assert job_queue.get_jobs_by_name(SWEEP_JOB)
+    assert metric_value("akkiabot_captcha_started_total") == started + 1
 
 
 @pytest.mark.parametrize(
@@ -288,10 +290,12 @@ def test_redact_name(name: str, shown: str) -> None:
 
 
 async def test_join_ignored_when_captcha_disabled(flow: Flow, api: FakeBotApi) -> None:
+    started = metric_value("akkiabot_captcha_started_total")
     await flow.enable(False)
     await flow.join()
     assert api.calls_to("restrictChatMember") == []
     assert await flow.challenges() == []
+    assert metric_value("akkiabot_captcha_started_total") == started
 
 
 async def test_bots_admins_and_non_joins_are_ignored(
