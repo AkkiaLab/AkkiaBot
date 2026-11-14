@@ -57,6 +57,7 @@ jobs:
               - *shared
               - deploy/Dockerfile
               - deploy/compose.yaml
+              - deploy/observability/config.alloy
               - deploy/backup.sh
               - deploy/restore.sh
               - deploy/.env.example
@@ -165,20 +166,31 @@ jobs:
           [[ "$out" =~ ^akkiabot\ [0-9]+\.[0-9]+\.[0-9]+ ]]
       # Production compose stack with the image just built: postgres + redis
       # healthy, then the one-shot `migrate` service applies every migration.
-      # app/cloudflared need a real bot token / tunnel and are not started here.
+      # app/cloudflared need a real bot token / tunnel and are not started here;
+      # alloy gets obviously fake Grafana Cloud values (no secrets in CI) and
+      # only its configuration is validated.
       - name: Compose stack smoke test (postgres, redis, migrate)
         run: |
           stack="$RUNNER_TEMP/stack"
           mkdir -p "$stack"
           cp deploy/compose.yaml deploy/backup.sh deploy/restore.sh "$stack/"
+          mkdir -p "$stack/observability"
+          cp deploy/observability/config.alloy "$stack/observability/"
           cp deploy/app.env.example "$stack/app.env"
           sed -e 's/^AKKIABOT_IMAGE=.*/AKKIABOT_IMAGE=akkiabot/' \
               -e 's/^AKKIABOT_TAG=.*/AKKIABOT_TAG=ci/' \
               -e 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci0compose0smoke/' \
               -e 's/^CLOUDFLARED_TOKEN=.*/CLOUDFLARED_TOKEN=fake-tunnel-token-for-tests/' \
+              -e 's|^GRAFANA_CLOUD_PROMETHEUS_URL=.*|GRAFANA_CLOUD_PROMETHEUS_URL=https://prometheus.invalid/api/prom/push|' \
+              -e 's/^GRAFANA_CLOUD_PROMETHEUS_USER=.*/GRAFANA_CLOUD_PROMETHEUS_USER=0/' \
+              -e 's|^GRAFANA_CLOUD_LOKI_URL=.*|GRAFANA_CLOUD_LOKI_URL=https://loki.invalid/loki/api/v1/push|' \
+              -e 's/^GRAFANA_CLOUD_LOKI_USER=.*/GRAFANA_CLOUD_LOKI_USER=0/' \
+              -e 's/^GRAFANA_CLOUD_TOKEN=.*/GRAFANA_CLOUD_TOKEN=fake-grafana-token-for-tests/' \
               deploy/.env.example > "$stack/.env"
           cd "$stack"
           docker compose config --quiet
+          # The mounted Alloy config parses and every component is valid.
+          docker compose run --rm --no-deps alloy validate /etc/alloy/config.alloy
           docker compose up -d --wait postgres redis
           docker compose run --rm migrate
           rev="$(docker compose exec -T postgres psql -U akkiabot -d akkiabot -tAc 'select version_num from alembic_version')"
