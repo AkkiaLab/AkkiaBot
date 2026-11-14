@@ -429,6 +429,9 @@ class CaptchaService:
             raise CaptchaRejectedError(RejectReason.NOT_CAPTCHA_RESTRICTED)
         # …and so does Telegram right now (an admin may have changed the
         # restriction and its chat_member update has not been processed yet).
+        # Residual race: an admin applying the very same permanent full mute
+        # between this lookup and restrictChatMember (milliseconds) cannot be
+        # told apart; the Bot API offers no conditional restrict.
         try:
             live = await api.is_captcha_muted(chat_id, user_id)
         except (ModerationApiError, RateLimitedError) as exc:
