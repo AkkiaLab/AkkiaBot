@@ -41,9 +41,10 @@ just dev         # 启动本地 postgres / redis（deploy/compose.dev.yaml）和
 just dev-down    # 停止本地服务
 just services    # 只启动本地 postgres / redis
 just migrate     # 对 DB_URL 执行数据库迁移（等同 `akkiabot migrate`）
+just serve       # 启动机器人与 HTTP API（等同 `akkiabot serve`，需先 migrate）
 just db-revision "说明"  # 修改模型后自动生成新的 Alembic 迁移
 just test-integration  # 连同 compose 中的 PostgreSQL / Redis 一起跑 pytest
-just gen-api     # 由后端 OpenAPI 生成前端类型（M2 引入 HTTP API 后启用）
+just gen-api     # 由后端 OpenAPI 生成前端类型（M6 提供业务 API 后启用）
 just docker-build  # 构建后端镜像并运行，打印版本号
 ```
 
@@ -52,6 +53,18 @@ just docker-build  # 构建后端镜像并运行，打印版本号
 本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。变量名为 `<分组>_<字段>`（如 `TELEGRAM_BOT_TOKEN`、`DB_URL`、`OBSERVABILITY_SENTRY_DSN`），完整定义见 `packages/core/src/akkiabot_core/config.py`；必填项（`TELEGRAM_BOT_TOKEN`、`DB_URL`）缺失时启动即报错。
 
 日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。
+
+### 运行机器人
+
+`akkiabot serve` 在同一个事件循环中运行 python-telegram-bot 与 uvicorn（FastAPI lifespan 负责启动和关闭机器人、数据库与缓存）：
+
+- 接收更新：默认长轮询（`TELEGRAM_MODE=polling`）；设为 `webhook` 时需同时配置 `TELEGRAM_WEBHOOK_URL`（API 公网地址，机器人注册 `<地址>/telegram/webhook`）与 `TELEGRAM_WEBHOOK_SECRET`（校验 `X-Telegram-Bot-Api-Secret-Token`）。两种方式都显式订阅 `message`、`callback_query`、`chat_member`、`my_chat_member`。
+- HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）。
+- 指标：`/metrics` 只在独立端口 `OBSERVABILITY_METRICS_HOST:OBSERVABILITY_METRICS_PORT`（默认 `127.0.0.1:9464`）提供，不经公网 tunnel 暴露；容器内由 compose 内网访问时把 host 设为 `0.0.0.0` 且不要发布该端口。
+- 命令：`bot/commands/__init__.py` 中的 `COMMANDS` 是唯一的声明式列表，同时生成命令处理器、`set_my_commands` 菜单和 `/help` 文本。需要私聊深链的功能用 `StartPayloadStore.create()` 生成一次性 payload（基于 `Cache.pop`，默认 `TELEGRAM_START_PAYLOAD_TTL=600` 秒），并通过 `BotDeps.on_start(kind, handler)` 注册分发。
+- 群消息：记录 `message_log`（只存 ID）与成员发言计数；首次见到某个群时写入 `chat`；按群配置 `delete_service_messages`（默认开启）删除入群、退群、置顶等系统消息。`message_log` 由定时任务按 `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS`（默认 30 天）清理。
+- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
+- Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更）；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
 
 ### 数据库与测试
 
