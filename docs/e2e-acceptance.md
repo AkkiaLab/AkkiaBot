@@ -30,12 +30,13 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | 可以自动化 | 需要人工 / 不覆盖 |
 | --- | --- |
 | 测试账号登录后，通过测试环境的 BotFather 创建测试 bot，并把 token 和用户名写回 1Password | 第三方客户端**不能注册新账号**（Telethon 的 `sign_up` 已被 Telegram 禁止）。测试环境账号需要负责人用官方客户端的测试模式注册，首次登录时由负责人输入验证码和两步验证密码 |
-| 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | Mini App 真实客户端交互、正式 Turnstile 的成功路径：不能用 MTProto 用户账号或 Turnstile 测试站点 key 代替，后续里程碑需单独验收 |
+| 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | 真实 Turnstile 挑战的完成及其后的解除禁言：需要真人在浏览器中完成。工具不求解挑战，也不使用 Turnstile 测试站点 key；`m7.captcha` 把它列为“未自动化”，不计入通过 |
 | 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 删除测试群、清理历史消息：工具从不执行这些操作，需要时另行确认 |
 | 群主在群内发 `/config`，用深链在与 bot 的私聊中打开配置菜单并点击开关按钮；群主回复成员消息执行 `/warn`、`/ban`，检查封禁状态和历史消息删除，然后解除封禁并让成员重新入群 | 开关回调被越权调用（例如伪造按钮数据）：用户账号只能点击自己收到的按钮，由单元测试覆盖 |
 | 检查回复文本和行内代码实体（确认 MarkdownV2 已正确渲染，没有残留反斜杠） | |
 | 成员退群后再入群，检查两条系统消息都被 bot 删除 | |
 | `--serve` 模式下检查 `message_log` 中有对应记录 | |
+| （M7，staging 发版）成员入群被禁言 → 群内提示 → 私聊深链 → 以成员账号打开 Mini App（Telegram 签发的真实 initData）→ 打开页面 → 带 Mini App 来源调用验证接口，检查 CORS、未通过 Turnstile 时返回 `turnstile_failed` 且成员保持禁言；结束后关闭入群验证并恢复成员 | |
 
 普通 CI 不会连接 Telegram：单元测试全部使用内存中的模拟 transport（`akkiabot_e2e.testing`）。
 
@@ -246,6 +247,25 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
   - `77`：**缺少凭据，已跳过**。此时不发送任何消息，报告中写明“未执行（不是通过）”。
 - 报告：`~/.local/state/akkiabot-e2e/runs/<时间>-<随机串>/report.md` 和 `report.json`（目录权限 700，文件权限 600）。同一目录下还有被测 bot 的 `server.log` 和 SQLite 数据库。`report.md` 可以直接贴到对应 issue，作为验收记录。
 - 终端输出经过 `op run` 的掩码处理：从 1Password 引用的值（包括群 id、user id）在终端里显示为 `<concealed by 1Password>`；报告文件中保留了这些标识，便于核对。
+
+### 6.2 staging 发版验收（全量）
+
+按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。全量验收在 staging 发版时，针对**已部署的 staging 栈**执行：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
+
+1. 选定要发版的 master commit `SHA`（完整 40 位）。
+2. 前端：每次 master 推送都会把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`。也可以在 master 上手动运行 `webapp-deploy.yml`。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
+3. 后端：按 `docs/operations.md` §8.1，把预发布栈升级到同一个 `SHA` 的镜像。
+4. 运行（第一次运行加 `--create-group`，会建立单独的“AkkiaBot Staging 发版验收群”并写入白名单）：
+
+   ```bash
+   just e2e-staging --record-status SHA
+   ```
+
+   工具先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出，不发送消息。然后执行全部场景（含 M5 反垃圾、M7 Mini App 链路），并把结果写为 GitHub commit status `staging-acceptance`：全部通过时为 `success`，否则为 `failure`。`--record-status` 不能与 `--scenarios`、`--serve` 同时使用。
+5. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、后端镜像和结果。报告中的“未自动化”项要原样保留。
+6. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查。
+
+写 commit status 需要本机 `gh` 已登录，且对仓库有写权限。
 
 ## 7. 安全约束
 

@@ -33,16 +33,36 @@ just dev   # 启动 postgres / redis 和 Vite 开发服务器
 
 只有开发服务器（`import.meta.env.DEV`）会加载 `src/dev/mockTelegramEnv.ts`，在普通浏览器里模拟 Telegram 环境（未签名的 initData，后端会以 `init_data_invalid` 拒绝，用于调 UI）。生产构建不包含该模块：CI 的前端 job 和发布 workflow 都会在构建后执行 `apps/webapp/scripts/check-no-dev-mock.sh`，产物中出现 mock 标记即失败。本地可用 `just build-web` 复现。
 
-### 部署（GitHub Actions + `wrangler pages deploy`）
+### 部署与发布（GitHub Actions + `wrangler pages deploy`）
 
 选择在 GitHub Actions 里用 wrangler 直接上传（Direct Upload），不用 Pages 的 Git 集成，原因：构建沿用仓库锁定的 Node / pnpm 版本；发布前一定先跑 mock 检查；不需要在组织上安装 Cloudflare 的 GitHub App；部署地址作为 GitHub deployment 显示在 PR 上。
 
-`.github/workflows/webapp-deploy.yml`：
+staging 与 prod 的发布入口分离（负责人于 2026-11-14 确认的分层验收，见 `AGENTS.md`）：
 
-- `master` 推送（改动涉及前端时）或手动触发：GitHub 环境 `webapp-production`，以 `--branch=master` 上传，即 Pages 生产部署，`bot.akkia.moe` 随之更新；
-- PR：GitHub 环境 `webapp-preview`，以 PR 分支名上传，得到预览地址（`<分支>.<项目>.pages.dev`），在 PR 时间线的 “View deployment” 中打开；
-- master 推送和手动触发还会用 `webapp-preview` 环境（预发布 API、staging Turnstile）的配置再构建一份，上传到固定别名 `staging.akkiabot-webapp.pages.dev`，作为预发布 bot 的 Mini App 地址（`deploy/staging/app.env.tpl` 中的 `WEBAPP_URL` / `CORS_ALLOW_ORIGINS`）；
-- 当前环境没有 `CLOUDFLARE_API_TOKEN`（尚未配置，或来自 fork 的 PR）时只构建和检查，跳过上传；有 token 但缺少下列变量时失败。
+```mermaid
+flowchart LR
+    PR[PR] -->|webapp-deploy.yml| P["预览：分支名.akkiabot-webapp.pages.dev"]
+    M[master 推送] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
+    S --> A["staging 发版验收<br/>just e2e-staging --record-status SHA"]
+    A -->|commit status staging-acceptance=success| G["webapp-promote.yml（输入 sha，需审批）"]
+    G --> Prod["bot.akkia.moe"]
+```
+
+| 入口 | 触发 | GitHub 环境 | 上传目标 | 构建配置 |
+| --- | --- | --- | --- | --- |
+| `webapp-deploy.yml` | PR（前端相关路径） | `webapp-preview` | 分支预览 `<分支>.akkiabot-webapp.pages.dev` | 预发布 API + staging Turnstile |
+| `webapp-deploy.yml` | 每次 master 推送、手动触发 | `webapp-preview` | 固定别名 `staging.akkiabot-webapp.pages.dev`（staging bot 的 `WEBAPP_URL`） | 同上 |
+| `webapp-promote.yml` | 只能手动触发，输入 master 上的完整 sha | `webapp-production`（需审批，只接受 master 上的运行） | Pages 生产部署（`--branch=master`），即 `bot.akkia.moe` | 生产 API + prod Turnstile |
+
+`webapp-deploy.yml` 不会发布生产。PR 分支名为 `staging` 或 `master` 时直接失败，避免覆盖这两个部署目标；没有 `CLOUDFLARE_API_TOKEN` 时（例如来自 fork 的 PR）只构建和检查，跳过上传。
+
+**版本锁定。** `VITE_API_BASE_URL`、`VITE_TURNSTILE_SITE_KEY` 在 `vite build` 时写进产物，所以同一个 commit 要按环境各构建一次。共用的构建步骤在 `.github/actions/webapp-build`：安装锁定依赖 → 用该环境的变量构建 → 写入 `dist/version.json`（`{"sha", "environment"}`）→ 检查不含开发 mock。提升到生产时：
+
+1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入，写入前会核对 `staging.akkiabot-webapp.pages.dev/version.json` 就是该 sha（见 `docs/e2e-acceptance.md`）。
+2. `deploy` 任务检出这个 sha（构建 action 也来自该 commit），并确认 `HEAD` 等于它；然后只换成生产环境变量重新构建。因此代码与 staging 验收的完全相同，差别只在环境配置。
+3. 上传后对部署地址做冒烟：`/`、`/captcha?challenge=…` 返回 200，`/version.json` 的 sha 等于输入值。
+
+生产发布与切换仍是负责人确认的操作：`webapp-production` 环境要求负责人（GitHub `AkkiaS7`）审批。智能体可以触发 `webapp-promote.yml`，但不审批生产部署。由于智能体也使用该 GitHub 账号，这条限制靠流程约束，不是技术隔离。
 
 GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，见 BOT-4 中负责人的决定）：
 
@@ -53,7 +73,8 @@ GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging �
 | 环境 `webapp-preview` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/staging-cloudflare/api_token`（DNS、Tunnel、Pages、Turnstile 权限） |
 | 环境 `webapp-preview` 变量 | `VITE_API_BASE_URL` | `https://bot-api-staging.akkia.moe`（预发布后端） |
 | 环境 `webapp-preview` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/staging-turnstile/site_key` |
-| 环境 `webapp-production` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/prod-cloudflare/api_token`（由负责人填写；**未设置前生产上传会被跳过**） |
+| 环境 `webapp-production` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/prod-cloudflare/api_token`（负责人填写，已写入并做过只读校验） |
+| 环境 `webapp-production` 保护规则 | 审批人、部署分支 | 审批人 `AkkiaS7`；只允许 `master` |
 | 环境 `webapp-production` 变量 | `VITE_API_BASE_URL` | `https://bot-api.akkia.moe` |
 | 环境 `webapp-production` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/prod-turnstile/site_key` |
 
@@ -76,6 +97,8 @@ Cloudflare 侧（已用 staging token 通过 API 完成）：
 
 ### 验收清单
 
-- PR 预览地址能打开，直接访问 `<预览地址>/captcha?challenge=<任意 uuid>` 返回页面（不是 404），在浏览器中提示“请在 Telegram 中…打开”；
-- 合并后 `https://bot.akkia.moe/captcha?challenge=…` 更新为新版本；
-- 真实 Telegram 客户端：入群 → 私聊 `/start` → 打开 Mini App → 完成 Turnstile → 解除禁言（按 `AGENTS.md`，不能用用户账号自动化或 Turnstile 测试 key 代替）。
+分层验收（`AGENTS.md`）：
+
+- **PR**：只验证受影响部分。单元测试和构建检查由 CI 执行；PR 预览地址能打开，直接访问 `<预览地址>/captcha?challenge=<任意 uuid>` 返回页面（不是 404），在浏览器中提示“请在 Telegram 中…打开”。
+- **staging 发版**：`just e2e-staging --record-status <sha>` 全量自动化验收，其中 `m7.captcha` 覆盖“入群被禁言 → 群内提示 → 私聊深链 → 打开 Mini App（Telegram 签发的真实 initData）→ 页面 → 验证接口与 CORS → 未通过 Turnstile 时保持禁言”。真实 Turnstile 挑战需要真人在浏览器中完成，工具不求解，也不使用测试 key；报告中以“未自动化”列出，不计入通过。
+- **prod**：只提升通过 staging 验收的 sha，`webapp-promote.yml` 自带冒烟检查；不重复全量验收。

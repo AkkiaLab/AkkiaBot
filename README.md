@@ -102,7 +102,7 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
 
 - `ci.yml`：PR 和 master 推送时运行。按改动路径决定执行 Python（lint / typecheck / test）、前端（lint / typecheck / test / build）和镜像构建（含启动冒烟）；`ci-ok` 汇总所有结果，适合作为分支保护的必需检查。
 - `release.yml`：master 推送后构建并推送 `ghcr.io/akkialab/akkiabot:<sha>` 与 `:latest`。
-- `webapp-deploy.yml`：前端改动时构建 Mini App、检查产物不含开发用的 Telegram 模拟代码，并用 `wrangler pages deploy` 发布到 Cloudflare Pages（master → `bot.akkia.moe`，PR → 预览地址）。所需配置和一次性设置见 [docs/webapp.md](docs/webapp.md)。
+- `webapp-deploy.yml` / `webapp-promote.yml`：构建 Mini App，检查产物不包含开发用的 Telegram 模拟代码，再用 `wrangler pages deploy` 发布到 Cloudflare Pages。PR 发布到预览地址；每次 master 推送发布到 staging（`staging.akkiabot-webapp.pages.dev`）；生产（`bot.akkia.moe`）只能通过 `webapp-promote.yml` 提升已通过 staging 发版验收的 sha，并且需要审批。详见 [docs/webapp.md](docs/webapp.md)。
 - 前后端契约：pytest 校验 `apps/webapp/openapi.json` 与后端一致，前端 job 校验 `src/api/schema.d.ts` 与 `openapi.json` 一致；接口变更后运行 `just gen-api` 并提交两者。openapi-typescript 依赖 TypeScript 5 的编译器 API，而前端使用的 TypeScript 7 不再提供，因此它单独放在 `tools/api-types` 这个 pnpm 包里，自带 TypeScript 5。
 - `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。
 - 依赖升级由 Renovate 按 `renovate.json` 每周一提交 PR。
