@@ -190,3 +190,40 @@ def test_credential_like_literals_are_declared_as_mocks() -> None:
         "以下凭据形字面量未就地声明为 mock：请赋给 MOCK_/mock_ 开头的名称，"
         f"并在同一行或上一行加 `# mock: ...` 注释说明人工构造、不可用（见 AGENTS.md）：{offenders}"
     )
+
+
+def _gitleaks_rule_regex(rule_id: str) -> re.Pattern[str]:
+    import tomllib
+
+    config = tomllib.loads((REPO_ROOT / ".gitleaks.toml").read_text("utf-8"))
+    (rule,) = [r for r in config["rules"] if r["id"] == rule_id]
+    return re.compile(rule["regex"])
+
+
+def test_gitleaks_bare_telegram_rule_matches_same_shape_as_guard() -> None:
+    rule = _gitleaks_rule_regex("akkiabot-telegram-bot-token-bare")
+    # Runtime-built, obviously fake shapes (see test_pattern_flags_real_shape_but_not_placeholder).
+    for sample in ("1" * 10 + ":AA" + "x" * 33, "1" * 6 + ":A" + "x" * 33):
+        assert rule.search(f'BOT_TOKEN = "{sample}"')
+        assert _matches(sample)
+    for sample in (MOCK_BOT_TOKEN, MOCK_SHORT_BOT_TOKEN, "1" * 10 + ":AA" + "x" * 40):
+        assert not rule.search(f'BOT_TOKEN = "{sample}"')
+
+
+def test_gitleaksignore_entries_are_exact_and_documented() -> None:
+    doc = (REPO_ROOT / "docs" / "secret-scanning.md").read_text("utf-8")
+    entries = [
+        line
+        for line in (REPO_ROOT / ".gitleaksignore").read_text("utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert entries
+    for entry in entries:
+        # Exact fingerprint only (commit:file:rule:line), never a value or a wildcard.
+        commit, path, rule, line = entry.split(":")
+        assert re.fullmatch(r"[0-9a-f]{40}", commit), entry
+        assert re.fullmatch(r"[0-9]+", line), entry
+        assert "*" not in entry
+        assert rule.startswith(("akkiabot-", "telegram-")), entry
+        assert commit[:8] in doc, f"{entry} 缺少 docs/secret-scanning.md 中的例外证据"
+        assert path in doc or Path(path).name in doc, entry
