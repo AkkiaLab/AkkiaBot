@@ -81,3 +81,14 @@ async def test_corrupt_payload_is_discarded(cache: MemoryCache) -> None:
 
 def test_start_link() -> None:
     assert start_link("akkiabot", "tok") == "https://t.me/akkiabot?start=tok"
+
+
+async def test_peek_leaves_the_payload(cache: MemoryCache, clock: Clock) -> None:
+    store = StartPayloadStore(cache, default_ttl=60)
+    token = await store.create("captcha", {"challenge_id": "x"})
+    expected = StartPayload(kind="captcha", data={"challenge_id": "x"})
+    assert await store.peek(token) == expected
+    assert await store.peek(token) == expected
+    assert await store.peek("short") is None
+    clock.now += 60
+    assert await store.peek(token) is None

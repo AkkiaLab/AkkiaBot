@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 from telegram.request import BaseRequest
 
+from akkiabot_server.bot.captcha import captcha_start, handle_chat_member, schedule_captcha_jobs
 from akkiabot_server.bot.commands.config import CALLBACK_PATTERN, config_callback, config_start
 from akkiabot_server.bot.commands.config import START_KIND as CONFIG_START_KIND
 from akkiabot_server.bot.deps import BotDeps, attach_deps
@@ -29,6 +30,7 @@ from akkiabot_server.bot.instrumentation import count_incoming_update, instrumen
 from akkiabot_server.bot.jobs import schedule_jobs
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
+from akkiabot_server.services.captcha import START_KIND as CAPTCHA_START_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +68,11 @@ def build_application(
     application = builder.build()
     attach_deps(application, deps)
     deps.on_start(CONFIG_START_KIND, config_start)
+    # Reusable: a stranger tapping the group prompt must not burn the link.
+    deps.on_start(CAPTCHA_START_KIND, captcha_start, reusable=True)
     register_handlers(application, deps.commands)
     schedule_jobs(application, cleanup_interval=deps.settings.telegram.message_log_cleanup_interval)
+    schedule_captcha_jobs(application)
     return application
 
 
@@ -88,6 +93,10 @@ def register_handlers(application: App, commands: CommandRegistry) -> None:
             ChatMemberHandler(
                 instrument("my_chat_member", handle_my_chat_member),
                 ChatMemberHandler.MY_CHAT_MEMBER,
+            ),
+            ChatMemberHandler(
+                instrument("chat_member", handle_chat_member),
+                ChatMemberHandler.CHAT_MEMBER,
             ),
         ],
         group=GROUP_BOOKKEEPING,
