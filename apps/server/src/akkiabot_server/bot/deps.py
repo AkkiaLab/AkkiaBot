@@ -12,6 +12,7 @@ from akkiabot_core.config import Settings
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App, Context
 from akkiabot_server.services.chats import ChatDirectory
+from akkiabot_server.services.ip_lookup import IpLookupService
 from akkiabot_server.services.message_log import MessageRecorder
 from akkiabot_server.services.start_payload import StartPayload, StartPayloadStore
 
@@ -28,6 +29,7 @@ class BotDeps:
     start_payloads: StartPayloadStore
     chats: ChatDirectory
     messages: MessageRecorder
+    ip_lookup: IpLookupService
     start_handlers: dict[str, StartHandler] = field(default_factory=dict)
 
     def on_start(self, kind: str, handler: StartHandler) -> None:

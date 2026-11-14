@@ -19,7 +19,8 @@ async def test_help_lists_commands(
     assert api.sent_texts() == [
         "可用命令列表：\n"
         "1. 获取帮助信息\n用法：/help [命令名]\n"
-        "2. 获取ID信息\n用法：/id（回复一条消息时，同时显示被回复者的 ID）"
+        "2. 获取ID信息\n用法：/id（回复一条消息时，同时显示被回复者的 ID）\n"
+        "3. 查询IP信息\n用法：/ip <IP 地址>（或回复一条包含 IP 地址的消息）"
     ]
 
 

@@ -137,6 +137,21 @@ class LlmSettings(_Group):
     model: str | None = None
 
 
+class WhoisSettings(_Group):
+    """``/ip`` lookups (ipinfo → ip-api)."""
+
+    ipinfo_token: SecretStr | None = None
+    """ipinfo.io token. Without it only ip-api is used."""
+    timeout: float = Field(default=5.0, gt=0)
+    """Per-request timeout (seconds) for whois providers."""
+    cache_ttl: int = Field(default=3600, gt=0)
+    """Seconds a successful lookup is cached in process."""
+    cache_size: int = Field(default=1024, gt=0)
+    rate_limit: int = Field(default=5, gt=0)
+    """``/ip`` lookups allowed per user within ``rate_window`` seconds."""
+    rate_window: int = Field(default=60, gt=0)
+
+
 class TurnstileSettings(_Group):
     secret_key: SecretStr | None = None
 
@@ -189,6 +204,7 @@ class Settings(BaseSettings):
     server: ServerSettings = Field(default_factory=ServerSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    whois: WhoisSettings = Field(default_factory=WhoisSettings)
     turnstile: TurnstileSettings = Field(default_factory=TurnstileSettings)
     webapp: WebAppSettings = Field(default_factory=WebAppSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
@@ -236,6 +252,7 @@ __all__ = [
     "TelegramSettings",
     "TurnstileSettings",
     "WebAppSettings",
+    "WhoisSettings",
     "load_database_settings",
     "load_observability_settings",
     "load_settings",

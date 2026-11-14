@@ -23,6 +23,7 @@ _GROUPS = {
     "REDIS",
     "LLM",
     "TURNSTILE",
+    "WHOIS",
     "WEBAPP",
     "CORS",
     "OBSERVABILITY",
@@ -53,12 +54,16 @@ type MakeSettings = Callable[..., Settings]
 @pytest.fixture
 def make_settings(tmp_path: Path) -> MakeSettings:
     def make(
-        *, telegram: dict[str, Any] | None = None, observability: dict[str, Any] | None = None
+        *,
+        telegram: dict[str, Any] | None = None,
+        observability: dict[str, Any] | None = None,
+        whois: dict[str, Any] | None = None,
     ) -> Settings:
         return Settings(
             telegram={"bot_token": TOKEN, **(telegram or {})},  # pyright: ignore[reportArgumentType]
             db={"url": f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}"},  # pyright: ignore[reportArgumentType]
             observability={"metrics_enabled": False, **(observability or {})},  # pyright: ignore[reportArgumentType]
+            whois=whois or {},  # pyright: ignore[reportArgumentType]
         )
 
     return make
@@ -85,6 +90,7 @@ async def runtime(settings: Settings, api: FakeBotApi) -> AsyncIterator[Runtime]
         yield rt
     finally:
         await rt.application.shutdown()
+        await rt.http.aclose()
         await rt.engine.dispose()
 
 

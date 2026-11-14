@@ -5,6 +5,7 @@ from __future__ import annotations
 from telegram.ext import filters
 
 from akkiabot_server.bot.commands.basic import help_command, id_command, start_command
+from akkiabot_server.bot.commands.ip import IP_DOCS, IP_USAGE, ip_command
 from akkiabot_server.bot.registry import Command
 
 COMMANDS: tuple[Command, ...] = (
@@ -28,6 +29,7 @@ COMMANDS: tuple[Command, ...] = (
         id_command,
         usage="/id（回复一条消息时，同时显示被回复者的 ID）",
     ),
+    Command("ip", "查询IP信息", ip_command, usage=IP_USAGE, docs=IP_DOCS),
 )
 
 __all__ = ["COMMANDS"]
