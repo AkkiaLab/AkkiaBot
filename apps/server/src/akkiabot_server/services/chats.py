@@ -1,4 +1,4 @@
-"""Chat bookkeeping: remember every group the bot sees, read its settings."""
+"""Chat bookkeeping: remember every group the bot sees."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from akkiabot_core.db import ChatRepository, ChatSettings, session_scope
+from akkiabot_core.db import ChatRepository, session_scope
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,3 @@ class ChatDirectory:
         async with session_scope(self._session_factory) as session:
             await ChatRepository(session).upsert(chat_id, type=type, title=title)
         self.remember(chat_id)  # committed when session_scope exited
-
-    async def settings(self, chat_id: int) -> ChatSettings:
-        async with session_scope(self._session_factory) as session:
-            return await ChatRepository(session).get_settings(chat_id)

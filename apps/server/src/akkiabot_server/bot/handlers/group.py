@@ -45,7 +45,7 @@ async def handle_service_message(update: Update, context: Context) -> None:
         return
     deps = get_deps(context)
     await deps.messages.record(to_incoming(message, is_service=True))
-    settings = await deps.chats.settings(message.chat.id)
+    settings = await deps.chat_settings.get(message.chat.id)
     if not settings.delete_service_messages:
         return
     try:

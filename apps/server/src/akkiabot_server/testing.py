@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import itertools
 import json
 import time
@@ -194,6 +195,8 @@ class UpdateFactory:
         member: dict[str, Any] = {"status": status, "user": user}
         if status == "administrator":
             member |= dict.fromkeys(_ADMIN_RIGHTS, True) | {"is_anonymous": False}
+        elif status == "creator":
+            member["is_anonymous"] = False
         return member | fields
 
     def message_dict(
@@ -284,6 +287,40 @@ class UpdateFactory:
                 "new_chat_member": self.chat_member(BOT_USER, new_status),
             }
         )
+
+    def callback_query(
+        self,
+        data: str,
+        *,
+        from_user: dict[str, Any] | None = None,
+        message: dict[str, Any] | None = None,
+    ) -> Update:
+        """An inline button press; ``message`` defaults to a bot message in the user's private chat."""
+        sender = from_user if from_user is not None else self.user()
+        if message is None:
+            message = self.message_dict(chat=self.private(sender), from_user=BOT_USER, text="menu")
+        return self._update(
+            callback_query={
+                "id": str(next(self._update_ids)),
+                "from": sender,
+                "chat_instance": "test",
+                "data": data,
+                "message": message,
+            }
+        )
+
+
+def member_responder(members: dict[int, dict[str, Any]]) -> Responder:
+    """``getChatMember`` responder: ``{user_id: ChatMember dict}``; unknown users are ``left``."""
+
+    def respond(params: dict[str, Any]) -> Any:
+        user_id = int(params["user_id"])
+        member = members.get(user_id)
+        if member is None:
+            return UpdateFactory.chat_member(UpdateFactory.user(user_id), "left")
+        return copy.deepcopy(member)  # PTB pops keys while parsing
+
+    return respond
 
 
 def metric_value(name: str, **labels: str) -> float:

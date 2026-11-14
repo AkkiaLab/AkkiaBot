@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationBuilder,
+    CallbackQueryHandler,
     ChatMemberHandler,
     MessageHandler,
     TypeHandler,
@@ -16,6 +17,8 @@ from telegram.ext import (
 )
 from telegram.request import BaseRequest
 
+from akkiabot_server.bot.commands.config import CALLBACK_PATTERN, config_callback, config_start
+from akkiabot_server.bot.commands.config import START_KIND as CONFIG_START_KIND
 from akkiabot_server.bot.deps import BotDeps, attach_deps
 from akkiabot_server.bot.handlers.group import (
     handle_my_chat_member,
@@ -62,6 +65,7 @@ def build_application(
         builder = builder.updater(None)
     application = builder.build()
     attach_deps(application, deps)
+    deps.on_start(CONFIG_START_KIND, config_start)
     register_handlers(application, deps.commands)
     schedule_jobs(application, cleanup_interval=deps.settings.telegram.message_log_cleanup_interval)
     return application
@@ -88,7 +92,15 @@ def register_handlers(application: App, commands: CommandRegistry) -> None:
         ],
         group=GROUP_BOOKKEEPING,
     )
-    application.add_handlers(commands.handlers(), group=GROUP_COMMANDS)
+    application.add_handlers(
+        [
+            *commands.handlers(),
+            CallbackQueryHandler(
+                instrument("callback:config", config_callback), pattern=CALLBACK_PATTERN
+            ),
+        ],
+        group=GROUP_COMMANDS,
+    )
     application.add_error_handler(on_error)
 
 
