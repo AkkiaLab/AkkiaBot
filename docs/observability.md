@@ -108,7 +108,7 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | 群管理 | ban / warn / mute / delete 的次数和趋势；按命令和结果统计的命令量 |
 | 日志 | 按级别统计的日志量，以及日志列表；都受顶部筛选变量控制 |
 
-按 `chat_id` 查一次完整的入群验证：在日志区把 `chat_id` 设为群 ID，时间范围覆盖入群时刻。可以依次看到 `member joined` → `captcha challenge created`（禁言并发出提示）→ 结果：`captcha passed`（Mini App 提交，经 HTTP API），或者 `captcha verification rejected`（附 `reason`），或者 `captcha timed out; member stays muted`。验证 API 和超时任务不是由群消息触发的，所以会额外绑定该验证所属的群 `chat_id` 和成员 `user_id`。成员在私聊中点击深链的 `/start` 属于私聊，`chat_id` 是私聊 ID；要看到这一步，改为按 `user_id` 筛选。
+按 `chat_id` 查一次完整的入群验证：在日志区把 `chat_id` 设为群 ID，时间范围覆盖入群时刻。可以依次看到 `member joined` → `captcha challenge created`（禁言并发出提示）→ 结果：`captcha passed`（Mini App 提交，经 HTTP API），或者 `captcha verification rejected`（附 `reason`；在加载验证之前就被拒绝的请求，例如 Turnstile 失败，也会补查所属的群并打上 `chat_id`），或者 `captcha timed out; member stays muted`。验证 API 和超时任务不是由群消息触发的，所以会额外绑定该验证所属的群 `chat_id` 和成员 `user_id`。成员在私聊中点击深链的 `/start` 属于私聊，`chat_id` 是私聊 ID；要看到这一步，改为按 `user_id` 筛选。
 
 计数器类面板用 `or vector(0)` 兜底，所以没有发生过的事件显示为 0，而不是 No data。比值面板（命中率）和耗时分位数在分母为 0、或者还没有样本时显示 No data，这是正常的。
 
