@@ -64,7 +64,7 @@ def _int(env: Mapping[str, str], name: str) -> int:
         raise ConfigError(f"{name} 必须是整数") from None
 
 
-def _float(env: Mapping[str, str], name: str, default: float) -> float:
+def env_float(env: Mapping[str, str], name: str, default: float) -> float:
     raw = env.get(name, "").strip()
     if not raw:
         return default
@@ -108,9 +108,9 @@ def load_config(env: Mapping[str, str]) -> E2EConfig:
         allowed_user_ids=allowed_users,
         allowed_chat_ids=_ids(env, "E2E_ALLOWED_CHAT_IDS"),
         chat_title=env.get("E2E_CHAT_TITLE", "").strip() or DEFAULT_CHAT_TITLE,
-        reply_timeout=_float(env, "E2E_REPLY_TIMEOUT", 30.0),
-        flood_max_wait=_float(env, "E2E_FLOOD_MAX_WAIT", 120.0),
-        send_interval=_float(env, "E2E_SEND_INTERVAL", 2.0),
+        reply_timeout=env_float(env, "E2E_REPLY_TIMEOUT", 30.0),
+        flood_max_wait=env_float(env, "E2E_FLOOD_MAX_WAIT", 120.0),
+        send_interval=env_float(env, "E2E_SEND_INTERVAL", 2.0),
     )
 
 

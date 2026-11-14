@@ -19,8 +19,7 @@ from akkiabot_e2e.telethon_transport import (
     _session,
     ensure_test_environment,
 )
-from akkiabot_e2e.testing import ADMIN, FakeTelegram
-from akkiabot_e2e.transport import UserInfo
+from akkiabot_e2e.testing import ADMIN, FakeTelegram, add_fake_botfather
 
 PRODUCTION_DC2 = "149.154.167.50"
 TOKEN = Secret("123456:fake-bot-token-for-tests-xxxxxxxxxxx")
@@ -106,25 +105,10 @@ async def test_production_token_is_refused_without_trying_production() -> None:
     assert "/test/getMe" in seen[0]
 
 
-FATHER = UserInfo(93372553, "BotFather", "BotFather", is_bot=True)
-
-
 def _father_world(taken: int = 0) -> FakeTelegram:
     world = FakeTelegram()
     world.add_user(ADMIN)
-    state = {"taken": taken, "step": 0}
-
-    def reply(text: str) -> str:
-        if text == "/newbot":
-            return "Alright, a new bot. How are we going to call it? Please choose a name for your bot."
-        if not text.endswith("_bot"):
-            return "Good. Now let's choose a username for your bot."
-        if state["taken"]:
-            state["taken"] -= 1
-            return "Sorry, this username is already taken. Please try something different."
-        return f"Done! Use this token to access the HTTP API:\n{TOKEN.reveal()}\nKeep your token secure."
-
-    world.add_private_bot(FATHER, reply)
+    add_fake_botfather(world, taken=taken, token=TOKEN.reveal())
     return world
 
 

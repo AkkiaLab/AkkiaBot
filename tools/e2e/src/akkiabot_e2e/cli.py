@@ -17,12 +17,14 @@ import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from akkiabot_e2e.config import (
     ApiCredentials,
     build_redactor,
+    env_float,
     load_api_credentials,
     load_config,
     missing_variables,
@@ -36,10 +38,12 @@ from akkiabot_e2e.files import (
 )
 from akkiabot_e2e.login import default_session_file, interactive_login
 from akkiabot_e2e.onepassword import default_token_file, op_exec, token_init
+from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Redactor, Secret
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import Connect, run_acceptance
 from akkiabot_e2e.scenarios import SCENARIOS, select_scenarios
+from akkiabot_e2e.transport import UserInfo
 from akkiabot_e2e.vault import E2E_ITEM, RUNTIME_ITEM, FieldValue, Vault, shred_file
 
 EXIT_PASSED, EXIT_FAILED, EXIT_USAGE, EXIT_SKIPPED = 0, 1, 2, 77
@@ -169,7 +173,12 @@ def _cmd_session_store(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     api = load_api_credentials(env)
     from akkiabot_e2e.telethon_transport import session_user
 
-    user = asyncio.run(session_user(api, session))
+    async def locked_user() -> UserInfo:
+        # Connecting with an existing session: same lock as `run` / `bootstrap-bot`.
+        async with session_lock():
+            return await session_user(api, session)
+
+    user = asyncio.run(locked_user())
     _store_session(args.role, user.id, session)
     if args.keep_file:
         print(f"按要求保留了本地会话文件 {path}，请尽快删除。")
@@ -184,7 +193,6 @@ async def _bootstrap_bot(env: Mapping[str, str], force: bool) -> str:
 
     from akkiabot_e2e.bot_api import check_test_bot
     from akkiabot_e2e.botfather import create_test_bot
-    from akkiabot_e2e.telethon_transport import connect_account
 
     api = load_api_credentials(env)
     token, username = env.get("TELEGRAM_BOT_TOKEN", "").strip(), env.get("E2E_BOT_USERNAME", "")
@@ -199,11 +207,19 @@ async def _bootstrap_bot(env: Mapping[str, str], force: bool) -> str:
                 return f"已有可用的测试 bot @{username}，未新建（需要新建时加 --force）"
         if not env.get("E2E_ADMIN_SESSION", "").strip():
             raise E2EError("缺少 E2E_ADMIN_SESSION：请先执行 just e2e-login admin")
-        admin = await connect_account(api, "admin", Secret(env["E2E_ADMIN_SESSION"].strip()))
-        try:
-            username, token = await create_test_bot(admin)
-        finally:
-            await admin.close()
+        pacer = Pacer(
+            max_wait=env_float(env, "E2E_FLOOD_MAX_WAIT", 120.0),
+            send_interval=env_float(env, "E2E_SEND_INTERVAL", 2.0),
+        )
+        connect = _telethon_connect(api)
+        # The whole connect → BotFather dialogue → close happens under the session lock.
+        async with session_lock():
+            raw = await connect("admin", Secret(env["E2E_ADMIN_SESSION"].strip()))
+            admin = PacedAccount(raw, pacer, "admin")
+            try:
+                username, token = await create_test_bot(admin)
+            finally:
+                await admin.close()
         vault = _vault()
         vault.set_fields(RUNTIME_ITEM, {"bot_token": FieldValue(token)})
         vault.set_fields(E2E_ITEM, {"bot_username": FieldValue(username, concealed=False)})
@@ -231,9 +247,18 @@ def _skipped_report(missing: list[str]) -> Report:
     )
 
 
-async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path) -> Report:
+#: Poll interval while waiting for the session lock (tests shorten it).
+LOCK_POLL = 2.0
+
+
+def session_lock() -> AbstractAsyncContextManager[None]:
+    """One machine-wide lock for every entry point that connects with an existing session."""
     from akkiabot_e2e.lock import run_lock
 
+    return run_lock(state_home() / "run.lock", poll=LOCK_POLL)
+
+
+async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path) -> Report:
     config = load_config(env)
     selected = select_scenarios(args.scenarios)
     run_id = run_dir.name
@@ -247,7 +272,7 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
             raise E2EError("--serve 需要 TELEGRAM_BOT_TOKEN（先执行 just e2e-bootstrap-bot）")
         async with httpx.AsyncClient(timeout=15) as http:
             await check_test_bot(Secret(token), config.bot_username, http)
-    async with run_lock(state_home() / "run.lock"):
+    async with session_lock():
         if not args.serve:
             return await run_acceptance(
                 config,

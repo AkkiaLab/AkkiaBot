@@ -298,3 +298,24 @@ class Connector:
         account = self.world.account(self.sessions[session.reveal()])
         self.accounts.append(account)
         return account
+
+
+BOTFATHER = UserInfo(93372553, "BotFather", "BotFather", is_bot=True)
+FAKE_BOT_TOKEN = "123456:fake-bot-token-for-tests-xxxxxxxxxxx"  # noqa: S105 - synthetic
+
+
+def add_fake_botfather(world: FakeTelegram, *, taken: int = 0, token: str = FAKE_BOT_TOKEN) -> None:
+    """@BotFather that rejects the first ``taken`` usernames, then returns ``token``."""
+    state = {"taken": taken}
+
+    def reply(text: str) -> str:
+        if text == "/newbot":
+            return "Alright, a new bot. How are we going to call it? Please choose a name for your bot."
+        if not text.endswith("_bot"):
+            return "Good. Now let's choose a username for your bot."
+        if state["taken"]:
+            state["taken"] -= 1
+            return "Sorry, this username is already taken. Please try something different."
+        return f"Done! Use this token to access the HTTP API:\n{token}\nKeep your token secure."
+
+    world.add_private_bot(BOTFATHER, reply)
