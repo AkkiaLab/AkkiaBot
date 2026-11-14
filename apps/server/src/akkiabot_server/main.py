@@ -51,7 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只输出差异报告，不写入；未配置 DB_URL 时按空库计算",
     )
-    legacy.add_argument("--report", type=Path, help="另外把差异写成 JSON 文件")
+    legacy.add_argument(
+        "--report", type=Path, help="另外把差异写成 JSON 文件（必须是不存在的新文件）"
+    )
     return parser
 
 
@@ -122,6 +124,14 @@ def _import_legacy(legacy_db: Path, *, dry_run: bool, report: Path | None) -> in
     obs = load_observability_settings()
     # Logs go to stderr so stdout carries only the report.
     configure_logging(obs.log_level, fmt=obs.log_format, stream=sys.stderr)
+    if report is not None:
+        # Validate before reading or writing anything: the report must never
+        # replace the legacy database (same path, symlink or hard link).
+        try:
+            legacy_import.check_report_path(report, legacy_db)
+        except legacy_import.LegacyImportError as exc:
+            logger.error("legacy import failed: %s", exc)
+            return 2
     db_url = None
     if os.environ.get("DB_URL"):
         try:
@@ -149,7 +159,9 @@ def _import_legacy(legacy_db: Path, *, dry_run: bool, report: Path | None) -> in
     print(legacy_import.render_report(plan, source=legacy_db, dry_run=dry_run), end="")
     if report is not None:
         data = legacy_import.plan_to_json(plan, source=legacy_db, dry_run=dry_run)
-        report.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # "x": never overwrite, even if the file appeared after the check.
+        with report.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     if not plan.consistent:
         logger.error("legacy import aborted: source statistics do not match the plan")
         return 1

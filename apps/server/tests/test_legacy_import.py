@@ -423,3 +423,78 @@ def test_cli_inconsistent_plan_exits_1_and_writes_nothing(
     monkeypatch.setattr(legacy_import, "build_plan", broken)
     assert main(["import-legacy", str(legacy_db)]) == 1
     assert run(_rows(target_url)) == ({}, {})
+
+
+def _hardlink(src: Path, dst: Path) -> Path:
+    dst.hardlink_to(src)
+    return dst
+
+
+def _symlink(src: Path, dst: Path) -> Path:
+    dst.symlink_to(src)
+    return dst
+
+
+@pytest.mark.usefixtures("cli_env")
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(
+    ("alias", "message"),
+    [
+        pytest.param(lambda src, d: src, "旧库文件本身", id="same-path"),
+        pytest.param(
+            lambda src, d: d / ".." / d.name / src.name, "旧库文件本身", id="relative-path"
+        ),
+        pytest.param(lambda src, d: _symlink(src, d / "link.json"), "符号链接", id="symlink"),
+        pytest.param(lambda src, d: _hardlink(src, d / "hard.json"), "旧库文件本身", id="hardlink"),
+        pytest.param(
+            lambda src, d: _symlink(d / "missing.db", d / "dangling.json"),
+            "符号链接",
+            id="dangling-symlink",
+        ),
+    ],
+)
+def test_cli_report_never_overwrites_legacy_db(
+    legacy_db: Path,
+    target_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    alias: Any,
+    message: str,
+    dry_run: bool,
+) -> None:
+    monkeypatch.setenv("DB_URL", target_url)
+    report = alias(legacy_db, tmp_path)
+    before = digest(legacy_db)
+    argv = ["import-legacy", str(legacy_db), "--report", str(report)]
+
+    assert main([*argv, "--dry-run"] if dry_run else argv) == 2
+
+    out, err = capsys.readouterr()
+    assert out == ""  # rejected before reading anything
+    assert message in err
+    assert digest(legacy_db) == before
+    assert run(_rows(target_url)) == ({}, {})
+    assert not (tmp_path / "missing.db").exists()
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_cli_report_refuses_existing_file_and_missing_dir(
+    legacy_db: Path,
+    target_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("DB_URL", target_url)
+    existing = tmp_path / "old.json"
+    existing.write_text("keep me", encoding="utf-8")
+
+    assert main(["import-legacy", str(legacy_db), "--report", str(existing)]) == 2
+    assert main(["import-legacy", str(legacy_db), "--report", str(tmp_path / "no" / "r.json")]) == 2
+
+    err = capsys.readouterr().err
+    assert "报告文件已存在" in err
+    assert "报告所在目录不存在" in err
+    assert existing.read_text(encoding="utf-8") == "keep me"
+    assert run(_rows(target_url)) == ({}, {})

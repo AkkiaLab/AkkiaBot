@@ -134,6 +134,25 @@ def _parse_bool(value: Any, *, where: str) -> bool:
     raise LegacyImportError(f"无法解析的布尔值 {value!r}（{where}）")
 
 
+def check_report_path(report: Path, legacy_db: Path) -> None:
+    """Refuse a ``--report`` path that exists or could alias the legacy database.
+
+    Only new files are written, so the same path, a symlink and a hard link to
+    the legacy file are all rejected (they exist); a dangling symlink is
+    rejected too, because writing through it would create its target.
+    """
+    if report.is_symlink():
+        raise LegacyImportError(f"报告路径不能是符号链接：{report}")
+    if report.exists():
+        if legacy_db.exists() and report.samefile(legacy_db):
+            raise LegacyImportError("报告路径指向旧库文件本身，拒绝覆盖")
+        raise LegacyImportError(f"报告文件已存在，拒绝覆盖：{report}")
+    if report.resolve() == legacy_db.resolve():
+        raise LegacyImportError("报告路径指向旧库文件本身，拒绝覆盖")
+    if not report.parent.is_dir():
+        raise LegacyImportError(f"报告所在目录不存在：{report.parent}")
+
+
 def _connect_read_only(path: Path) -> sqlite3.Connection:
     if not path.is_file():
         raise LegacyImportError(f"旧库文件不存在：{path}")
