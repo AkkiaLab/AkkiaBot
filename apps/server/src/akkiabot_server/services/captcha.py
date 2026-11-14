@@ -28,6 +28,7 @@ The service is framework independent: Telegram is reached through
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -357,6 +358,12 @@ class CaptchaService:
             )
         except CaptchaRejectedError as exc:
             count_captcha("failed")
+            if exc.chat_id is None:
+                # Rejected before the challenge was loaded (Turnstile, initData):
+                # look it up only to tag the log line with its group.
+                with contextlib.suppress(Exception):
+                    if (challenge := await self._load(challenge_id)) is not None:
+                        exc.chat_id, exc.user_id = challenge.chat_id, challenge.user_id
             with log_context(chat_id=exc.chat_id, user_id=exc.user_id):
                 logger.info(
                     "captcha verification rejected",
