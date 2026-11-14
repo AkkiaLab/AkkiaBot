@@ -153,8 +153,12 @@ class MessageLogRepository:
         *,
         user_id: int | None,
         created_at: datetime | None = None,
-    ) -> None:
-        """Record a message id (no text). Duplicates are ignored."""
+    ) -> bool:
+        """Record a message id (no text). Duplicates are ignored.
+
+        Returns ``True`` only when a new row was inserted, so callers can keep
+        derived counters idempotent under redelivery.
+        """
         stmt = (
             _insert(self.session, MessageLog)
             .values(
@@ -165,7 +169,9 @@ class MessageLogRepository:
             )
             .on_conflict_do_nothing(index_elements=[MessageLog.chat_id, MessageLog.message_id])
         )
-        await self.session.execute(stmt)
+        result = await self.session.execute(stmt)
+        assert isinstance(result, CursorResult)  # noqa: S101
+        return result.rowcount == 1
 
     async def get(self, chat_id: int, message_id: int) -> MessageLog | None:
         return await self.session.get(MessageLog, (chat_id, message_id))

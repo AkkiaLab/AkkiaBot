@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from akkiabot_core.db import Chat, ChatMember, ChatSettings, MessageLog, session_scope
 from akkiabot_core.db.repositories import ChatRepository, MessageLogRepository
+from akkiabot_server.bot.handlers.group import to_incoming
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.services.message_log import IncomingMessage, should_record
 from akkiabot_server.testing import BOT_USER, FakeBotApi, UpdateFactory, metric_value
@@ -247,3 +248,21 @@ async def test_known_chat_skips_lookup(
     monkeypatch.setattr(ChatRepository, "get", counting_get)
     await runtime.application.process_update(updates.message("second"))
     assert lookups == 0
+
+
+async def test_redelivered_message_counted_once(runtime: Runtime, updates: UpdateFactory) -> None:
+    """Regression: webhook retries deliver the same message again."""
+    first = updates.message("hello", from_user=updates.user(42))
+    other = updates.message("next", from_user=updates.user(42))
+    message = to_incoming(first.message, is_service=False)  # type: ignore[arg-type]
+
+    assert await runtime.deps.messages.record(message) is True
+    assert await runtime.deps.messages.record(message) is False  # duplicate
+    await runtime.application.process_update(first)  # duplicate through the handler too
+    await runtime.application.process_update(other)
+
+    async with session_scope(runtime.session_factory) as session:
+        member = await session.get(ChatMember, (GROUP_ID, 42))
+        assert member is not None
+        assert member.message_count == 2
+    assert len(await _logged(runtime)) == 2

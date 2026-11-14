@@ -48,7 +48,7 @@ class MessageRecorder:
 
     async def record(self, message: IncomingMessage) -> bool:
         """Store the message id and bump the sender's counters; returns whether
-        anything was recorded."""
+        a new message was recorded (``False`` for duplicates and skipped ones)."""
         if message.chat_type not in GROUP_TYPES:
             return False
         recorded = should_record(message)
@@ -58,15 +58,17 @@ class MessageRecorder:
             )
             if recorded:
                 assert message.sender_id is not None  # noqa: S101 - checked by should_record
-                await MessageLogRepository(session).add(
+                recorded = await MessageLogRepository(session).add(
                     message.chat_id,
                     message.message_id,
                     user_id=message.sender_id,
                     created_at=message.date,
                 )
-                await ChatMemberRepository(session).record_message(
-                    message.chat_id, message.sender_id, at=message.date
-                )
+                # Redelivered updates (webhook retries) must not inflate the counters.
+                if recorded:
+                    await ChatMemberRepository(session).record_message(
+                        message.chat_id, message.sender_id, at=message.date
+                    )
         # Only after the commit succeeded: a rollback must not hide the chat.
         self._chats.remember(message.chat_id)
         return recorded

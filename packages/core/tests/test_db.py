@@ -173,8 +173,8 @@ async def test_member_get_or_create_keeps_existing(session: AsyncSession) -> Non
 async def test_message_log(session: AsyncSession) -> None:
     repo = MessageLogRepository(session)
     for message_id in (3, 1, 2):
-        await repo.add(SUPERGROUP, message_id, user_id=BIG_USER, created_at=NOW)
-    await repo.add(SUPERGROUP, 1, user_id=BIG_USER)  # duplicate ignored
+        assert await repo.add(SUPERGROUP, message_id, user_id=BIG_USER, created_at=NOW) is True
+    assert await repo.add(SUPERGROUP, 1, user_id=BIG_USER) is False  # duplicate ignored
     await repo.add(SUPERGROUP, 4, user_id=99, created_at=NOW - timedelta(days=30))
     await repo.add(-1009999999999, 1, user_id=BIG_USER, created_at=NOW)
     await session.commit()
