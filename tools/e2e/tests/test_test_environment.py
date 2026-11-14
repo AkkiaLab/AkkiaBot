@@ -16,12 +16,17 @@ from akkiabot_e2e.errors import E2EError, SafetyError
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.telethon_transport import (
     TEST_DC_ADDRESSES,
+    TEST_DC_ALLOWED_ADDRESSES,
     _session,
     ensure_test_environment,
 )
 from akkiabot_e2e.testing import ADMIN, FakeTelegram, add_fake_botfather
 
 PRODUCTION_DC2 = "149.154.167.50"
+PRODUCTION_DC1 = "149.154.175.53"
+#: What the test servers' help.getConfig advertises for DC1 (and Telethon uses
+#: after PHONE_MIGRATE); seen on 2026-11-14 when logging in a +1 test account.
+TEST_DC1_ADVERTISED = "149.154.175.40"
 TOKEN = Secret("123456:fake-bot-token-for-tests-xxxxxxxxxxx")
 
 
@@ -40,7 +45,17 @@ def test_test_session_is_accepted() -> None:
     assert _session(_saved(TEST_DC_ADDRESSES[2])).server_address == TEST_DC_ADDRESSES[2]
 
 
-@pytest.mark.parametrize("value", [_saved(PRODUCTION_DC2), Secret("not-a-session")])
+def test_session_on_advertised_test_dc1_is_accepted() -> None:
+    assert _session(_saved(TEST_DC1_ADVERTISED)).server_address == TEST_DC1_ADVERTISED
+
+
+def test_allowed_addresses_contain_no_production_dc() -> None:
+    assert not {PRODUCTION_DC1, PRODUCTION_DC2} & TEST_DC_ALLOWED_ADDRESSES
+
+
+@pytest.mark.parametrize(
+    "value", [_saved(PRODUCTION_DC2), _saved(PRODUCTION_DC1), Secret("not-a-session")]
+)
 def test_production_or_invalid_sessions_are_refused(value: Secret) -> None:
     with pytest.raises(SafetyError):
         _session(value)
@@ -59,8 +74,11 @@ class FakeClient:
         self.disconnected = True
 
 
-async def test_server_confirmed_test_mode_passes() -> None:
-    client = FakeClient(test_mode=True, address=TEST_DC_ADDRESSES[2])
+@pytest.mark.parametrize("address", [TEST_DC_ADDRESSES[2], TEST_DC1_ADVERTISED])
+async def test_server_confirmed_test_mode_passes(address: str) -> None:
+    # Includes the state after PHONE_MIGRATE to test DC1 (regression: login of
+    # +1 test accounts was refused as "not the test environment").
+    client = FakeClient(test_mode=True, address=address)
     await ensure_test_environment(client)
     assert not client.disconnected
 

@@ -49,6 +49,13 @@ TEST_DC_ADDRESSES: dict[int, str] = {
     2: "149.154.167.40",
     3: "149.154.175.117",
 }
+#: Every address a test-environment session may point at. Besides the documented
+#: addresses above, the test servers' own ``help.getConfig`` advertises DC1 as
+#: ``149.154.175.40``; Telethon follows that list on ``PHONE_MIGRATE`` (accounts
+#: with e.g. +1 numbers live on test DC1). Production DCs are never listed here.
+TEST_DC_ALLOWED_ADDRESSES: frozenset[str] = frozenset(
+    {*TEST_DC_ADDRESSES.values(), "149.154.175.40"}
+)
 TEST_DC_PORT = 443
 _INITIAL_TEST_DC = 2
 
@@ -63,7 +70,7 @@ def _session(session: Secret | None) -> StringSession:
         restored = StringSession(session.reveal())
     except ValueError:
         raise SafetyError("会话格式无效，请重新执行 just e2e-login") from None
-    if restored.server_address not in TEST_DC_ADDRESSES.values():
+    if restored.server_address not in TEST_DC_ALLOWED_ADDRESSES:
         raise SafetyError("会话不属于 Telegram 测试环境，拒绝连接（不会回退到生产环境）")
     return restored
 
@@ -83,7 +90,7 @@ async def ensure_test_environment(client: Any) -> None:
     """Ask the connected server itself; ``help.getConfig`` reports ``test_mode``."""
     config = await _guard(client(functions.help.GetConfigRequest()))
     address = getattr(client.session, "server_address", None)
-    if not getattr(config, "test_mode", False) or address not in TEST_DC_ADDRESSES.values():
+    if not getattr(config, "test_mode", False) or address not in TEST_DC_ALLOWED_ADDRESSES:
         await _disconnect(client)
         raise SafetyError("连接的不是 Telegram 测试环境，已断开（不会回退到生产环境）")
 
