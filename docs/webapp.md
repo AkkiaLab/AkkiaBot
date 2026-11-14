@@ -58,7 +58,7 @@ flowchart LR
 
 **版本锁定。** `VITE_API_BASE_URL`、`VITE_TURNSTILE_SITE_KEY` 在 `vite build` 时写进产物，所以同一个 commit 要按环境各构建一次。共用的构建步骤在 `.github/actions/webapp-build`：安装锁定依赖 → 用该环境的变量构建 → 写入 `dist/version.json`（`{"sha", "environment"}`）→ 检查不含开发 mock。提升到生产时：
 
-1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入，写入前会核对 `staging.akkiabot-webapp.pages.dev/version.json` 就是该 sha（见 `docs/e2e-acceptance.md`）。
+1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入：验收开始前（已取得验收锁）和结束后，各核对一次 `staging.akkiabot-webapp.pages.dev/version.json` 是否为该 sha，期间被新的 master 推送替换就不会写 `success`（见 `docs/e2e-acceptance.md` §6.2）。
 2. `deploy` 任务检出这个 sha（构建 action 也来自该 commit），并确认 `HEAD` 等于它；然后只换成生产环境变量重新构建。因此代码与 staging 验收的完全相同，差别只在环境配置。
 3. 上传后对部署地址做冒烟：`/`、`/captcha?challenge=…` 返回 200，`/version.json` 的 sha 等于输入值。
 

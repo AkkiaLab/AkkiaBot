@@ -46,7 +46,7 @@ from akkiabot_e2e.release import (
     DEFAULT_REPO,
     STATUS_CONTEXT,
     check_sha,
-    deployed_webapp_sha,
+    guarded_run,
     record_status,
 )
 from akkiabot_e2e.report import Report
@@ -297,24 +297,12 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
             await check_test_bot(Secret(token), config.bot_username, http)
     web = HttpWebProbe() if config.api_base_url or config.webapp_url else None
     try:
-        if args.record_status:
-            await _check_release_target(args.record_status, config.webapp_url, web)
+        if args.record_status and (config.webapp_url is None or web is None):
+            raise E2EError("--record-status 需要 E2E_WEBAPP_URL（被验收的 staging Mini App 地址）")
         return await _run_live(args, env, run_dir, config, selected, web)
     finally:
         if web is not None:
             await web.aclose()
-
-
-async def _check_release_target(sha: str, webapp_url: str | None, web: HttpWebProbe | None) -> None:
-    check_sha(sha)
-    if webapp_url is None or web is None:
-        raise E2EError("--record-status 需要 E2E_WEBAPP_URL（被验收的 staging Mini App 地址）")
-    deployed = await deployed_webapp_sha(web, webapp_url)
-    if deployed != sha:
-        raise E2EError(
-            f"{webapp_url} 当前部署的是 {deployed or '未知版本'}，不是要验收的 {sha}；"
-            "先把该 commit 发布到 staging"
-        )
 
 
 async def _run_live(
@@ -330,15 +318,25 @@ async def _run_live(
     registry = VaultGroupRegistry(_vault())
     async with session_lock():
         if not args.serve:
-            return await run_acceptance(
-                config,
-                selected,
-                connect=_telethon_connect(config.api),
-                run_id=run_id,
-                allow_create=args.create_group,
-                registry=registry,
-                web=web,
-            )
+
+            async def run() -> Report:
+                return await run_acceptance(
+                    config,
+                    selected,
+                    connect=_telethon_connect(config.api),
+                    run_id=run_id,
+                    allow_create=args.create_group,
+                    registry=registry,
+                    web=web,
+                )
+
+            if args.record_status:
+                # Checked inside the lock: waiting for another run must not let
+                # a newer staging deployment slip under the version being recorded.
+                assert config.webapp_url is not None  # noqa: S101 - checked in _live()
+                assert web is not None  # noqa: S101
+                return await guarded_run(args.record_status, config.webapp_url, web, run)
+            return await run()
         from akkiabot_e2e.server import ManagedServer
 
         async with ManagedServer(run_dir, env) as server:

@@ -261,7 +261,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
    just e2e-staging --record-status SHA
    ```
 
-   工具先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出，不发送消息。然后执行全部场景（含 M5 反垃圾、M7 Mini App 链路），并把结果写为 GitHub commit status `staging-acceptance`：全部通过时为 `success`，否则为 `failure`。`--record-status` 不能与 `--scenarios`、`--serve` 同时使用。
+   staging 别名会被每次 master 推送覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行全部场景（含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`：只有全部场景通过、且开始和结束时都是 `SHA`，才写 `success`，否则写 `failure`。`--record-status` 不能与 `--scenarios`、`--serve` 同时使用。
 5. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、后端镜像和结果。报告中的“未自动化”项要原样保留。
 6. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查。
 

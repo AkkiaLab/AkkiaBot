@@ -39,6 +39,9 @@ class Report:
     results: list[ScenarioResult] = field(default_factory=list)
     flood_wait_seconds: float = 0.0
     server_log: str | None = None
+    release: dict[str, str | None] | None = None
+    """Staging release run (``--record-status``): target sha and the Mini App
+    versions observed at start and end of the run."""
     not_automated: list[str] = field(default_factory=list)
     """Steps the run could not perform automatically (e.g. a real Turnstile
     challenge). They are listed, never counted as passed."""
@@ -67,6 +70,11 @@ class Report:
             lines.append(f"- 因限流等待：{self.flood_wait_seconds:g} 秒")
         if self.detail:
             lines.append(f"- 说明：{self.detail}")
+        if self.release:
+            lines.append(
+                "- 发版验收版本：目标 `{target_sha}`，开始时 staging Mini App 为 "
+                "`{webapp_sha_at_start}`，结束时为 `{webapp_sha_at_end}`".format(**self.release)
+            )
         for item in self.not_automated:
             lines.append(f"- 未自动化（不计入通过）：{item}")
         if self.results:
