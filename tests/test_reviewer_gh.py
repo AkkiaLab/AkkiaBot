@@ -25,7 +25,7 @@ from scripts.reviewer_gh import (
 )
 
 REPO = "AkkiaLab/AkkiaBot"
-FAKE_TOKEN = "ghs_fake-token-value"  # noqa: S105 - test fixture, not a credential
+FAKE_TOKEN = "ghs_fake-token-value"  # test fixture, not a credential (S105 ignored for tests)
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="需要 openssl")
 
