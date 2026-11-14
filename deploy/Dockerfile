@@ -22,11 +22,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=packages/core/pyproject.toml,target=packages/core/pyproject.toml \
     --mount=type=bind,source=packages/antispam/pyproject.toml,target=packages/antispam/pyproject.toml \
     --mount=type=bind,source=packages/whois/pyproject.toml,target=packages/whois/pyproject.toml \
+    --mount=type=bind,source=tools/e2e/pyproject.toml,target=tools/e2e/pyproject.toml \
     uv sync --locked --no-dev --package akkiabot-server --no-install-workspace
 
 COPY pyproject.toml uv.lock ./
 COPY apps/server apps/server
 COPY packages packages
+# Only the metadata of the acceptance tool: uv needs every workspace member to resolve the lock.
+COPY tools/e2e/pyproject.toml tools/e2e/pyproject.toml
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --package akkiabot-server --no-editable

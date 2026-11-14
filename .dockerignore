@@ -5,4 +5,6 @@
 !apps/server/src/**
 !packages/*/pyproject.toml
 !packages/*/src/**
+# Workspace member metadata only (the acceptance tool is not part of the image)
+!tools/*/pyproject.toml
 **/__pycache__
