@@ -49,6 +49,9 @@ def test_service_message_id_from_updates() -> None:
     )
 
     assert _service_message_id(updates) == 99
+    # messages.importChatInvite now answers ChatInviteJoinResultOk(updates=Updates)
+    # (seen live in the test environment, 2026-11-14); unwrap it.
+    assert _service_message_id(types.messages.ChatInviteJoinResultOk(updates=updates)) == 99
     assert (
         _service_message_id(types.Updates(updates=[], users=[], chats=[], date=NOW, seq=0)) is None
     )
