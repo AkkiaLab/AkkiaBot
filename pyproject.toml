@@ -22,13 +22,14 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/server", "packages/*"]
+members = ["apps/server", "packages/*", "tools/e2e"]
 
 [tool.uv.sources]
 akkiabot-server = { workspace = true }
 akkiabot-core = { workspace = true }
 akkiabot-antispam = { workspace = true }
 akkiabot-whois = { workspace = true }
+akkiabot-e2e = { workspace = true }
 
 # ---------------------------------------------------------------- ruff
 [tool.ruff]
@@ -51,13 +52,17 @@ ignore = [
 "tests/**" = ["S101", "S105", "S106", "S603", "S607"]
 "scripts/**" = ["T20"]
 "**/akkiabot_server/main.py" = ["T20"]
+# CLI tool: prints user-facing (redacted) output.
+"tools/e2e/src/akkiabot_e2e/{cli,onepassword,lock,telethon_transport}.py" = ["T20"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+known-first-party = [
+  "akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois", "akkiabot_e2e",
+]
 
 # -------------------------------------------------------------- pyright
 [tool.pyright]
-include = ["apps/server", "packages", "tests", "scripts"]
+include = ["apps/server", "packages", "tools", "tests", "scripts"]
 exclude = ["**/node_modules", "**/__pycache__", "**/.venv"]
 venvPath = "."
 venv = ".venv"
@@ -66,7 +71,7 @@ typeCheckingMode = "standard"
 
 # --------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
-testpaths = ["tests", "apps/server/tests", "packages/*/tests"]
+testpaths = ["tests", "apps/server/tests", "packages/*/tests", "tools/*/tests"]
 pythonpath = ["."]
 addopts = ["--import-mode=importlib", "-ra", "--strict-markers"]
 asyncio_mode = "auto"
@@ -77,7 +82,9 @@ filterwarnings = ["error"]
 # Module boundaries from docs/architecture.md §5.1.
 # A counter-example test lives in tests/test_import_contracts.py.
 [tool.importlinter]
-root_packages = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+root_packages = [
+  "akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois", "akkiabot_e2e",
+]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -96,3 +103,17 @@ type = "forbidden"
 source_modules = ["akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
 forbidden_modules = ["telegram", "fastapi", "starlette", "uvicorn"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+id = "e2e-black-box"
+name = "验收工具 akkiabot_e2e 只通过 Telegram 黑盒验证，不导入产品代码"
+type = "forbidden"
+source_modules = ["akkiabot_e2e"]
+forbidden_modules = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+
+[[tool.importlinter.contracts]]
+id = "product-without-e2e"
+name = "产品代码不依赖验收工具与 Telethon"
+type = "forbidden"
+source_modules = ["akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois"]
+forbidden_modules = ["akkiabot_e2e", "telethon"]

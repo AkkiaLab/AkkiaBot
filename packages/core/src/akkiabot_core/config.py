@@ -76,6 +76,10 @@ class TelegramSettings(_Group):
     """Seconds between two retention cleanup runs."""
     start_payload_ttl: int = Field(default=600, gt=0)
     """Default lifetime (seconds) of a one-time ``/start`` deep-link payload."""
+    test_environment: bool = False
+    """Use Telegram's separate test environment (``/bot<token>/test/`` Bot API
+    endpoints). Test tokens come from the test-environment BotFather and do
+    not work in production, and vice versa: there is no fallback."""
 
     @field_validator("webhook_secret")
     @classmethod

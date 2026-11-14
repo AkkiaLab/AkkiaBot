@@ -1,0 +1,16 @@
+[project]
+name = "akkiabot-e2e"
+version = "0.1.0"
+description = "AkkiaBot 真实 Telegram 验收工具（MTProto 用户账号 + 1Password）"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28",
+    "telethon>=1.40",
+]
+
+[project.scripts]
+akkiabot-e2e = "akkiabot_e2e.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9,<1"]
+build-backend = "uv_build"

@@ -1,6 +1,6 @@
 """Counter-example tests for the import-linter contracts in pyproject.toml.
 
-Each case builds a throw-away copy of the four top-level packages under a
+Each case builds a throw-away copy of the top-level packages under a
 temporary directory, plants one forbidden import, and runs ``lint-imports``
 against the repository's real contract configuration. The temporary
 directory is put first on ``PYTHONPATH`` so it shadows the installed
@@ -16,7 +16,13 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("akkiabot_server", "akkiabot_core", "akkiabot_antispam", "akkiabot_whois")
+PACKAGES = (
+    "akkiabot_server",
+    "akkiabot_core",
+    "akkiabot_antispam",
+    "akkiabot_whois",
+    "akkiabot_e2e",
+)
 
 
 def _lint_imports(tmp_path: Path, violations: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -60,6 +66,24 @@ def test_clean_tree_passes(tmp_path: Path) -> None:
             "from fastapi import FastAPI\n",
             "packages/* 不依赖 Telegram 框架与 Web 框架",
             id="core->fastapi",
+        ),
+        pytest.param(
+            "akkiabot_e2e",
+            "import akkiabot_server\n",
+            "验收工具 akkiabot_e2e 只通过 Telegram 黑盒验证，不导入产品代码",
+            id="e2e->server",
+        ),
+        pytest.param(
+            "akkiabot_server",
+            "import akkiabot_e2e\n",
+            "产品代码不依赖验收工具与 Telethon",
+            id="server->e2e",
+        ),
+        pytest.param(
+            "akkiabot_core",
+            "import telethon\n",
+            "产品代码不依赖验收工具与 Telethon",
+            id="core->telethon",
         ),
     ],
 )
