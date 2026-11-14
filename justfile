@@ -84,6 +84,20 @@ dev:
 dev-down:
     {{ compose_dev }} down
 
+# --- Real Telegram acceptance (docs/e2e-acceptance.md). Sends real messages; never run in CI.
+
+# Store this machine's 1Password service account token (prompted, not echoed)
+e2e-token-init *args:
+    uv run akkiabot-e2e token-init {{ args }}
+
+# First interactive login of a test account (role: admin | member)
+e2e-login role *args:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/login.env.tpl -- akkiabot-e2e login --role {{ role }} {{ args }}
+
+# Start the bot from this checkout and run the live M2/M3 acceptance (e.g. `just e2e --scenarios m2`)
+e2e *args:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
+
 # Regenerate frontend API types from the backend OpenAPI schema
 gen-api:
     @echo "gen-api: 后端目前只有健康检查接口，业务 API 从 M6 起接入 openapi-typescript，当前无需生成。"

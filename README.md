@@ -6,6 +6,8 @@ AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Clou
 
 - 架构与技术栈：[docs/architecture.md](docs/architecture.md)
 - 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
+- 真实 Telegram 验收（1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
+- 仓库约定（密钥、日志、验收）：[AGENTS.md](AGENTS.md)
 
 ## 开发
 
@@ -17,6 +19,7 @@ apps/webapp        Telegram Mini App（Vite + React + TypeScript + Tailwind）
 packages/core      akkiabot_core：配置、日志、数据库、缓存、领域模型
 packages/antispam  akkiabot_antispam：LLM 反垃圾分类器（纯库）
 packages/whois     akkiabot_whois：IP 查询 provider 链（纯库）
+tools/e2e          akkiabot_e2e：真实 Telegram 验收工具（Telethon 用户账号，不进镜像）
 deploy/            Dockerfile 与 compose 文件
 scripts/           仓库脚本（如 PR 标题检查）
 tests/             仓库级测试（import-linter 反例、脚本测试）
@@ -46,6 +49,7 @@ just db-revision "说明"  # 修改模型后自动生成新的 Alembic 迁移
 just test-integration  # 连同 compose 中的 PostgreSQL / Redis 一起跑 pytest
 just gen-api     # 由后端 OpenAPI 生成前端类型（M6 提供业务 API 后启用）
 just docker-build  # 构建后端镜像并运行，打印版本号
+just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-acceptance.md；CI 不运行）
 ```
 
 只改一侧时，可以用 `just lint-py` / `just lint-web`、`just test-py` / `just test-web` 等子命令；`just test-py -k smoke` 会把参数透传给 pytest。
@@ -77,7 +81,8 @@ just docker-build  # 构建后端镜像并运行，打印版本号
 
 - `apps/server` 可以依赖任意 `packages/*`，反之不行；
 - `core`、`antispam`、`whois` 互不依赖；
-- `packages/*` 不能导入 `telegram`、`fastapi`、`starlette`、`uvicorn`。
+- `packages/*` 不能导入 `telegram`、`fastapi`、`starlette`、`uvicorn`；
+- `tools/e2e`（验收工具）只通过 Telegram 黑盒验证，不导入产品代码；产品代码也不依赖它和 Telethon。
 
 违反时 `lint-imports` 会输出 `BROKEN` 并以非零状态退出；`tests/test_import_contracts.py` 中的反例测试覆盖了上述每条规则。
 
