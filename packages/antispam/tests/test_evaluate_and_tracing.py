@@ -7,8 +7,23 @@ from typing import Any
 
 import pytest
 
-from akkiabot_antispam import LangfuseTracer, SpamVerdict, Usage, VerdictSource
-from akkiabot_antispam.evaluate import EvalReport, Sample, evaluate, load_dataset
+from akkiabot_antispam import (
+    AntiSpamClassifier,
+    ClassifierSettings,
+    LangfuseTracer,
+    SpamVerdict,
+    Usage,
+    VerdictSource,
+)
+from akkiabot_antispam import evaluate as evaluate_module
+from akkiabot_antispam.evaluate import (
+    EvalReport,
+    Sample,
+    build_from_env,
+    evaluate,
+    load_dataset,
+)
+from akkiabot_antispam.testing import FakeLlm, completion
 
 FIXTURE = Path(__file__).parent / "fixtures" / "eval_set.jsonl"
 
@@ -146,3 +161,74 @@ def test_langfuse_failures_never_propagate() -> None:
     tracer.start(name="n", model="m", input="x", prompt_version="v").end(output="0")
     failing_update = LangfuseTracer(FakeLangfuse(fail_update=True))  # pyright: ignore[reportArgumentType]
     failing_update.start(name="n", model="m", input="x", prompt_version="v").end(output="0")
+
+
+ENV_KEYS = (
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "LLM_BASE_URL",
+    "ANTISPAM_TIMEOUT",
+    "ANTISPAM_STRUCTURED_OUTPUT",
+    "ANTISPAM_PROMPT_FILE",
+    "ANTISPAM_PROMPT_VERSION",
+)
+
+
+@pytest.fixture
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.usefixtures("clean_env")
+async def test_build_from_env_file(tmp_path: Path) -> None:
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("自定义提示词", encoding="utf-8")
+    env = tmp_path / ".env"
+    # mock: 人工构造的不可用测试值，不是凭据。
+    mock_key_line = "LLM_API_KEY=fake-api-key-for-tests"
+    env.write_text(
+        "\n".join(
+            [
+                "# comment",
+                mock_key_line,
+                "LLM_MODEL='doubao-test'",
+                "LLM_BASE_URL=https://llm.example.test/v1",
+                "ANTISPAM_STRUCTURED_OUTPUT=off",
+                "ANTISPAM_TIMEOUT=7",
+                f"ANTISPAM_PROMPT_FILE={prompt}",
+                "ANTISPAM_PROMPT_VERSION=",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    classifier = build_from_env(env)
+    assert classifier.settings.model == "doubao-test"
+    assert classifier.settings.timeout == 7
+    assert not classifier.structured
+    assert classifier.prompt.base == "自定义提示词"
+    assert classifier.prompt.version.startswith("custom-")
+    await classifier.aclose()
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_build_from_env_requires_llm(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="LLM_API_KEY"):
+        build_from_env(tmp_path / "missing.env")
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_main_prints_report(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = FakeLlm(default=completion('{"is_spam": false, "category": "none", "confidence": 0.9}'))
+    monkeypatch.setattr(
+        evaluate_module,
+        "build_from_env",
+        lambda _path: AntiSpamClassifier(llm.client(), ClassifierSettings(model="fake")),
+    )
+    assert evaluate_module.main(["--dataset", str(FIXTURE), "--limit", "4"]) == 0
+    out = capsys.readouterr().out
+    assert "模型: fake  提示词版本: antispam-v1  结构化输出: 是" in out
+    assert "样本数: 4" in out
+    assert len(llm.requests) == 4
