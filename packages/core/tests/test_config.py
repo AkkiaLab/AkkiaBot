@@ -45,6 +45,27 @@ def test_loads_groups_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.llm.model == "doubao-pro"
     assert s.whois.rate_limit == 3
     assert s.whois.ipinfo_token is None
+    assert s.antispam.exempt_message_count == 3
+    assert s.antispam.structured_output == "auto"
+    assert not s.langfuse.enabled
+
+
+@pytest.mark.usefixtures("required_env")
+def test_antispam_and_langfuse_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTISPAM_EXEMPT_MESSAGE_COUNT", "10")
+    monkeypatch.setenv("ANTISPAM_STRUCTURED_OUTPUT", "off")
+    monkeypatch.setenv("ANTISPAM_PROMPT_FILE", "prompts/antispam.txt")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "fake-langfuse-public-for-tests")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "fake-langfuse-secret-for-tests")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.example.test")
+    s = load_settings()
+    assert s.antispam.exempt_message_count == 10
+    assert s.antispam.structured_output == "off"
+    assert s.antispam.prompt_file == Path("prompts/antispam.txt")
+    assert s.langfuse.enabled
+    rendered = repr(s) + str(s.redacted())
+    assert "fake-langfuse-secret-for-tests" not in rendered
+    assert "fake-langfuse-public-for-tests" not in rendered
 
 
 @pytest.mark.usefixtures("required_env")
@@ -95,6 +116,9 @@ def test_blank_optional_value_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
         ("WHOIS_RATE_LIMIT", "0"),
         ("WHOIS_TIMEOUT", "-1"),
         ("WEBAPP_URL", "not a url"),
+        ("ANTISPAM_STRUCTURED_OUTPUT", "maybe"),
+        ("ANTISPAM_TIMEOUT", "0"),
+        ("LANGFUSE_HOST", "not a url"),
     ],
 )
 @pytest.mark.usefixtures("required_env")

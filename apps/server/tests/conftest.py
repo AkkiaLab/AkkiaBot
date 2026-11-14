@@ -23,6 +23,8 @@ _GROUPS = {
     "DB",
     "REDIS",
     "LLM",
+    "ANTISPAM",
+    "LANGFUSE",
     "TURNSTILE",
     "WHOIS",
     "WEBAPP",

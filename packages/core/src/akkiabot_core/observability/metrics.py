@@ -79,6 +79,27 @@ MODERATION_ACTIONS_TOTAL = Counter(
     namespace=NAMESPACE,
     registry=REGISTRY,
 )
+ANTISPAM_VERDICT_TOTAL = Counter(
+    "antispam_verdict_total",
+    "Spam checks of group messages and /spam reports, by verdict and resulting action.",
+    ["verdict", "action"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+ANTISPAM_LLM_DURATION_SECONDS = Histogram(
+    "antispam_llm_duration_seconds",
+    "Wall time of one spam classification (LLM call, fallback included).",
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+    buckets=(0.25, 0.5, 1, 2, 3, 5, 8, 13, 20, 30),
+)
+ANTISPAM_LLM_ERRORS_TOTAL = Counter(
+    "antispam_llm_errors_total",
+    "Classifications that failed open (timeout, api_error, parse_error, error).",
+    ["error"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
 TELEGRAM_API_ERRORS_TOTAL = Counter(
     "telegram_api_errors_total",
     "Failed Bot API calls made by business code, by method (rate limits included).",
@@ -119,6 +140,17 @@ def count_moderation_action(action: str, amount: int = 1) -> None:
     """``action`` is ``ban`` / ``warn`` / ``mute`` / ``delete`` (``amount`` = messages)."""
     if amount > 0:
         MODERATION_ACTIONS_TOTAL.labels(action=action).inc(amount)
+
+
+def count_antispam_verdict(verdict: str, action: str) -> None:
+    """``verdict``: spam / ham / error / skipped; ``action``: what was done about it."""
+    ANTISPAM_VERDICT_TOTAL.labels(verdict=verdict, action=action).inc()
+
+
+def observe_antispam_llm(seconds: float, *, error: str | None = None) -> None:
+    ANTISPAM_LLM_DURATION_SECONDS.observe(seconds)
+    if error is not None:
+        ANTISPAM_LLM_ERRORS_TOTAL.labels(error=error).inc()
 
 
 def count_telegram_api_error(method: str) -> None:

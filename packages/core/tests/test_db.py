@@ -192,9 +192,18 @@ async def test_message_log(session: AsyncSession) -> None:
     assert plain is not None
     assert plain.text is None
 
+    await repo.record_verdict(SUPERGROUP, 3, verdict={"is_spam": False})
+    await session.commit()
+    session.expunge_all()
+    ham = await repo.get(SUPERGROUP, 3)
+    assert ham is not None
+    assert (ham.spam_verdict, ham.text) == ({"is_spam": False}, None)
+
     assert await repo.delete_older_than(NOW - timedelta(days=7)) == 1
     assert await repo.delete_messages(SUPERGROUP, [1, 3]) == 2
     assert await repo.delete_messages(SUPERGROUP, []) == 0
+    # Spam hits keep their audit row (text) when the history is purged.
+    assert await repo.delete_messages(SUPERGROUP, [2]) == 0
     await session.commit()
     assert list(await repo.list_message_ids(SUPERGROUP, BIG_USER)) == [2]
 
