@@ -38,6 +38,11 @@ GROUP_BOOKKEEPING: Final = -100
 GROUP_COMMANDS: Final = 0
 
 
+#: Telegram test environment endpoints (``{token}`` is filled in by PTB).
+BOT_API_TEST_URL = "https://api.telegram.org/bot{token}/test"
+BOT_API_TEST_FILE_URL = "https://api.telegram.org/file/bot{token}/test"
+
+
 def build_application(
     deps: BotDeps,
     *,
@@ -47,6 +52,8 @@ def build_application(
 ) -> App:
     """Create the application. ``request`` overrides the HTTP layer (tests)."""
     builder = ApplicationBuilder().token(deps.settings.telegram.bot_token.get_secret_value())
+    if deps.settings.telegram.test_environment:
+        builder = builder.base_url(BOT_API_TEST_URL).base_file_url(BOT_API_TEST_FILE_URL)
     if request is not None:
         builder = builder.request(request)
     if get_updates_request is not None:

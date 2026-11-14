@@ -166,3 +166,10 @@ def test_foreign_server_env_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SERVER_SOFTWARE", "nginx")
     monkeypatch.setenv("SERVER_PORT", "9000")
     assert load_settings().server.port == 9000
+
+
+@pytest.mark.usefixtures("required_env")
+def test_telegram_test_environment_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert load_settings().telegram.test_environment is False
+    monkeypatch.setenv("TELEGRAM_TEST_ENVIRONMENT", "true")
+    assert load_settings().telegram.test_environment is True

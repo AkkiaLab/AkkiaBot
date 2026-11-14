@@ -6,7 +6,7 @@ AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Clou
 
 - 架构与技术栈：[docs/architecture.md](docs/architecture.md)
 - 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
-- 真实 Telegram 验收（1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
+- 真实 Telegram 验收（Telegram 测试环境 + 1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
 - 仓库约定（密钥、日志、验收）：[AGENTS.md](AGENTS.md)
 
 ## 开发
@@ -62,6 +62,7 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 
 `akkiabot serve` 在同一个事件循环中运行 python-telegram-bot 与 uvicorn（FastAPI lifespan 负责启动和关闭机器人、数据库与缓存）：
 
+- 测试环境：`TELEGRAM_TEST_ENVIRONMENT=true` 时 Bot API 改用 Telegram 测试环境端点（`/bot<token>/test/`），只接受测试环境 BotFather 签发的 token；默认 `false` 为生产端点。真实验收只用测试环境，见 [docs/e2e-acceptance.md](docs/e2e-acceptance.md)。
 - 接收更新：默认长轮询（`TELEGRAM_MODE=polling`）；设为 `webhook` 时需同时配置 `TELEGRAM_WEBHOOK_URL`（API 公网地址，机器人注册 `<地址>/telegram/webhook`）与 `TELEGRAM_WEBHOOK_SECRET`（校验 `X-Telegram-Bot-Api-Secret-Token`）。两种方式都显式订阅 `message`、`callback_query`、`chat_member`、`my_chat_member`。
 - HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）。
 - 指标：`/metrics` 只在独立端口 `OBSERVABILITY_METRICS_HOST:OBSERVABILITY_METRICS_PORT`（默认 `127.0.0.1:9464`）提供，不经公网 tunnel 暴露；容器内由 compose 内网访问时把 host 设为 `0.0.0.0` 且不要发布该端口。
