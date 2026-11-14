@@ -17,8 +17,10 @@ from akkiabot_server.bot.application import ALLOWED_UPDATES
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.testing import FakeBotApi, UpdateFactory
 
-WEBHOOK_SECRET = "test-webhook-secret_123"
-TOKEN = "123456:" + "A" * 35  # same as conftest
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_WEBHOOK_SECRET = "test-webhook-secret_123"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"  # same as conftest
 
 
 @asynccontextmanager
@@ -91,7 +93,7 @@ def webhook_settings(make_settings: Callable[..., Settings]) -> Settings:
         telegram={
             "mode": "webhook",
             "webhook_url": "https://bot-api.example.com/",
-            "webhook_secret": WEBHOOK_SECRET,
+            "webhook_secret": MOCK_WEBHOOK_SECRET,
         }
     )
 
@@ -105,7 +107,7 @@ async def test_webhook_mode(
         (registered,) = api.calls_to("setWebhook")
         assert registered == {
             "url": "https://bot-api.example.com/telegram/webhook",
-            "secret_token": WEBHOOK_SECRET,
+            "secret_token": MOCK_WEBHOOK_SECRET,
             "allowed_updates": list(ALLOWED_UPDATES),
         }
         assert runtime.application.updater is None
@@ -115,12 +117,12 @@ async def test_webhook_mode(
         bad = await client.post("/telegram/webhook", json=update, headers={SECRET_HEADER: "wrong"})
         assert bad.status_code == 403
         malformed = await client.post(
-            "/telegram/webhook", content=b"not json", headers={SECRET_HEADER: WEBHOOK_SECRET}
+            "/telegram/webhook", content=b"not json", headers={SECRET_HEADER: MOCK_WEBHOOK_SECRET}
         )
         assert malformed.status_code == 400
 
         ok = await client.post(
-            "/telegram/webhook", json=update, headers={SECRET_HEADER: WEBHOOK_SECRET}
+            "/telegram/webhook", json=update, headers={SECRET_HEADER: MOCK_WEBHOOK_SECRET}
         )
         assert ok.status_code == 200
         await _wait_for(lambda: bool(api.sent_texts()))
@@ -174,5 +176,5 @@ async def test_startup_failure_releases_resources(
     assert runtime.metrics_port is None
     # The bot token never shows up in the error, its traceback or the logs.
     rendered = "".join(traceback.format_exception(exc_info.value)) + stream.getvalue()
-    assert TOKEN not in rendered
+    assert MOCK_BOT_TOKEN not in rendered
     assert "bot startup failed: InvalidToken: The token `***` was rejected" in rendered

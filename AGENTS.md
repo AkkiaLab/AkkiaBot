@@ -6,7 +6,9 @@
 
 - 测试环境密钥统一放在 1Password 的 `AkkiaBot-Staging` vault；该 vault 的服务账号可读写（负责人 2026-11-14 决定），工具会自动写回会话、测试 bot、群 id。测试密钥可在 Multica 内部共享，但仓库是公开的：仓库、PR、CI 日志只出现 `op://` 引用（`tools/e2e/*.env.tpl`）与 `.env.example`。字段清单见 `docs/e2e-acceptance.md` 第 3 节。
 - 不得把 token、DSN、Telegram 会话、验证码、两步验证密码写进仓库、PR、日志或命令行参数；写入 1Password 时值经 stdin 传递。交接时说明 1Password 中的位置即可。
-- 测试与文档中的凭据样例：一律使用一看就是假的、且**不符合真实凭据格式**的占位值，例如 bot token 用 `123456:fake-bot-token-for-tests`（真实格式为 8–10 位 bot id + `:AA` 开头的 35 位串），其他密钥用 `fake-api-hash-for-tests` 这类低熵字符串。不要照抄官方文档的示例 token，不要手写"看起来真实"的随机串，也不要用字符串拼接绕过扫描。需要能被解析器识别的 token（如 BotFather 回复解析）时复用 `akkiabot_e2e.testing.FAKE_BOT_TOKEN`。`tests/test_secret_samples.py` 会拦截已跟踪文件中出现的真实 Telegram bot token 格式。
+- 测试与文档中的凭据样例：一律使用一看就是假的、且**不符合真实凭据格式**的占位值，例如 bot token 用 `123456:fake-bot-token-for-tests`（真实格式为 8–10 位 bot id + `:AA` 开头的 35 位串），其他密钥用 `fake-api-hash-for-tests` 这类低熵字符串。不要照抄官方文档的示例 token，不要手写"看起来真实"的随机串，也不要用字符串拼接（如 `"123456:" + "A" * 35`）凑出真实格式或绕过扫描。需要能被解析器识别的 token（如 BotFather 回复解析）时复用 `akkiabot_e2e.testing.MOCK_BOT_TOKEN`。
+- 凭据形样例必须就地声明为 mock（负责人于 BOT-21 要求）：赋给 `MOCK_`（局部变量用 `mock_`）开头的名称，并在同一行或上一行写 `# mock: ...` 注释，说明是人工构造、不可用的测试值；不要在调用参数、字典、f-string 里直接写字面量。`tests/test_secret_samples.py` 会拦截已跟踪文件中的真实 Telegram bot token 格式，以及未按此声明的凭据形字面量（`<数字>:<字母…>`、`ghs_`/`ops_` 等前缀、Sentry DSN、api_hash、webhook secret、Telethon 会话串），失败时只报告位置。
+- 安全告警不能只凭来源记录判定为构造值，还要用服务方无副作用的只读接口实际验证（如 Telegram `getMe`），来源证据与验证结果分开记录；凭据只在进程内读取，不进命令参数、日志、含值 URL 或报告。网络失败、限流或本地格式拒绝记为"未验证"；若意外有效，停止调用并请负责人吊销/轮换。
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
 
 ## 真实 Telegram 验收

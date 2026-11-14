@@ -13,15 +13,18 @@ from akkiabot_e2e.runner import run_acceptance
 from akkiabot_e2e.scenarios import SCENARIOS, Scenario, ScenarioContext, select_scenarios
 from akkiabot_e2e.testing import (
     ADMIN,
-    ADMIN_SESSION,
     BOT,
     MEMBER,
-    MEMBER_SESSION,
+    MOCK_ADMIN_SESSION,
+    MOCK_MEMBER_SESSION,
     Connector,
     FakeTelegram,
     live_env,
 )
 from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, UserInfo
+
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_LEAKY_BOT_TOKEN = "123456:bot-token-must-not-leak"
 
 
 async def _no_sleep(_: float) -> None:
@@ -143,7 +146,7 @@ async def test_refuses_accounts_outside_allowlist(world: FakeTelegram) -> None:
 
 
 async def test_refuses_same_account_for_both_roles(world: FakeTelegram, config: E2EConfig) -> None:
-    connector = Connector(world, {ADMIN_SESSION: ADMIN, MEMBER_SESSION: ADMIN})
+    connector = Connector(world, {MOCK_ADMIN_SESSION: ADMIN, MOCK_MEMBER_SESSION: ADMIN})
 
     report = await run(world, config, connector=connector)
 
@@ -250,14 +253,14 @@ async def test_scenario_crash_is_error_and_secret_is_redacted(
     world: FakeTelegram, config: E2EConfig
 ) -> None:
     async def boom(ctx: ScenarioContext) -> None:
-        raise RuntimeError(f"leaked {ADMIN_SESSION}")
+        raise RuntimeError(f"leaked {MOCK_ADMIN_SESSION}")
 
     report = await run(world, config, scenarios=[Scenario("x.boom", "X", "崩溃", boom)])
 
     assert statuses(report) == {"x.boom": "error"}
-    redact = Redactor([ADMIN_SESSION])
-    assert ADMIN_SESSION not in report.to_markdown(redact)
-    assert ADMIN_SESSION not in report.to_json(redact)
+    redact = Redactor([MOCK_ADMIN_SESSION])
+    assert MOCK_ADMIN_SESSION not in report.to_markdown(redact)
+    assert MOCK_ADMIN_SESSION not in report.to_json(redact)
 
 
 def test_select_scenarios() -> None:
@@ -311,8 +314,8 @@ def test_cli_live_run_saves_private_redacted_report(
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # A known secret that shows up in a bot reply (via the member's name) must be redacted.
-    leaky = world.add_user(UserInfo(MEMBER.id, "123456:bot-token-must-not-leak", MEMBER.username))
-    connector = Connector(world, {ADMIN_SESSION: ADMIN, MEMBER_SESSION: leaky})
+    leaky = world.add_user(UserInfo(MEMBER.id, MOCK_LEAKY_BOT_TOKEN, MEMBER.username))
+    connector = Connector(world, {MOCK_ADMIN_SESSION: ADMIN, MOCK_MEMBER_SESSION: leaky})
     monkeypatch.setattr(cli, "_telethon_connect", lambda api: connector)
     checked: list[str] = []
 
@@ -328,7 +331,7 @@ def test_cli_live_run_saves_private_redacted_report(
 
     monkeypatch.setattr("akkiabot_e2e.bot_api.check_test_bot", fake_check)
     monkeypatch.setattr(cli, "_vault", FakeVault)
-    env = live_env(TELEGRAM_BOT_TOKEN="123456:bot-token-must-not-leak")
+    env = live_env(TELEGRAM_BOT_TOKEN=MOCK_LEAKY_BOT_TOKEN)
 
     code = cli.main(
         ["run", "--create-group", "--scenarios", "m2.id", "--report-dir", str(tmp_path / "r")],

@@ -5,7 +5,7 @@ import pytest
 from akkiabot_e2e.config import REQUIRED, build_redactor, load_config, missing_variables
 from akkiabot_e2e.errors import ConfigError
 from akkiabot_e2e.redaction import REDACTED, Redactor, Secret
-from akkiabot_e2e.testing import ADMIN_SESSION, live_env
+from akkiabot_e2e.testing import MOCK_ADMIN_SESSION, live_env
 from akkiabot_e2e.transport import Entity, entity_text
 
 
@@ -19,7 +19,7 @@ def test_load_config_parses_values() -> None:
     assert config.bot_username == "akkiabot_staging_bot"
     assert config.allowed_chat_ids == {-1001, -1002}
     assert config.chat_title == "AkkiaBot E2E 自动验收群"
-    assert ADMIN_SESSION not in repr(config)
+    assert MOCK_ADMIN_SESSION not in repr(config)
 
 
 @pytest.mark.parametrize(
@@ -49,12 +49,18 @@ def test_redactor_replaces_registered_values_only() -> None:
     assert text == f"a {REDACTED} b {REDACTED} c 12"
 
 
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SHORT_BOT_TOKEN = "123:bot-token-value"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_OP_TOKEN = "ops_abcdefgh"
+
+
 def test_build_redactor_covers_sessions_and_business_secrets() -> None:
-    env = live_env(
-        TELEGRAM_BOT_TOKEN="123:bot-token-value", OP_SERVICE_ACCOUNT_TOKEN="ops_abcdefgh"
-    )
+    env = live_env(TELEGRAM_BOT_TOKEN=MOCK_SHORT_BOT_TOKEN, OP_SERVICE_ACCOUNT_TOKEN=MOCK_OP_TOKEN)
     redact = build_redactor(env)
-    text = redact(f"{ADMIN_SESSION} 123:bot-token-value ops_abcdefgh {env['E2E_API_HASH']}")
+    text = redact(
+        f"{MOCK_ADMIN_SESSION} {MOCK_SHORT_BOT_TOKEN} {MOCK_OP_TOKEN} {env['E2E_API_HASH']}"
+    )
     assert text.split() == [REDACTED] * 4
 
 

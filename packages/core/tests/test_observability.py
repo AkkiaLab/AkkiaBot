@@ -114,24 +114,28 @@ def test_exception_logged(log_stream: io.StringIO) -> None:
     assert "RuntimeError: boom" in rec["exc_info"]
 
 
-RAW = 'p"a\\ss\nw\u00f6rd 123456:fake-bot-token-for-tests'
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_RAW = 'p"a\\ss\nw\u00f6rd 123456:fake-bot-token-for-tests'
+
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
 
 
 def test_content_is_logged_verbatim(log_stream: io.StringIO) -> None:
     """The logging layer never rewrites content; redaction is the caller's job."""
     log = logging.getLogger("t")
-    log.info("value %s", RAW)
-    log.info("extra", extra={"cfg": {"db": [RAW]}, "obj": RuntimeError(RAW)})
+    log.info("value %s", MOCK_RAW)
+    log.info("extra", extra={"cfg": {"db": [MOCK_RAW]}, "obj": RuntimeError(MOCK_RAW)})
     try:
-        raise ValueError(RAW)
+        raise ValueError(MOCK_RAW)
     except ValueError:
         log.exception("failed")
 
     message, extra, exc = records(log_stream)
-    assert message["message"] == f"value {RAW}"
-    assert extra["cfg"] == {"db": [RAW]}
-    assert extra["obj"] == RAW
-    assert f"ValueError: {RAW}" in exc["exc_info"]
+    assert message["message"] == f"value {MOCK_RAW}"
+    assert extra["cfg"] == {"db": [MOCK_RAW]}
+    assert extra["obj"] == MOCK_RAW
+    assert f"ValueError: {MOCK_RAW}" in exc["exc_info"]
 
 
 def test_console_format(log_stream: io.StringIO) -> None:
@@ -260,12 +264,12 @@ def test_sentry_initialised_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     captured: dict[str, Any] = {}
     monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: captured.update(kwargs))
     settings = ObservabilitySettings(
-        sentry_dsn="https://key@o0.ingest.sentry.io/1",  # pyright: ignore[reportArgumentType]
+        sentry_dsn=MOCK_SENTRY_DSN,  # pyright: ignore[reportArgumentType]
         sentry_environment="production",
         sentry_traces_sample_rate=0.1,
     )
     assert init_sentry(settings, release="akkiabot@0.1.0") is True
-    assert captured["dsn"] == "https://key@o0.ingest.sentry.io/1"
+    assert captured["dsn"] == MOCK_SENTRY_DSN
     assert captured["environment"] == "production"
     assert captured["traces_sample_rate"] == 0.1
     assert captured["release"] == "akkiabot@0.1.0"

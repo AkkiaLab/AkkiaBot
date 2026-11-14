@@ -18,8 +18,8 @@ from akkiabot_e2e.pacing import Pacer
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.testing import (
     ADMIN,
-    ADMIN_SESSION,
-    FAKE_BOT_TOKEN,
+    MOCK_ADMIN_SESSION,
+    MOCK_BOT_TOKEN,
     FakeAccount,
     FakeTelegram,
     add_fake_botfather,
@@ -102,8 +102,8 @@ async def test_bootstrap_does_not_connect_while_lock_is_held(harness: Harness) -
     assert harness.connected == ["admin"]
     assert harness.accounts[0].closed
     assert re.search(r"@akkiabot_e2e_[0-9a-f]{6}_bot", message)
-    assert harness.vault.fields["runtime"] == {"bot_token": FAKE_BOT_TOKEN}
-    assert FAKE_BOT_TOKEN not in message
+    assert harness.vault.fields["runtime"] == {"bot_token": MOCK_BOT_TOKEN}
+    assert MOCK_BOT_TOKEN not in message
 
 
 async def test_bootstrap_honours_short_flood_wait(harness: Harness) -> None:
@@ -132,7 +132,7 @@ async def test_session_store_waits_for_lock_before_connecting(
     harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session_file = tmp_path / "admin.session"
-    write_private_file(session_file, ADMIN_SESSION + "\n")
+    write_private_file(session_file, MOCK_ADMIN_SESSION + "\n")
     calls: list[str] = []
 
     async def session_user(api, session) -> UserInfo:
@@ -148,5 +148,5 @@ async def test_session_store_waits_for_lock_before_connecting(
 
     os.close(fd)
     assert await asyncio.wait_for(job, 5) == cli.EXIT_PASSED
-    assert calls == [ADMIN_SESSION]
+    assert calls == [MOCK_ADMIN_SESSION]
     assert not session_file.exists()

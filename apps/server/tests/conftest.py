@@ -16,7 +16,8 @@ from akkiabot_core.db.migrate import upgrade_engine
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.testing import FakeBotApi, UpdateFactory
 
-TOKEN = "123456:" + "A" * 35
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"
 _GROUPS = {
     "TELEGRAM",
     "DB",
@@ -60,7 +61,7 @@ def make_settings(tmp_path: Path) -> MakeSettings:
         whois: dict[str, Any] | None = None,
     ) -> Settings:
         return Settings(
-            telegram={"bot_token": TOKEN, **(telegram or {})},  # pyright: ignore[reportArgumentType]
+            telegram={"bot_token": MOCK_BOT_TOKEN, **(telegram or {})},  # pyright: ignore[reportArgumentType]
             db={"url": f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}"},  # pyright: ignore[reportArgumentType]
             observability={"metrics_enabled": False, **(observability or {})},  # pyright: ignore[reportArgumentType]
             whois=whois or {},  # pyright: ignore[reportArgumentType]

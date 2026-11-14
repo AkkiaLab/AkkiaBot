@@ -18,17 +18,21 @@ from akkiabot_e2e.transport import Account, ChatRef, Entity, Msg, Role, UserInfo
 ADMIN = UserInfo(1001, "群主测试", "e2e_admin")
 MEMBER = UserInfo(1002, "成员测试", "e2e_member")
 BOT = UserInfo(2001, "AkkiaBot Staging", "akkiabot_staging_bot", is_bot=True)
-ADMIN_SESSION = "1AdminSessionStringSECRET-aaaaaaaaaaaaaaaa"
-MEMBER_SESSION = "1MemberSessionStringSECRET-bbbbbbbbbbbbbbbb"
+# mock: 人工构造的不可用 Telethon 会话串，不是凭据。
+MOCK_ADMIN_SESSION = "1AdminSessionStringSECRET-aaaaaaaaaaaaaaaa"
+MOCK_MEMBER_SESSION = "1MemberSessionStringSECRET-bbbbbbbbbbbbbbbb"  # mock: 同上
+
+# mock: 人工构造的不可用 api_hash，不是凭据。
+MOCK_API_HASH = "fake-api-hash-for-tests"
 
 
 def live_env(**overrides: str) -> dict[str, str]:
     env = {
         "E2E_API_ID": "123456",
-        "E2E_API_HASH": "fake-api-hash-for-tests",
+        "E2E_API_HASH": MOCK_API_HASH,
         "E2E_BOT_USERNAME": "@akkiabot_staging_bot",
-        "E2E_ADMIN_SESSION": ADMIN_SESSION,
-        "E2E_MEMBER_SESSION": MEMBER_SESSION,
+        "E2E_ADMIN_SESSION": MOCK_ADMIN_SESSION,
+        "E2E_MEMBER_SESSION": MOCK_MEMBER_SESSION,
         "E2E_ALLOWED_USER_IDS": f"{ADMIN.id},{MEMBER.id}",
         "E2E_ALLOWED_CHAT_IDS": "",
         "E2E_REPLY_TIMEOUT": "0.3",
@@ -291,7 +295,7 @@ class Connector:
 
     def __init__(self, world: FakeTelegram, sessions: dict[str, UserInfo] | None = None) -> None:
         self.world = world
-        self.sessions = sessions or {ADMIN_SESSION: ADMIN, MEMBER_SESSION: MEMBER}
+        self.sessions = sessions or {MOCK_ADMIN_SESSION: ADMIN, MOCK_MEMBER_SESSION: MEMBER}
         self.accounts: list[FakeAccount] = []
 
     async def __call__(self, role: str, session: Secret) -> Account:
@@ -301,10 +305,11 @@ class Connector:
 
 
 BOTFATHER = UserInfo(93372553, "BotFather", "BotFather", is_bot=True)
-FAKE_BOT_TOKEN = "123456:fake-bot-token-for-tests-xxxxxxxxxxx"  # noqa: S105 - synthetic
+# mock: 人工构造的不可用 bot token，不符合真实格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests-xxxxxxxxxxx"  # noqa: S105
 
 
-def add_fake_botfather(world: FakeTelegram, *, taken: int = 0, token: str = FAKE_BOT_TOKEN) -> None:
+def add_fake_botfather(world: FakeTelegram, *, taken: int = 0, token: str = MOCK_BOT_TOKEN) -> None:
     """@BotFather that rejects the first ``taken`` usernames, then returns ``token``."""
     state = {"taken": taken}
 
