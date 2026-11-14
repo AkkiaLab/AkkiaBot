@@ -41,26 +41,35 @@ just dev   # 启动 postgres / redis 和 Vite 开发服务器
 
 - `master` 推送（改动涉及前端时）或手动触发：GitHub 环境 `webapp-production`，以 `--branch=master` 上传，即 Pages 生产部署，`bot.akkia.moe` 随之更新；
 - PR：GitHub 环境 `webapp-preview`，以 PR 分支名上传，得到预览地址（`<分支>.<项目>.pages.dev`），在 PR 时间线的 “View deployment” 中打开；
-- 缺少 `CLOUDFLARE_API_TOKEN`（尚未配置，或来自 fork 的 PR）时只构建和检查，跳过上传；有 token 但缺少下列变量时失败。
+- 当前环境没有 `CLOUDFLARE_API_TOKEN`（尚未配置，或来自 fork 的 PR）时只构建和检查，跳过上传；有 token 但缺少下列变量时失败。
 
-需要的 GitHub 配置：
+GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，见 BOT-4 中负责人的决定）：
 
-| 位置 | 名称 | 值 |
+| 位置 | 名称 | 值 / 来源 |
 | --- | --- | --- |
-| 仓库 secret | `CLOUDFLARE_API_TOKEN` | 账户级 API token，权限 `Account › Cloudflare Pages › Edit` |
-| 仓库变量 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
+| 仓库变量 | `CLOUDFLARE_ACCOUNT_ID` | `op://AkkiaBot/staging-cloudflare/account_id`（prod 为同一账户） |
 | 仓库变量（可选） | `CLOUDFLARE_PAGES_PROJECT` | Pages 项目名，默认 `akkiabot-webapp` |
+| 环境 `webapp-preview` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/staging-cloudflare/api_token`（DNS、Tunnel、Pages、Turnstile 权限） |
+| 环境 `webapp-preview` 变量 | `VITE_API_BASE_URL` | `https://bot-api-staging.akkia.moe`（预发布后端） |
+| 环境 `webapp-preview` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/staging-turnstile/site_key` |
+| 环境 `webapp-production` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/prod-cloudflare/api_token`（由负责人填写；**未设置前生产上传会被跳过**） |
 | 环境 `webapp-production` 变量 | `VITE_API_BASE_URL` | `https://bot-api.akkia.moe` |
-| 环境 `webapp-production` 变量 | `VITE_TURNSTILE_SITE_KEY` | 生产 Turnstile 站点密钥 |
-| 环境 `webapp-preview` 变量 | `VITE_API_BASE_URL` | 预览指向的后端（例如预发布 API） |
-| 环境 `webapp-preview` 变量 | `VITE_TURNSTILE_SITE_KEY` | 同一个站点密钥（widget 的主机名需包含 `<项目>.pages.dev`） |
+| 环境 `webapp-production` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/prod-turnstile/site_key` |
 
-Cloudflare 侧一次性配置：
+写入 GitHub 时值一律经 stdin 传递，例如：
 
-1. 创建 Pages 项目（Direct Upload），名称 `akkiabot-webapp`，生产分支 `master`。也可在拿到 token 后执行 `npx wrangler pages project create akkiabot-webapp --production-branch=master`。
-2. 项目 → Custom domains 绑定 `bot.akkia.moe`（`akkia.moe` 在同一账户时 DNS 记录自动创建）。
-3. Turnstile 新建 widget，主机名填 `bot.akkia.moe` 和 `akkiabot-webapp.pages.dev`（覆盖预览子域）；站点密钥填入上面的 GitHub 变量，密钥（secret key）配置到后端的 `TURNSTILE_SECRET_KEY`。
-4. 后端：`WEBAPP_URL=https://bot.akkia.moe`，`CORS_ALLOW_ORIGINS` 包含 `https://bot.akkia.moe`；需要用预览地址走完整流程时，把对应预览来源也加入后端（通常是预发布后端）的 CORS 列表。
+```bash
+op read op://AkkiaBot/prod-cloudflare/api_token | gh secret set CLOUDFLARE_API_TOKEN --env webapp-production -R AkkiaLab/AkkiaBot
+```
+
+Cloudflare 侧（已用 staging token 通过 API 完成）：
+
+1. Pages 项目 `akkiabot-webapp`（Direct Upload），生产分支 `master`。
+2. 自定义域名 `bot.akkia.moe`：Pages 项目域名 + `akkia.moe` 区内 CNAME `bot` → `akkiabot-webapp.pages.dev`（代理）。
+3. Turnstile widget（Managed）：`akkiabot-staging`（主机名 `akkiabot-webapp.pages.dev`，覆盖所有预览子域）、`akkiabot-prod`（`bot.akkia.moe`）。site key / secret key 存于 1Password `AkkiaBot/staging-turnstile`、`AkkiaBot/prod-turnstile`。
+4. 后端：secret key 配置为后端的 `TURNSTILE_SECRET_KEY`（预发布用 `staging-turnstile`，生产用 `prod-turnstile`）；`WEBAPP_URL` 为对应前端地址，`CORS_ALLOW_ORIGINS` 包含该来源。预发布环境使用预览地址时，把该预览来源加入预发布后端的 CORS 列表。
+
+新建 Pages 项目后，`*.akkiabot-webapp.pages.dev` 的证书需要几分钟签发，期间预览地址会 TLS 握手失败。
 
 缓存与响应头在 `apps/webapp/public/_headers`：HTML 等默认 `Cache-Control: no-cache`，带内容哈希的 `/assets/*` 长期缓存（`immutable`）；另加 `nosniff`、`Referrer-Policy`、`Permissions-Policy`。不设置 `X-Frame-Options`，因为 Telegram Web 版在 iframe 中加载 Mini App。
 

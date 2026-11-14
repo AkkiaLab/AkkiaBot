@@ -4,10 +4,10 @@ name: Webapp deploy
 # (docs/webapp.md): master → production (bot.akkia.moe), pull
 # requests → preview URL shown as a GitHub deployment on the PR.
 #
-# Needs repository secret CLOUDFLARE_API_TOKEN (Pages: Edit), repository variable
-# CLOUDFLARE_ACCOUNT_ID, and per-environment variables VITE_API_BASE_URL and
-# VITE_TURNSTILE_SITE_KEY on the `webapp-production` / `webapp-preview`
-# environments. Until the token exists (and for fork PRs, which get no secrets)
+# Needs repository variable CLOUDFLARE_ACCOUNT_ID, and on each of the
+# `webapp-production` / `webapp-preview` environments the secret
+# CLOUDFLARE_API_TOKEN (prod and dev/staging use different tokens) plus the
+# variables VITE_API_BASE_URL and VITE_TURNSTILE_SITE_KEY. Until the token exists (and for fork PRs, which get no secrets)
 # the build and the dev-mock check still run; only the upload is skipped.
 
 on:
