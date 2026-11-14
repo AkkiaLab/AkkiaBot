@@ -249,6 +249,12 @@ class TelethonAccount:
         channel = result.chats[0]
         return ChatRef(utils.get_peer_id(channel), channel.title)
 
+    async def chat_about(self, chat_id: int) -> str:
+        result: Any = await _guard(
+            self._client(functions.channels.GetFullChannelRequest(await self._chat(chat_id)))
+        )
+        return result.full_chat.about or ""
+
     async def _participant(self, chat_id: int, user_id: int) -> Any | None:
         try:
             result: Any = await _guard(

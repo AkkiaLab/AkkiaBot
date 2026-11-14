@@ -75,7 +75,8 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | `admin_session`、`member_session` | 密码 | 两个测试环境账号的会话 | `just e2e-login admin\|member` |
 | `allowed_user_ids` | 文本 | 两个测试账号的 user id，逗号分隔 | `just e2e-login` 自动合并 |
 | `bot_username` | 文本 | 测试 bot 的用户名 | `just e2e-bootstrap-bot` |
-| `allowed_chat_ids` | 文本 | 测试群的 id，逗号分隔 | `just e2e --create-group` 首次建群后自动合并 |
+| `allowed_chat_ids` | 文本 | 测试群的 id，逗号分隔 | `just e2e --create-group` 建群后立即自动合并 |
+| `pending_group_operation` | 文本 | 未完成的建群操作标识；平时为空 | `just e2e --create-group` 建群前写入、完成后清空（见 6.1 节）；字段不存在时自动创建，`op run` 模板不引用它 |
 
 所有字段都已预先建好，还没有值的字段为空。`op run` 引用不存在的字段时会直接失败，但空字段可以正常注入（已验证）。缺少必需的值时，`run` 以退出码 77 跳过，不发送任何消息。
 
@@ -130,8 +131,10 @@ just e2e-login member   # 普通成员账号
 
 ```bash
 just e2e-bootstrap-bot      # 群主账号在测试环境的 @BotFather 创建 akkiabot_e2e_xxxxxx_bot，并写回 bot_token / bot_username
-just e2e --create-group     # 首次建群：邀请 bot、授予权限、让成员入群，然后执行全部场景；群 id 写回 allowed_chat_ids
+just e2e --create-group     # 首次建群：群 id 立即写回 allowed_chat_ids，再邀请 bot、授予权限、让成员入群，然后执行全部场景
 ```
+
+建群可能在中途被打断，工具按 6.1 节的顺序记录和恢复，重跑不会建出第二个群。
 
 `bootstrap-bot` 可以重复执行：如果 1Password 中的 token 已能通过测试端点 `getMe` 的校验，就不会再创建新 bot；确实需要新建时加 `--force`。BotFather 的回复中含有 token，它只保存在群主测试账号与 BotFather 的私聊里，工具不会打印。
 
@@ -157,12 +160,42 @@ uv run akkiabot-e2e list    # 列出所有场景
    - 两个账号都在 `allowed_user_ids` 中；
    - 两个账号是不同的真实用户；
    - `bot_username` 对应的确实是 bot。
-4. 选择测试群。只考虑**群主账号创建的、标题与 `E2E_CHAT_TITLE`（默认“AkkiaBot E2E 自动验收群”）完全一致的超级群**，并且群 id 必须在 `allowed_chat_ids` 中。同名但不在白名单中的群会被拒绝。只有带 `--create-group` 时才会新建群。
+4. 选择测试群。只考虑**群主账号创建的、标题与 `E2E_CHAT_TITLE`（默认“AkkiaBot E2E 自动验收群”）完全一致的超级群**，并且群 id 必须在 `allowed_chat_ids` 中。同名但不在白名单中的群不会被使用，也不会因为同名而被认领。只有带 `--create-group`、且不存在白名单外的同名群时才会新建群（见 6.1 节）。
 5. 准备测试群：
    - 邀请 bot，确保它有 `delete_messages`、`ban_users` 管理员权限（手动授予的其他权限会保留）；
    - 普通成员如果在封禁列表中（上次 M4 / M5 运行中断遗留），先解除封禁；
    - 普通成员通过一次性、1 小时内有效的邀请链接入群。
 6. 依次执行各场景并收集证据，最后核对 `message_log`。
+
+### 6.1 建群的中断恢复
+
+建群涉及 Telegram 和 1Password 两个系统，不能原子完成。`--create-group` 按以下顺序执行，任何一步中断后都可以安全重跑：
+
+1. 生成一个建群操作标识（12 位十六进制），写入 1Password 的 `telegram-e2e/pending_group_operation` 并回读。**写入失败时直接停止，不创建任何群。**
+2. 创建超级群，把 `[akkiabot-e2e op:<操作标识>]` 写进群简介（about），作为该群属于这次操作的凭证。
+3. 群创建后立即把群 id 合并进 `allowed_chat_ids`，然后才邀请 bot、授权和让成员入群。
+4. 清空 `pending_group_operation`。清空失败不影响本次运行，报告中会注明；残留的标识只会匹配带有同一标识的群，下次建群时沿用它即可。
+
+部分成功时的表现与恢复：
+
+| 中断位置 | 留下的状态 | 重跑 `just e2e --create-group` 的行为 |
+| --- | --- | --- |
+| 第 1 步之后、建群之前 | 有待恢复标识，没有新群 | 沿用同一个标识新建群 |
+| 建群之后、写入白名单之前（进程被杀或 1Password 写入失败） | 有待恢复标识，有一个不在白名单中的同名群 | 在白名单外的同名群里查找简介带有该标识的群：**恰好一个**时写入白名单并继续，不再新建 |
+| 写入白名单之后 | 群已在白名单中 | 按正常流程复用 |
+
+1Password 写入失败时，运行以失败结束，错误信息中写明新群的 id 和操作标识，并提示不要删除该群。不加 `--create-group` 重跑时，工具不会写白名单，只提示加 `--create-group` 恢复。
+
+无法唯一确认时一律停止，不认领、不新建、不删除：
+
+- 白名单外存在同名群，但 1Password 中没有待恢复标识；
+- 白名单外的同名群中，没有一个带有待恢复标识，或有多个带有该标识。
+
+这时请用群主测试账号的官方客户端确认哪个是本工具创建的测试群，把它的 id 写入 `allowed_chat_ids`，再清空 `pending_group_operation` 后重跑。多余的群是否删除需另行确认，工具不会自动删除。
+
+本节之前创建的测试群简介中没有操作标识，它们已在白名单中，仍按正常流程复用。
+
+故障注入测试见 `tools/e2e/tests/test_group_recovery.py`（使用模拟 transport 和内存白名单存储，不连接 Telegram 和 1Password）。
 
 | 场景 | 内容 |
 | --- | --- |
@@ -214,7 +247,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
   - 要求的等待时间不超过 `E2E_FLOOD_MAX_WAIT`（默认 120 秒）时，等待后重试，最多 3 次；
   - 超过上限时，停止本次验收，剩余场景标记为未执行；
   - 两次发送之间至少间隔 `E2E_SEND_INTERVAL`（默认 2 秒）。
-- **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建的群）里操作；从不删除群，也不清理历史消息。
+- **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；从不删除群，也不清理历史消息。
 
 ## 8. Sentry
 

@@ -16,7 +16,7 @@ from akkiabot_e2e.errors import (
     SafetyError,
     ScenarioSkipped,
 )
-from akkiabot_e2e.group import prepare_group
+from akkiabot_e2e.group import GroupRegistry, prepare_group
 from akkiabot_e2e.langfuse import LangfuseProbe
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Secret
@@ -59,6 +59,7 @@ async def run_acceptance(
     poll_interval: float = 1.0,
     message_log: MessageLogProbe | None = None,
     traces: TraceProbe | None = None,
+    registry: GroupRegistry | None = None,
 ) -> Report:
     """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests)."""
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
@@ -88,6 +89,7 @@ async def run_acceptance(
                 bot=bot,
                 config=config,
                 allow_create=allow_create,
+                registry=registry,
             )
         except (E2EError, OSError) as exc:
             report.detail = f"准备阶段失败：{exc}"
@@ -97,10 +99,6 @@ async def run_acceptance(
 
         report.chat = {"id": group.chat.id, "title": group.chat.title, "created": group.created}
         report.setup = list(group.actions)
-        if group.created:
-            report.setup.append(
-                f"新建的群 id {group.chat.id} 需写入 1Password telegram-e2e/allowed_chat_ids"
-            )
         ctx = ScenarioContext(
             admin=admin,
             member=member,

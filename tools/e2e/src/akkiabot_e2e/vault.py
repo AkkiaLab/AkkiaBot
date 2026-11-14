@@ -114,11 +114,16 @@ class Vault:
         for label, field_value in values.items():
             self._verify(item, label, field_value.value)
 
+    def clear_field(self, item: str, field: str) -> None:
+        """Empty a text field (an empty field may read back as missing, which also counts)."""
+        self.set_fields(item, {field: FieldValue("", concealed=False)})
+
     def _verify(self, item: str, label: str, expected: str) -> None:
-        # 1Password is eventually consistent: a read right after an edit may still
-        # return the previous value (seen live on 2026-11-14), so retry briefly.
+        # A read right after an edit has returned the previous value at least once
+        # (seen live on 2026-11-14; not known to hold for every case), so retry briefly.
+        accepted = {expected} if expected else {"", None}
         for attempt in range(self._readback_attempts):
-            if self.read(item, label) == expected:
+            if self.read(item, label) in accepted:
                 return
             if attempt + 1 < self._readback_attempts:
                 self._sleep(1.0 * (attempt + 1))

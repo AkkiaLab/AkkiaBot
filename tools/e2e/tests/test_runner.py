@@ -6,6 +6,7 @@ import pytest
 
 from akkiabot_e2e.config import E2EConfig, load_config
 from akkiabot_e2e.errors import FloodWait
+from akkiabot_e2e.group import operation_marker
 from akkiabot_e2e.pacing import Pacer
 from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.report import Report
@@ -18,6 +19,7 @@ from akkiabot_e2e.testing import (
     MOCK_ADMIN_SESSION,
     MOCK_MEMBER_SESSION,
     Connector,
+    FakeRegistry,
     FakeTelegram,
     FakeTraces,
     live_env,
@@ -42,6 +44,7 @@ async def run(
     pacer: Pacer | None = None,
     message_log=None,
     traces: FakeTraces | None = None,
+    registry: FakeRegistry | None = None,
 ) -> Report:
     return await run_acceptance(
         config,
@@ -53,6 +56,7 @@ async def run(
         poll_interval=0.01,
         message_log=message_log,
         traces=traces or FakeTraces(),
+        registry=registry or FakeRegistry(),
     )
 
 
@@ -332,11 +336,21 @@ def test_cli_live_run_saves_private_redacted_report(
         checked.append(username)
 
     class FakeVault:
-        added: ClassVar[list[tuple[str, str, list[int]]]] = []
+        log: ClassVar[list[tuple[str, ...]]] = []
+
+        def read(self, item: str, field: str) -> str | None:
+            self.log.append(("read", item, field))
+            return None
+
+        def set_fields(self, item: str, values) -> None:
+            self.log.extend(("set", item, k, v.value) for k, v in values.items())
 
         def add_ids(self, item: str, field: str, ids) -> list[int]:
-            self.added.append((item, field, list(ids)))
+            self.log.append(("add_ids", item, field, *map(str, ids)))
             return list(ids)
+
+        def clear_field(self, item: str, field: str) -> None:
+            self.log.append(("clear", item, field))
 
     monkeypatch.setattr("akkiabot_e2e.bot_api.check_test_bot", fake_check)
     monkeypatch.setattr(cli, "_vault", FakeVault)
@@ -359,8 +373,14 @@ def test_cli_live_run_saves_private_redacted_report(
     assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
     # Bot token was checked on the test endpoint first; the new group id was written back.
     assert checked == ["akkiabot_staging_bot"]
-    (chat,) = world.chats.values()
-    assert FakeVault.added == [("telegram-e2e", "allowed_chat_ids", [chat.id])]
+    (chat,) = [c for c in world.chats.values() if c.id < 0]
+    # Pending operation recorded before creating, id registered, then the operation cleared.
+    read, begin, register, clear = FakeVault.log
+    assert read == ("read", "telegram-e2e", "pending_group_operation")
+    assert begin[:3] == ("set", "telegram-e2e", "pending_group_operation")
+    assert operation_marker(begin[3]) in chat.about
+    assert register == ("add_ids", "telegram-e2e", "allowed_chat_ids", str(chat.id))
+    assert clear == ("clear", "telegram-e2e", "pending_group_operation")
 
 
 @pytest.mark.parametrize("missing", ["leave", "join"])
@@ -490,6 +510,7 @@ async def test_m5_langfuse_skipped_without_probe(world: FakeTelegram, config: E2
         allow_create=True,
         pacer=Pacer(send_interval=0, sleep=_no_sleep),
         poll_interval=0.01,
+        registry=FakeRegistry(),
     )
     assert statuses(report) == {"m5.spam": "passed", "m5.langfuse": "not_run"}
     assert "LANGFUSE" in report.results[1].detail
