@@ -350,3 +350,14 @@ def test_missing_url(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 def test_datasource_dataclass_push_url() -> None:
     prom = DataSource("u", "n", "prometheus", "https://p.example/api/prom/", "1")
     assert prom.push_url == "https://p.example/api/prom/push"
+
+
+def test_readyz_probe_has_the_job_the_queries_use() -> None:
+    """The blackbox exporter would label it job="integrations/blackbox/readyz"."""
+    text = ALLOY.read_text(encoding="utf-8")
+    assert 'replacement  = "akkiabot-readyz"' in text
+    assert "targets         = discovery.relabel.readyz.output" in text
+    exprs = _exprs(_panels(), "prometheus") + _rule_exprs()
+    probes = [e for e in exprs if "probe_success" in e]
+    assert probes
+    assert all('job="akkiabot-readyz"' in e for e in probes)

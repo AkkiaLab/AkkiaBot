@@ -126,9 +126,20 @@ prometheus.exporter.blackbox "readyz" {
 	}
 }
 
+// The exporter labels its targets job="integrations/blackbox/readyz"; give the
+// probe a stable job name for the dashboard and the alert rule.
+discovery.relabel "readyz" {
+	targets = prometheus.exporter.blackbox.readyz.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "akkiabot-readyz"
+	}
+}
+
 prometheus.scrape "readyz" {
 	job_name        = "akkiabot-readyz"
-	targets         = prometheus.exporter.blackbox.readyz.targets
+	targets         = discovery.relabel.readyz.output
 	scrape_interval = "30s"
 	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
 }
