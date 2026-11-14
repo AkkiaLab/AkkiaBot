@@ -3,7 +3,8 @@
 Values only travel through stdin / stdout pipes of ``op`` (item JSON piped to
 ``op item create -`` / ``op item edit``, supported by op 2.x), never through
 argv or the terminal; every write is read back with ``op read`` and compared
-in memory. Error output from ``op`` is redacted before it is shown.
+in memory (retried with growing delays, as 1Password may briefly serve the old
+value right after a write). Error output from ``op`` is redacted before it is shown.
 
 The service account used for the test vault may write (owner decision,
 2026-11-14), so automation can store sessions, the test bot token and the test
@@ -16,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +31,11 @@ E2E_ITEM = "telegram-e2e"
 
 #: Runs ``argv`` with ``stdin`` bytes; returns (exit code, stdout, stderr).
 OpRunner = Callable[[Sequence[str], bytes | None], tuple[int, bytes, bytes]]
+
+#: Read-back attempts after a write: 1Password may briefly serve the previous value.
+READBACK_ATTEMPTS = 5
+#: Delay before the n-th retry grows linearly: 0.5 s, 1 s, 1.5 s, 2 s (5 s in total).
+READBACK_DELAY = 0.5
 
 
 def run_op(argv: Sequence[str], stdin: bytes | None) -> tuple[int, bytes, bytes]:
@@ -52,9 +59,16 @@ class FieldValue:
 
 
 class Vault:
-    def __init__(self, name: str = DEFAULT_VAULT, *, run: OpRunner = run_op) -> None:
+    def __init__(
+        self,
+        name: str = DEFAULT_VAULT,
+        *,
+        run: OpRunner = run_op,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.name = name
         self._run = run
+        self._sleep = sleep
 
     def _error(self, action: str, stderr: bytes, secrets: Iterable[str]) -> ConfigError:
         detail = stderr.decode("utf-8", "replace").strip()
@@ -102,8 +116,18 @@ class Vault:
         if code != 0:
             raise self._error(f"写入 1Password 条目 {self.name}/{item} ", err, secrets)
         for label, field_value in values.items():
-            if self.read(item, label) != field_value.value:
-                raise ConfigError(f"回读 {self.name}/{item}/{label} 的值与写入不一致")
+            self._verify(item, label, field_value.value)
+
+    def _verify(self, item: str, label: str, expected: str) -> None:
+        """Read back until the written value is visible; stale reads are retried with backoff."""
+        for attempt in range(1, READBACK_ATTEMPTS + 1):
+            if self.read(item, label) == expected:
+                return
+            if attempt < READBACK_ATTEMPTS:
+                self._sleep(READBACK_DELAY * attempt)
+        raise ConfigError(
+            f"回读 {self.name}/{item}/{label} 的值与写入不一致（共回读 {READBACK_ATTEMPTS} 次）"
+        )
 
     def add_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
         """Merge ``ids`` into a comma-separated id list field (``0`` placeholders dropped)."""

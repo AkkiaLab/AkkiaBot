@@ -12,7 +12,7 @@ from akkiabot_e2e import cli
 from akkiabot_e2e.errors import ConfigError
 from akkiabot_e2e.files import write_private_file
 from akkiabot_e2e.testing import ADMIN, ADMIN_SESSION, live_env
-from akkiabot_e2e.vault import FieldValue, Vault
+from akkiabot_e2e.vault import READBACK_ATTEMPTS, FieldValue, Vault
 
 
 class FakeOp:
@@ -26,6 +26,9 @@ class FakeOp:
         self.calls: list[tuple[list[str], bytes | None]] = []
         self.fail: str | None = None
         self.corrupt_reads = False
+        #: Number of upcoming reads that still return the previous (stale) value.
+        self.stale_reads = 0
+        self.previous: dict[tuple[str, str], str] = {}
 
     def __call__(self, argv: Sequence[str], stdin: bytes | None) -> tuple[int, bytes, bytes]:
         argv = list(argv)
@@ -40,6 +43,9 @@ class FakeOp:
             if field is None:
                 return 1, b"", b"[ERROR] no such field"
             value = "corrupted" if self.corrupt_reads else field.get("value", "")
+            if self.stale_reads:
+                self.stale_reads -= 1
+                value = self.previous.get((title, label), "stale")
             return 0, value.encode() + b"\n", b""
         if verb == "get":
             item = self.items.get(argv[3])
@@ -47,6 +53,8 @@ class FakeOp:
                 return 1, b"", b'[ERROR] "x" isn\'t an item in the "AkkiaBot-Staging" vault.'
             return 0, json.dumps(item).encode(), b""
         data = json.loads(stdin or b"{}")
+        for f in (self.items.get(data["title"]) or {}).get("fields", []):
+            self.previous[(data["title"], f["label"])] = f.get("value", "")
         if verb == "create":
             data["id"] = f"id-{data['title']}"
         self.items[data["title"]] = data
@@ -91,8 +99,32 @@ def test_write_errors_are_redacted_and_readback_is_checked() -> None:
     assert ADMIN_SESSION not in str(info.value)
 
     op.fail, op.corrupt_reads = None, True
-    with pytest.raises(ConfigError, match="不一致"):
-        Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)})
+    delays: list[float] = []
+    with pytest.raises(ConfigError, match="不一致") as info:
+        Vault(run=op, sleep=delays.append).set_fields(
+            "telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)}
+        )
+    assert ADMIN_SESSION not in str(info.value)
+    reads = [argv for argv, _ in op.calls if argv[1] == "read"]
+    assert len(reads) == READBACK_ATTEMPTS
+    assert len(delays) == READBACK_ATTEMPTS - 1
+    assert delays == sorted(delays)
+    assert delays[0] < delays[-1]
+
+
+def test_stale_readback_is_retried_until_the_new_value_shows() -> None:
+    op = FakeOp({"telegram-e2e": [{"id": "s", "label": "member_session", "value": "old"}]})
+    op.stale_reads = 2
+    delays: list[float] = []
+
+    Vault(run=op, sleep=delays.append).set_fields(
+        "telegram-e2e", {"member_session": FieldValue("fake-member-session-for-tests")}
+    )
+
+    assert len([argv for argv, _ in op.calls if argv[1] == "read"]) == 3
+    assert len(delays) == 2
+    assert delays[0] < delays[1]
+    assert labels(op, "telegram-e2e")["member_session"][1] == "fake-member-session-for-tests"
 
 
 def test_add_ids_merges_and_drops_placeholder() -> None:
