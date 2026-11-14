@@ -325,10 +325,11 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 
 - `updates_total{type}`、`handler_duration_seconds{handler}`、`handler_errors_total{handler}`
 - `command_total{command,result}`
-- `captcha_total{result=passed|timeout|failed}`、`captcha_duration_seconds`
+- `captcha_started_total`、`captcha_total{result=passed|timeout|failed}`、`captcha_duration_seconds`
 - `antispam_verdict_total{verdict,action}`、`antispam_llm_duration_seconds`、`antispam_llm_errors_total`
 - `moderation_actions_total{action=ban|warn|mute|delete}`
 - `telegram_api_errors_total{method}`、`whois_lookup_total{provider,result}`
+- `telegram_poll_total{result}`、`telegram_poll_last_success_timestamp_seconds`（polling 心跳，供“停止接收 update”告警）
 - 运行时指标：HTTP 请求（FastAPI 中间件）、数据库连接池、事件循环延迟
 
 埋点统一通过 `akkiabot_core.observability` 提供的 helper（例如 `track_handler` 装饰器）记录，业务代码不直接操作 prometheus 对象。所有可观测性组件都在配置里设开关；关闭时代码路径不变，只是不上报。
