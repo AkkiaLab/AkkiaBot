@@ -329,3 +329,17 @@ def test_cli_live_run_saves_private_redacted_report(
         assert "bot-token-must-not-leak" not in path.read_text()
     assert "bot-token-must-not-leak" not in out
     assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("missing", ["leave", "join"])
+async def test_missing_service_message_id_is_not_a_pass(
+    world: FakeTelegram, config: E2EConfig, missing: str
+) -> None:
+    world.service_ids[missing] = False
+
+    report = await run(world, config, scenarios=select_scenarios(["m2.service-message"]))
+
+    assert statuses(report) == {"m2.service-message": "failed"}
+    expected = "退群" if missing == "leave" else "入群"
+    assert f"没有返回{expected}系统消息 id" in report.results[0].detail
+    assert report.status == "failed"

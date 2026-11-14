@@ -153,11 +153,16 @@ async def service_message_scenario(ctx: ScenarioContext) -> None:
     link = await ctx.admin.export_invite_link(ctx.chat.id)
     joined_id = await ctx.member.join_by_link(link)
     ctx.record("成员退群并重新入群", left_message_id=left_id, joined_message_id=joined_id)
-    if joined_id is None:
-        raise CheckFailed("Telegram 没有返回入群系统消息 id，无法验证删除")
-    await _wait_deleted(ctx, joined_id, "入群")
+    # Both halves need evidence: a missing id means "not verified", which is a failure.
+    if joined_id is not None:
+        await _wait_deleted(ctx, joined_id, "入群")
     if left_id is not None:
         await _wait_deleted(ctx, left_id, "退群")
+    missing = [what for what, mid in (("退群", left_id), ("入群", joined_id)) if mid is None]
+    if missing:
+        raise CheckFailed(
+            f"Telegram 没有返回{'、'.join(missing)}系统消息 id，无法验证其被删除（未验证，按失败处理）"
+        )
 
 
 # ------------------------------------------------------------------ M3

@@ -73,16 +73,19 @@ just e2e-login member   # 普通成员账号
 
 按提示输入手机号、Telegram 发来的验证码和两步验证密码（密码不回显）。验证码和密码只在本机终端输入，**不要发到 issue 或评论里**。完成后终端显示账号名和 user id（不是密钥），会话写入 `~/.config/akkiabot/e2e/<role>.session`（权限 600，内容不会打印）。
 
-会话等同于该账号的完整登录凭据，请立即存入 1Password 并删除本地文件。服务账号是只读的，所以这一步需要负责人自己的 1Password 账号（有写权限）：
+会话等同于该账号的完整登录凭据，请立即存入 1Password 并删除本地文件。服务账号是只读的，所以这一步要用负责人自己的 1Password 登录（有写权限）：
 
 ```bash
-op signin   # 负责人自己的账号；已启用桌面应用集成时可省略
-op item edit telegram-e2e --vault AkkiaBot-Staging \
-  "admin_session[password]=$(cat ~/.config/akkiabot/e2e/admin.session)"
-shred -u ~/.config/akkiabot/e2e/admin.session
+op signin                        # 负责人自己的账号；已启用桌面应用集成时可省略
+just e2e-session-store admin     # 写入 AkkiaBot-Staging/telegram-e2e/admin_session
+just e2e-session-store member    # 写入 member_session
 ```
 
-（`member` 同理写入 `member_session`。）注意：`op item edit` 的赋值会短暂出现在本机进程参数中，只在单用户机器上这样做；也可以在 1Password 应用中手动粘贴。然后把两个 user id 以逗号分隔写入 `allowed_user_ids`。
+`session-store` 的流程：读取本地会话文件 → `op item get --reveal --format=json` 取出条目 → 在内存中替换对应字段 → 把 JSON **通过标准输入**交给 `op item edit`（op 2.x 支持管道输入，见 `op item edit --help`）→ 用 `op read` 回读并在内存中比对 → 成功后覆盖并删除本地文件。会话不会出现在命令行参数、终端输出或 shell 历史中；子进程环境中会去掉 `OP_SERVICE_ACCOUNT_TOKEN`，确保使用你自己的登录而不是只读服务账号。失败时本地文件保留，报错信息中的会话会被改写为 `[REDACTED]`。字段需提前建好（第 2 节），工具不会新建字段。
+
+请不要改用 `op item edit ... "admin_session[password]=..."` 这类赋值参数：赋值会出现在进程参数里，可能被同机进程或进程采集看到；也不要把会话 `cat` 到终端再复制。
+
+最后把两个 user id 以逗号分隔写入 `allowed_user_ids`（user id 不是密钥）。
 
 会话失效（例如在 Telegram「设备」中被终止）时，运行会提示“会话已失效”，重新执行本节即可。
 
@@ -114,7 +117,7 @@ uv run akkiabot-e2e list  # 列出场景
 | `m2.id-reply` | 回复群主消息的 `/id` 额外返回“回复目标的UserId” |
 | `m3.ip` | `/ip 1.1.1.1` 返回 IP、Location、AS、Org、ISP，每个值为行内代码且不是“未知” |
 | `m3.ip-reply` | 回复“服务器地址：1.1.1.1:443”这条消息执行 `/ip`，结果同上 |
-| `m2.service-message` | 成员退群再经邀请链接入群，两条系统消息都被 bot 删除（最后执行） |
+| `m2.service-message` | 成员退群再经邀请链接入群，两条系统消息都被 bot 删除（最后执行）；Telegram 未返回任一系统消息 id 时记为失败（未验证），不会算通过 |
 | `m2.message-log` | 仅 `--serve`：群主发出的普通消息出现在 `message_log` 中 |
 
 M3 合并到 master 之前，在 master 上跑 `m3.*` 会失败（bot 还没有 `/ip`），请用 `--scenarios m2`，或在 M3 分支上运行。

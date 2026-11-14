@@ -94,6 +94,10 @@ e2e-token-init *args:
 e2e-login role *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/login.env.tpl -- akkiabot-e2e login --role {{ role }} {{ args }}
 
+# Save a logged-in session into 1Password with your own (writable) sign-in, via stdin
+e2e-session-store role *args:
+    uv run akkiabot-e2e session-store --role {{ role }} {{ args }}
+
 # Start the bot from this checkout and run the live M2/M3 acceptance (e.g. `just e2e --scenarios m2`)
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}

@@ -1,6 +1,6 @@
 """``akkiabot-e2e`` command line.
 
-Subcommands: ``token-init``, ``op-exec``, ``login``, ``run``, ``list``.
+Subcommands: ``token-init``, ``op-exec``, ``login``, ``session-store``, ``run``, ``list``.
 ``run`` is the only entry point that sends real Telegram messages, and it
 does so only when every required variable is present (otherwise it reports
 "skipped" with exit code 77 — never success).
@@ -27,9 +27,15 @@ from akkiabot_e2e.config import (
     missing_variables,
 )
 from akkiabot_e2e.errors import E2EError
-from akkiabot_e2e.files import ensure_private_dir, state_home
+from akkiabot_e2e.files import ensure_private_dir, read_private_file, state_home
 from akkiabot_e2e.login import default_session_file, interactive_login
-from akkiabot_e2e.onepassword import default_token_file, op_exec, token_init
+from akkiabot_e2e.onepassword import (
+    default_token_file,
+    op_exec,
+    shred_file,
+    store_session,
+    token_init,
+)
 from akkiabot_e2e.redaction import Redactor, Secret
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import Connect, run_acceptance
@@ -56,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument("--role", choices=("admin", "member"), required=True)
     login.add_argument("--out", type=Path, default=None)
     login.add_argument("--force", action="store_true")
+
+    store = sub.add_parser(
+        "session-store", help="把 login 生成的会话写入 1Password（经 stdin，不进命令行参数或终端）"
+    )
+    store.add_argument("--role", choices=("admin", "member"), required=True)
+    store.add_argument("--session-file", type=Path, default=None)
+    store.add_argument("--vault", default="AkkiaBot-Staging")
+    store.add_argument("--item", default="telegram-e2e")
+    store.add_argument("--keep-file", action="store_true", help="写入并回读成功后保留本地会话文件")
 
     run = sub.add_parser("run", help="执行真实验收（会用测试账号在测试群发消息）")
     run.add_argument(
@@ -105,6 +120,19 @@ def _cmd_login(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     print(
         f"会话已写入 {out}（权限 600，内容不会显示）。下一步按 docs/e2e-acceptance.md 存入 1Password。"
     )
+    return EXIT_PASSED
+
+
+def _cmd_session_store(args: argparse.Namespace) -> int:
+    path: Path = args.session_file or default_session_file(args.role)
+    field = f"{args.role}_session"
+    store_session(read_private_file(path), vault=args.vault, item=args.item, field=field)
+    print(f"已写入并回读校验 {args.vault}/{args.item}/{field}（值未显示）。")
+    if args.keep_file:
+        print(f"按要求保留了本地会话文件 {path}，请尽快删除。")
+    else:
+        shred_file(path)
+        print(f"已覆盖并删除本地会话文件 {path}。")
     return EXIT_PASSED
 
 
@@ -195,6 +223,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 return EXIT_PASSED  # pragma: no cover - exec replaces the process
             case "login":
                 return _cmd_login(args, env)
+            case "session-store":
+                return _cmd_session_store(args)
             case "run":
                 return _cmd_run(args, env)
     except (E2EError, ValueError) as exc:

@@ -129,6 +129,8 @@ class FakeTelegram:
         self.users: dict[int, UserInfo] = {}
         self.chats: dict[int, FakeChat] = {}
         self.bot: FakeBot | None = None
+        self.service_ids: dict[str, bool] = {"join": True, "leave": True}
+        """Whether join / leave report their service message id (Telegram may omit it)."""
         self.floods: dict[str, list[float]] = defaultdict(list)
         """Pending flood waits per operation name, raised once each."""
         self.calls: list[str] = []
@@ -243,13 +245,15 @@ class FakeAccount:
         self._op("join_by_link")
         chat = self._chat(-int(link.rsplit("fake", 1)[1]))
         chat.members[self.user.id] = "member"
-        return self.world.post(chat, self.user.id, "", service="chat_joined_by_link").id
+        msg = self.world.post(chat, self.user.id, "", service="chat_joined_by_link")
+        return msg.id if self.world.service_ids["join"] else None
 
     async def leave(self, chat_id: int) -> int | None:
         self._op("leave")
         chat = self._chat(chat_id)
         chat.members.pop(self.user.id, None)
-        return self.world.post(chat, self.user.id, "", service="chat_delete_user").id
+        msg = self.world.post(chat, self.user.id, "", service="chat_delete_user")
+        return msg.id if self.world.service_ids["leave"] else None
 
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
         self._op("send")
