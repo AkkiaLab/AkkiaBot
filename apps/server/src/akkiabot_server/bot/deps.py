@@ -11,12 +11,15 @@ from telegram import Update
 from akkiabot_core.config import Settings
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App, Context
+from akkiabot_server.services.antispam_guard import AntiSpamGuard
+from akkiabot_server.services.background import BackgroundTasks
 from akkiabot_server.services.captcha import CaptchaService
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.chats import ChatDirectory
 from akkiabot_server.services.ip_lookup import IpLookupService
 from akkiabot_server.services.message_log import MessageRecorder
 from akkiabot_server.services.moderation import ModerationService
+from akkiabot_server.services.rate_limit import RateLimiter
 from akkiabot_server.services.start_payload import StartPayload, StartPayloadStore
 
 DEPS_KEY = "akkiabot.deps"
@@ -46,6 +49,10 @@ class BotDeps:
     chat_settings: ChatSettingsService
     moderation: ModerationService
     captcha: CaptchaService
+    background: BackgroundTasks
+    antispam: AntiSpamGuard
+    spam_reports: RateLimiter
+    """Per-user limit of ``/spam`` reports by ordinary members (LLM cost)."""
     start_handlers: dict[str, StartRoute] = field(default_factory=dict)
 
     def on_start(self, kind: str, handler: StartHandler, *, reusable: bool = False) -> None:

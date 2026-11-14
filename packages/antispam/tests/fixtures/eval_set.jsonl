@@ -1,0 +1,30 @@
+{"id": "ham-01", "label": 0, "text": "今天天气真好啊"}
+{"id": "ham-02", "label": 0, "text": "有人知道 Python 3.13 的 free-threading 现在稳定了吗？"}
+{"id": "ham-03", "label": 0, "text": "我这边 docker compose up 之后 postgres 一直起不来，日志说端口被占用"}
+{"id": "ham-04", "label": 0, "text": "周末一起去爬山吗？天气预报说周六晴"}
+{"id": "ham-05", "label": 0, "text": "这个 bug 我昨天提了 issue，维护者说下个版本修"}
+{"id": "ham-06", "label": 0, "text": "哈哈哈笑死我了"}
+{"id": "ham-07", "label": 0, "text": "请问群里有人用过 Cloudflare Tunnel 吗，延迟怎么样"}
+{"id": "ham-08", "label": 0, "text": "我刚买了一台二手 ThinkPad，装 Linux 驱动都正常"}
+{"id": "ham-09", "label": 0, "text": "晚安各位，明天还要早起上班"}
+{"id": "ham-10", "label": 0, "text": "这篇论文的实验部分写得不太清楚，baseline 没说用的哪个版本"}
+{"id": "ham-11", "label": 0, "text": "新版本发布了，更新日志里说修复了内存泄漏"}
+{"id": "ham-12", "label": 0, "text": "有没有推荐的机械键盘？预算五百左右"}
+{"id": "ham-13", "label": 0, "text": "群主辛苦了，感谢整理的教程"}
+{"id": "ham-14", "label": 0, "text": "我觉得这个方案可以，先在测试环境跑一周看看"}
+{"id": "ham-15", "label": 0, "text": "上次说的那家面馆真的很好吃，推荐牛肉面"}
+{"id": "spam-01", "label": 1, "category": "ad", "text": "看我主页日入2W"}
+{"id": "spam-02", "label": 1, "category": "ad", "text": "不会搞薯条我教你，踏马的执行力拉满，别的不能给你，买一辆宝马五系还是没问题！"}
+{"id": "spam-03", "label": 1, "category": "ad", "text": "招聘兼职，手机操作，每天一小时，日结300+，有意私聊"}
+{"id": "spam-04", "label": 1, "category": "fraud", "text": "USDT 稳定理财，日收益 5%，保本无风险，名额有限速来"}
+{"id": "spam-05", "label": 1, "category": "gambling", "text": "国际正规平台，注册即送888彩金，百家乐、体育、电子随便玩，提款秒到"}
+{"id": "spam-06", "label": 1, "category": "ad", "text": "全网最低价机场，一元一个月，不限速，点我头像进频道"}
+{"id": "spam-07", "label": 1, "category": "fraud", "text": "恭喜您获得空投奖励，请点击链接连接钱包领取 1000 USDT"}
+{"id": "spam-08", "label": 1, "category": "ad", "text": "出售各国 Telegram 老号、实卡号，批发零售，量大从优"}
+{"id": "spam-09", "label": 1, "category": "gambling", "text": "每天带单回血，跟我买号码稳赚不赔，已经帮上百人翻身"}
+{"id": "spam-10", "label": 1, "category": "fraud", "text": "刷单返利，垫付一单返佣金30%，老师带你做任务"}
+{"id": "spam-11", "label": 1, "category": "ad", "text": "需要代开发票、代办信用卡的私我，价格好商量"}
+{"id": "spam-12", "label": 1, "category": "fraud", "text": "我是币安客服，您的账户存在异常，请私聊我提供助记词进行验证"}
+{"id": "spam-13", "label": 1, "category": "ad", "text": "免费领取会员，加我拉你进福利群，名额只剩最后10个"}
+{"id": "spam-14", "label": 1, "category": "gambling", "text": "体育赛事推荐，包赢套餐，今晚世界杯稳胆，私聊获取"}
+{"id": "spam-15", "label": 1, "category": "ad", "text": "专业引流涨粉，Telegram 群拉人、频道刷量，24小时在线接单"}

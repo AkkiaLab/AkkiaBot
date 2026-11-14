@@ -30,13 +30,26 @@ _OTHER_SECRETS = (
     "WHOIS_IPINFO_TOKEN",
     "OBSERVABILITY_SENTRY_DSN",
     "OP_SERVICE_ACCOUNT_TOKEN",
+    "LLM_API_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
 )
+DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
 
 
 @dataclass(frozen=True, slots=True)
 class ApiCredentials:
     api_id: int
     api_hash: Secret
+
+
+@dataclass(frozen=True, slots=True)
+class LangfuseCredentials:
+    """Read-only access to the bot's Langfuse project (M5: check traces)."""
+
+    public_key: Secret
+    secret_key: Secret
+    host: str = DEFAULT_LANGFUSE_HOST
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +64,11 @@ class E2EConfig:
     reply_timeout: float = 30.0
     flood_max_wait: float = 120.0
     send_interval: float = 2.0
+    antispam: bool = False
+    """The bot has an LLM (``LLM_API_KEY`` + ``LLM_MODEL``); M5 scenarios need it."""
+    langfuse: LangfuseCredentials | None = None
+    antispam_wait: float = 20.0
+    """How long M5 waits to be sure a message is *not* acted upon."""
 
 
 def missing_variables(env: Mapping[str, str], names: tuple[str, ...] = REQUIRED) -> list[str]:
@@ -111,6 +129,20 @@ def load_config(env: Mapping[str, str]) -> E2EConfig:
         reply_timeout=env_float(env, "E2E_REPLY_TIMEOUT", 30.0),
         flood_max_wait=env_float(env, "E2E_FLOOD_MAX_WAIT", 120.0),
         send_interval=env_float(env, "E2E_SEND_INTERVAL", 2.0),
+        antispam=not missing_variables(env, ("LLM_API_KEY", "LLM_MODEL")),
+        langfuse=load_langfuse(env),
+        antispam_wait=env_float(env, "E2E_ANTISPAM_WAIT", 20.0),
+    )
+
+
+def load_langfuse(env: Mapping[str, str]) -> LangfuseCredentials | None:
+    if missing_variables(env, ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")):
+        return None
+    host = env.get("LANGFUSE_HOST", "").strip().rstrip("/") or DEFAULT_LANGFUSE_HOST
+    return LangfuseCredentials(
+        Secret(env["LANGFUSE_PUBLIC_KEY"].strip()),
+        Secret(env["LANGFUSE_SECRET_KEY"].strip()),
+        host,
     )
 
 

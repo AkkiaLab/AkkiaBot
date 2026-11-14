@@ -50,13 +50,14 @@ just test-integration  # 连同 compose 中的 PostgreSQL / Redis 一起跑 pyte
 just gen-api     # 导出后端 OpenAPI（apps/webapp/openapi.json）并生成前端类型（src/api/schema.d.ts），两者都要提交
 just docker-build  # 构建后端镜像并运行，打印版本号
 just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-acceptance.md；CI 不运行）
+just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 LLM，读取 LLM_* / ANTISPAM_*）
 ```
 
 只改一侧时，可以用 `just lint-py` / `just lint-web`、`just test-py` / `just test-web` 等子命令；`just test-py -k smoke` 会把参数透传给 pytest。
 
 本地配置：复制 `.env.example` 为 `.env` 后填写，`.env` 不入库。变量名为 `<分组>_<字段>`（如 `TELEGRAM_BOT_TOKEN`、`DB_URL`、`OBSERVABILITY_SENTRY_DSN`），完整定义见 `packages/core/src/akkiabot_core/config.py`；必填项（`TELEGRAM_BOT_TOKEN`、`DB_URL`）缺失时启动即报错。
 
-日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。Bot API 的 URL 中含有 bot token，`Runtime.build()` 因此把 `httpx`、`httpcore` 日志固定在 WARNING，把 PTB 的 `telegram.Bot`、`telegram.ext.ExtBot` 固定在 INFO，即使根日志级别设为 DEBUG 也不会输出这些 URL；启动失败的错误信息也会先改写 token 再记录。
+日志模块原样输出消息、extra 字段和异常，不做自动脱敏；记录配置或连接信息时请使用 `Settings.redacted()`、`DatabaseSettings.safe_url` 等安全形式，不要把 token、密码等已知密钥直接写进日志。Bot API 的 URL 中含有 bot token，`Runtime.build()` 因此把 `httpx`、`httpcore`（以及 openai SDK 使用的 `httpx2`、`httpcore2`）日志固定在 WARNING，把 PTB 的 `telegram.Bot`、`telegram.ext.ExtBot` 固定在 INFO，即使根日志级别设为 DEBUG 也不会输出这些 URL；启动失败的错误信息也会先改写 token 再记录。
 
 ### 运行机器人
 
@@ -71,7 +72,12 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 - 群配置：`services/chat_settings.py` 读写 `chat.settings`（可移植 JSON 列，`ChatSettings` 校验）；读取经共享缓存（5 分钟），写入提交后删除缓存项。`/config` 由群主或具有“封禁成员”权限的管理员在群内发起 → 一次性深链（绑定该群和该用户）→ 私聊中的 inline 开关（反垃圾、入群验证、警告、删除系统消息），每次点击都重新校验发起人在群内的权限。
 - 群管理：`/ban`、`/warn` 必须回复要处理的成员的消息使用，规则在 `services/moderation.py`：操作者须为群主或具有“封禁成员”权限的管理员，目标不能是群主或管理员，匿名管理员需关闭匿名。`/ban` 封禁后按 `message_log` 分批（每批 100 条、最多 4 个并发）删除该成员的历史消息，遇到 429 按 `retry_after` 退避重试；`/warn` 需先在 `/config` 开启，达到 `max_warn_count`（默认 3）后自动封禁、删除历史并清零。所有操作写入 `chat_member.restriction`（`admin_ban` / `warn_ban`）。
 - 入群验证（`services/captcha.py`、`bot/captcha.py`）：群内开启“入群验证”后，成员身份从非成员变为成员（含带着限制状态重新入群）时，机器人禁言该成员（`chat_member.restriction = captcha_mute`），创建有效期 `WEBAPP_CAPTCHA_TIMEOUT`（默认 300 秒）的 `captcha_challenge`，并在群内发送脱敏称呼的提示和私聊深链。发起人在私聊 `/start` 后得到打开 `<WEBAPP_URL>/captcha?challenge=<id>` 的 Mini App 按钮；他人点击会被拒绝，且不会让链接失效（该 payload 在有效期内可重复使用）。Mini App 调用 `POST /api/v1/captcha/verify`，依次校验 Turnstile（`TURNSTILE_SECRET_KEY`，未配置时 503）、initData（含 `auth_date` 过期）、challenge 存在且未过期未使用、initData 用户与 challenge 一致、该成员当前是 captcha 禁言，然后解除禁言并通过 `answerWebAppQuery` 回执；错误以固定的 `error` 码返回。超时由 JobQueue 处理（每个 challenge 一个定时任务，另有每 30 秒一次的兜底扫描）：challenge 记为 `expired`，**成员保持禁言**，群内提示被删除；退群再入群会生成新的 challenge，管理员仍可手动解除禁言，此时 `chat_member` 同步为 `none`。机器人必须是群管理员（具备“封禁成员”“删除消息”权限）才能收到 `chat_member` 更新并禁言。
-- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；入群验证记 `akkiabot_captcha_total{result=passed|timeout|failed}`（`failed` 为被拒绝的提交）与 `akkiabot_captcha_duration_seconds`（入群到通过的耗时）；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|mute|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
+- 反垃圾（`services/antispam_guard.py` + `packages/antispam`）：群内开启“反垃圾”后，成员的文本消息与图片等媒体的说明文字在后台任务中交给 LLM 判定（不阻塞其他 handler）；已记录发言超过 `ANTISPAM_EXEMPT_MESSAGE_COUNT`（默认 3）条的成员豁免，管理员与频道身份发言不处理。命中时删除消息、永久禁言（`chat_member.restriction=spam_mute`）、`ANTISPAM_PURGE_DELAY`（默认 5 秒）后清理其历史消息，并发送一条 `ANTISPAM_NOTICE_TTL`（默认 60 秒）后自动删除的通知。判定结果写入 `message_log.spam_verdict`，命中时同时保存正文用于审计（清理历史时保留该行，直到保留期到期）。LLM 未配置（`LLM_API_KEY`、`LLM_MODEL`）时不做判定。
+  - 分类器使用 OpenAI 兼容接口，默认请求 JSON 结构化输出，接口不支持时自动退回旧版的 `0/1` 回答（`ANTISPAM_STRUCTURED_OUTPUT=auto|json_schema|off`）；超时（`ANTISPAM_TIMEOUT`，默认 45 秒；判定在后台执行，推理型模型单次约 10–40 秒）、接口错误或无法解析的回答一律判为“非垃圾”（fail open）。提示词可用 `ANTISPAM_PROMPT_FILE` 覆盖（只替换角色、任务与示例部分，输出格式由代码追加），版本号取 `ANTISPAM_PROMPT_VERSION`，未设置时为 `custom-<内容哈希>`。
+  - 配置了 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`（及可选的 `LANGFUSE_HOST`）时，每次 LLM 调用在 Langfuse 中记录为一个 generation：提示词版本、输入输出、耗时、token 用量与错误。
+  - `/spam`（回复使用）：群主或有封禁权限的管理员使用时直接封禁并删除历史；普通成员举报时，把被举报人的名字、简介和消息内容交给 LLM，是垃圾信息则封禁（`restricted_by` 为机器人），否则编辑回执消息 @ 全部管理员人工审核。普通成员举报按 `ANTISPAM_REPORT_RATE_LIMIT` / `ANTISPAM_REPORT_RATE_WINDOW`（默认 300 秒内 3 次）限流。
+  - 提示词基线：`just antispam-eval`（`akkiabot-antispam-eval`）用 `packages/antispam/tests/fixtures/eval_set.jsonl`（30 条正负样本）调用真实 LLM，输出准确率、精确率、召回率与判错样本；调整提示词或模型前后各跑一次对比。
+- 可观测性：每个 handler 自动记录 `akkiabot_handler_duration_seconds`、`akkiabot_handler_errors_total`，命令另记 `akkiabot_command_total{command,result}`，每个 update 记 `akkiabot_updates_total{type}`；入群验证记 `akkiabot_captcha_total{result=passed|timeout|failed}`（`failed` 为被拒绝的提交）与 `akkiabot_captcha_duration_seconds`（入群到通过的耗时）；群管理记 `akkiabot_moderation_actions_total{action=ban|warn|mute|delete}`（`delete` 按删除的消息条数累加），相关 Bot API 失败记 `akkiabot_telegram_api_errors_total{method}`；反垃圾记 `akkiabot_antispam_verdict_total{verdict=spam|ham|error|skipped,action}`、`akkiabot_antispam_llm_duration_seconds`、`akkiabot_antispam_llm_errors_total{error}`；handler 异常以 ERROR 日志输出（带 `update_id`、`chat_id`、`user_id`、`trace_id`、`handler`），配置了 Sentry DSN 时同时上报 Sentry，且不会再被 PTB 重复上报。
 - Telegram 交互测试：`akkiabot_server.testing` 提供 `FakeBotApi`（替换 Bot 的 HTTP 层，记录并应答所有 Bot API 调用）与 `UpdateFactory`（伪造群 / 私聊消息、回复、系统消息、成员变更、按钮回调），`member_responder()` 用来模拟 `getChatMember`；`apps/server/tests/conftest.py` 的 `runtime` fixture 给出一个已迁移、已初始化的运行时，用 `await runtime.application.process_update(update)` 驱动。
 
 ### 数据库与测试

@@ -21,6 +21,7 @@ from akkiabot_server.bot.captcha import captcha_start, handle_chat_member, sched
 from akkiabot_server.bot.commands.config import CALLBACK_PATTERN, config_callback, config_start
 from akkiabot_server.bot.commands.config import START_KIND as CONFIG_START_KIND
 from akkiabot_server.bot.deps import BotDeps, attach_deps
+from akkiabot_server.bot.handlers.antispam import check_group_message
 from akkiabot_server.bot.handlers.group import (
     handle_my_chat_member,
     handle_service_message,
@@ -40,6 +41,8 @@ ALLOWED_UPDATES: Final = ("message", "callback_query", "chat_member", "my_chat_m
 # Handler groups run in ascending order; every group gets its chance at an update.
 GROUP_METRICS: Final = -1000
 GROUP_BOOKKEEPING: Final = -100
+GROUP_ANTISPAM: Final = -50
+"""After bookkeeping (the sender's message count is up to date), before commands."""
 GROUP_COMMANDS: Final = 0
 
 
@@ -100,6 +103,17 @@ def register_handlers(application: App, commands: CommandRegistry) -> None:
             ),
         ],
         group=GROUP_BOOKKEEPING,
+    )
+    application.add_handler(
+        MessageHandler(
+            # Commands are answered by their handlers, not classified.
+            groups
+            & ~filters.StatusUpdate.ALL
+            & ~filters.COMMAND
+            & (filters.TEXT | filters.CAPTION),
+            instrument("antispam", check_group_message),
+        ),
+        group=GROUP_ANTISPAM,
     )
     application.add_handlers(
         [
