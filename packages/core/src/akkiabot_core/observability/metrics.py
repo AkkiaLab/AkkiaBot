@@ -91,7 +91,7 @@ ANTISPAM_LLM_DURATION_SECONDS = Histogram(
     "Wall time of one spam classification (LLM call, fallback included).",
     namespace=NAMESPACE,
     registry=REGISTRY,
-    buckets=(0.25, 0.5, 1, 2, 3, 5, 8, 13, 20, 30),
+    buckets=(0.25, 0.5, 1, 2, 3, 5, 8, 13, 20, 30, 45, 60),
 )
 ANTISPAM_LLM_ERRORS_TOTAL = Counter(
     "antispam_llm_errors_total",

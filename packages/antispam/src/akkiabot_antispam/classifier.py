@@ -47,7 +47,7 @@ class ClassifierSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model: str
-    timeout: float = Field(default=15.0, gt=0)
+    timeout: float = Field(default=45.0, gt=0)
     """Overall budget of one :meth:`AntiSpamClassifier.classify` call, fallback included."""
     structured_output: StructuredOutput = "auto"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
@@ -269,7 +269,7 @@ def build_client(
     *,
     api_key: str,
     base_url: str | None = None,
-    timeout: float = 15.0,
+    timeout: float = 45.0,
     http_client: httpx2.AsyncClient | None = None,
 ) -> AsyncOpenAI:
     """An OpenAI-compatible client without SDK retries (the caller's budget rules).

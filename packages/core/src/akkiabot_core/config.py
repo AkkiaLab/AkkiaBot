@@ -141,7 +141,7 @@ class LlmSettings(_Group):
 class AntispamSettings(_Group):
     """Group message spam detection and ``/spam`` reports (LLM from ``LLM_*``)."""
 
-    timeout: float = Field(default=15.0, gt=0)
+    timeout: float = Field(default=45.0, gt=0)
     """Overall budget (seconds) of one classification; on timeout the message passes."""
     structured_output: Literal["auto", "json_schema", "off"] = "auto"
     """``auto``: JSON structured output, falling back to 0/1 answers when the

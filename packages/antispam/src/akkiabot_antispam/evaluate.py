@@ -179,7 +179,7 @@ def build_from_env(env_file: Path = Path(".env")) -> AntiSpamClassifier:
     api_key, model = _setting(env, "LLM_API_KEY"), _setting(env, "LLM_MODEL")
     if not api_key or not model:
         raise SystemExit("需要配置 LLM_API_KEY 与 LLM_MODEL（环境变量或 .env）")
-    timeout = float(_setting(env, "ANTISPAM_TIMEOUT") or 15.0)
+    timeout = float(_setting(env, "ANTISPAM_TIMEOUT") or 45.0)
     mode = _setting(env, "ANTISPAM_STRUCTURED_OUTPUT") or "auto"
     if mode not in ("auto", "json_schema", "off"):
         raise SystemExit("ANTISPAM_STRUCTURED_OUTPUT 只能是 auto / json_schema / off")
