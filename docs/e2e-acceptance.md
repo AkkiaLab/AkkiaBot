@@ -10,7 +10,7 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 
 | 层 | 测试环境端点 | 检查方式 | 无法使用时 |
 | --- | --- | --- | --- |
-| MTProto（测试账号） | 测试数据中心：DC1 `149.154.175.10`、DC2 `149.154.167.40`、DC3 `149.154.175.117`，端口 443 | 新会话固定从测试 DC2 开始。已有会话的服务器地址必须是测试 DC，否则拒绝使用。每次连接后调用 `help.getConfig`，要求服务器返回 `test_mode=true`；登录时如果因 `PHONE_MIGRATE` 切换了 DC，会再检查一次 | 断开连接并报错，**不回退到生产环境** |
+| MTProto（测试账号） | 测试数据中心：DC1 `149.154.175.10` / `149.154.175.40`、DC2 `149.154.167.40`、DC3 `149.154.175.117`（DC1 的第二个地址来自测试服务器 `help.getConfig` 的公告，Telethon 在 `PHONE_MIGRATE` 后使用它，例如 +1 号码的账号） | 新会话固定从测试 DC2 开始。已有会话的服务器地址必须是测试 DC，否则拒绝使用。每次连接后调用 `help.getConfig`，要求服务器返回 `test_mode=true`；登录时如果因 `PHONE_MIGRATE` 切换了 DC，会再检查一次 | 断开连接并报错，**不回退到生产环境** |
 | Bot API（被测 bot） | `https://api.telegram.org/bot<token>/test/<方法>` | 产品配置 `TELEGRAM_TEST_ENVIRONMENT=true` 时，PTB 的 `base_url` 和 `base_file_url` 都使用 `/test` 端点；`run --serve` 启动的 bot 强制开启该配置。运行前，工具先在测试端点调用 `getMe`，确认 token 有效且用户名与 `bot_username` 一致 | 生产 token 在测试端点上无效，工具会报错退出，**不会改用生产端点** |
 | bot 来源 | 测试环境的 @BotFather | `bootstrap-bot` 只通过已确认处于测试环境的账号与 BotFather 对话 | 同上 |
 
