@@ -1,0 +1,147 @@
+// Grafana Alloy: ship this stack's container logs to Loki, and the app's
+// /metrics plus a /readyz probe to Prometheus (Grafana Cloud in staging and
+// production, the local grafana/otel-lgtm container in development).
+//
+// Everything environment-specific comes from environment variables set by
+// compose (deploy/compose.yaml, deploy/compose.dev.yaml); credentials are never
+// written here. See docs/observability.md.
+//
+//   AKKIABOT_ENV                 value of the `env` label: production / staging / dev
+//   AKKIABOT_COMPOSE_PROJECT     only containers of this compose project are collected
+//   AKKIABOT_METRICS_TARGET      host:port of the app's metrics listener
+//   AKKIABOT_READYZ_URL          URL probed for the readiness alert
+//   GRAFANA_CLOUD_PROMETHEUS_URL remote_write endpoint (…/api/prom/push)
+//   GRAFANA_CLOUD_PROMETHEUS_USER  Prometheus instance id (basic auth user)
+//   GRAFANA_CLOUD_LOKI_URL       push endpoint (…/loki/api/v1/push)
+//   GRAFANA_CLOUD_LOKI_USER      Loki instance id (basic auth user)
+//   GRAFANA_CLOUD_TOKEN          access policy token (metrics:write, logs:write)
+
+// ------------------------------------------------------------------- logs
+
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "15s"
+
+	filter {
+		name   = "label"
+		values = ["com.docker.compose.project=" + sys.env("AKKIABOT_COMPOSE_PROJECT")]
+	}
+}
+
+// Labels stay low-cardinality (env, service, level). Per-update ids go into
+// structured metadata, which LogQL filters like a label: {service="app"} | chat_id="-100…".
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		target_label  = "service"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/?(.*)"
+		target_label  = "container"
+	}
+}
+
+loki.source.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.docker.containers.targets
+	relabel_rules    = discovery.relabel.containers.rules
+	refresh_interval = "15s"
+	forward_to       = [loki.process.app.receiver]
+}
+
+loki.process "app" {
+	// The app logs one JSON object per line (akkiabot_core.observability.logging);
+	// other containers (postgres, redis, cloudflared) pass through unparsed.
+	stage.match {
+		selector = "{service=~\"app|migrate\"}"
+
+		stage.json {
+			expressions = {
+				level     = "level",
+				logger    = "logger",
+				chat_id   = "chat_id",
+				user_id   = "user_id",
+				update_id = "update_id",
+				trace_id  = "trace_id",
+				handler   = "handler",
+			}
+		}
+
+		stage.labels {
+			values = {level = ""}
+		}
+
+		stage.structured_metadata {
+			values = {
+				logger    = "",
+				chat_id   = "",
+				user_id   = "",
+				update_id = "",
+				trace_id  = "",
+				handler   = "",
+			}
+		}
+	}
+
+	stage.static_labels {
+		values = {env = coalesce(sys.env("AKKIABOT_ENV"), "production")}
+	}
+
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+			password = sys.env("GRAFANA_CLOUD_TOKEN")
+		}
+	}
+}
+
+// ---------------------------------------------------------------- metrics
+
+prometheus.scrape "app" {
+	job_name        = "akkiabot"
+	targets         = [{"__address__" = coalesce(sys.env("AKKIABOT_METRICS_TARGET"), "app:9464"), "service" = "app"}]
+	scrape_interval = "30s"
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// /readyz probe: probe_success is 0 when the app answers 503 (database or
+// cache down) or does not answer at all.
+prometheus.exporter.blackbox "readyz" {
+	config = "{ modules: { http_2xx: { prober: http, timeout: 5s, http: { preferred_ip_protocol: ip4 } } } }"
+
+	target {
+		name    = "readyz"
+		address = coalesce(sys.env("AKKIABOT_READYZ_URL"), "http://app:8000/readyz")
+		module  = "http_2xx"
+	}
+}
+
+prometheus.scrape "readyz" {
+	job_name        = "akkiabot-readyz"
+	targets         = prometheus.exporter.blackbox.readyz.targets
+	scrape_interval = "30s"
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+	external_labels = {env = coalesce(sys.env("AKKIABOT_ENV"), "production")}
+
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROMETHEUS_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_PROMETHEUS_USER")
+			password = sys.env("GRAFANA_CLOUD_TOKEN")
+		}
+	}
+}

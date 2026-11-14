@@ -1,6 +1,11 @@
 # Local development services. Start with `just dev` (or
 # `docker compose -f deploy/compose.dev.yaml up -d`).
 # Credentials here are for local use only.
+#
+# Optional observability (profile `observability`, `just dev-observability`):
+# grafana/otel-lgtm (Grafana at http://127.0.0.1:3000, with the AkkiaBot
+# dashboard and alert rules provisioned) plus the same Alloy config as
+# production, scraping a `just serve` on this host. See docs/observability.md.
 name: akkiabot-dev
 
 services:
@@ -32,6 +37,48 @@ services:
       timeout: 3s
       retries: 10
 
+  lgtm:
+    image: grafana/otel-lgtm:0.41.0
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:3000:3000" # Grafana (anonymous admin, local only)
+      - "127.0.0.1:3100:3100" # Loki push, for Alloy
+      - "127.0.0.1:9090:9090" # Prometheus remote write, for Alloy
+    volumes:
+      - lgtm-data:/data
+      - ./observability/dashboards:/akkiabot/dashboards:ro
+      - ./observability/dev/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/akkiabot.yaml:ro
+      - ./observability/alerting/akkiabot.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/akkiabot.yaml:ro
+
+  alloy:
+    image: grafana/alloy:v1.22.0
+    profiles: [observability]
+    # Host network: reaches `just serve` on 127.0.0.1 (metrics :9464, API :8000)
+    # without binding the app to other interfaces, and lgtm via its ports above.
+    network_mode: host
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      AKKIABOT_ENV: dev
+      AKKIABOT_COMPOSE_PROJECT: akkiabot-dev
+      AKKIABOT_METRICS_TARGET: 127.0.0.1:9464
+      AKKIABOT_READYZ_URL: http://127.0.0.1:8000/readyz
+      GRAFANA_CLOUD_PROMETHEUS_URL: http://127.0.0.1:9090/api/v1/write
+      GRAFANA_CLOUD_PROMETHEUS_USER: dev
+      GRAFANA_CLOUD_LOKI_URL: http://127.0.0.1:3100/loki/api/v1/push
+      GRAFANA_CLOUD_LOKI_USER: dev
+      GRAFANA_CLOUD_TOKEN: dev # lgtm does not check credentials
+    volumes:
+      - ./observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on: [lgtm]
+
 volumes:
   postgres-data:
   redis-data:
+  lgtm-data:
+  alloy-data:

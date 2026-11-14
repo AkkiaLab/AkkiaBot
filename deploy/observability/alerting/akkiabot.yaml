@@ -1,0 +1,146 @@
+# Grafana-managed alert rules (Grafana file-provisioning format).
+#
+# - Local development: mounted into grafana/otel-lgtm (deploy/compose.dev.yaml),
+#   where the Prometheus data source uid is literally `prometheus`.
+# - Grafana Cloud: uploaded by `scripts/grafana_sync.py`, which swaps
+#   `datasourceUid: prometheus` for the stack's Prometheus data source uid.
+#
+# Every query keeps the `env` label, so one rule alerts per environment
+# (staging / production). Thresholds are explained in docs/observability.md.
+# Avoid dollar signs in this file: Grafana expands environment variables in
+# provisioning files.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: akkiabot
+    folder: AkkiaBot
+    interval: 1m
+    rules:
+      - uid: akkiabot-polling-stalled
+        title: bot 停止接收 update
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              # 0 = webhook mode or not started: excluded. Polling mode sets the
+              # heartbeat at startup and on every successful getUpdates.
+              expr: time() - max by (env) (akkiabot_telegram_poll_last_success_timestamp_seconds > 0)
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [300] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        labels: { severity: critical, service: akkiabot }
+        annotations:
+          summary: bot 超过 5 分钟没有成功拉取 update（getUpdates）
+          description: >-
+            akkiabot_telegram_poll_last_success_timestamp_seconds 停止更新：Telegram 不可达、
+            token 失效，或另一个进程在用同一个 token 拉取 update。查看 app 日志中 telegram 相关错误。
+
+      - uid: akkiabot-readyz-failing
+        title: /readyz 失败
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: min by (env) (probe_success{job="akkiabot-readyz"})
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+        # No probe results at all means Alloy (or the whole host) is down.
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+        labels: { severity: critical, service: akkiabot }
+        annotations:
+          summary: /readyz 连续 2 分钟失败
+          description: >-
+            Alloy 探测 http://app:8000/readyz 失败：数据库或 Redis 不可用（503），或者 app 无响应。
+            按 docs/operations.md §5.3 排障。没有任何探测数据时同样告警（Alloy 或主机宕机）。
+
+      - uid: akkiabot-handler-error-rate
+        title: handler 错误率升高
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: >-
+                sum by (env) (rate(akkiabot_handler_errors_total[5m]))
+                / sum by (env) (rate(akkiabot_handler_duration_seconds_count[5m]))
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [0.05] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels: { severity: warning, service: akkiabot }
+        annotations:
+          summary: 最近 5 分钟 handler 错误率超过 5%
+          description: >-
+            akkiabot_handler_errors_total / handler 调用次数 > 5%。在 dashboard 的日志面板筛选
+            level=error，按 trace_id 查看完整上下文；异常详情同时在 Sentry。
+
+      - uid: akkiabot-llm-errors
+        title: LLM 错误或超时持续出现
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1200, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m]))
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [2.5] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels: { severity: warning, service: akkiabot }
+        annotations:
+          summary: 15 分钟内反垃圾 LLM 失败至少 3 次，且持续 5 分钟
+          description: >-
+            akkiabot_antispam_llm_errors_total 持续增长（timeout / api_error / parse_error）。
+            失败的分类按放行处理，垃圾消息可能漏判。检查 LLM 服务状态与 Langfuse 中的调用记录。

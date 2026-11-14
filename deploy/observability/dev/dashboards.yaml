@@ -1,0 +1,12 @@
+# Grafana dashboard provider for the local grafana/otel-lgtm container
+# (deploy/compose.dev.yaml). Grafana Cloud gets the same JSON from
+# scripts/grafana_sync.py.
+apiVersion: 1
+providers:
+  - name: AkkiaBot
+    folder: AkkiaBot
+    folderUid: akkiabot
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /akkiabot/dashboards

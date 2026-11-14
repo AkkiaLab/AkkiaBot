@@ -86,7 +86,7 @@ dev:
 
 # Stop local dev services
 dev-down:
-    {{ compose_dev }} down
+    {{ compose_dev }} --profile observability down
 
 # --- Real Telegram acceptance in the Telegram TEST environment (docs/e2e-acceptance.md). Never run in CI.
 
@@ -127,3 +127,11 @@ gen-api:
 docker-build tag="akkiabot:dev":
     docker build -f deploy/Dockerfile -t {{ tag }} .
     docker run --rm {{ tag }}
+
+# Local Grafana (otel-lgtm) + Alloy with the AkkiaBot dashboard and alerts: http://127.0.0.1:3000
+dev-observability:
+    {{ compose_dev }} --profile observability up -d
+
+# Upload dashboards and alert rules to Grafana (GRAFANA_URL / GRAFANA_SA_TOKEN; docs/observability.md)
+grafana-sync *args:
+    uv run python -m scripts.grafana_sync {{ args }}
