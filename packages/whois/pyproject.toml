@@ -3,7 +3,10 @@ name = "akkiabot-whois"
 version = "0.1.0"
 description = "IP whois 查询（provider 链 + 缓存）"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "httpx>=0.28",
+    "pydantic>=2.10",
+]
 
 [build-system]
 requires = ["uv_build>=0.9,<1"]
