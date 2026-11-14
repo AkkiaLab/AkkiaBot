@@ -1,29 +1,33 @@
 name: Webapp deploy
 
 # Publishes apps/webapp to Cloudflare Pages with `wrangler pages deploy`
-# (docs/webapp.md): master → production (bot.akkia.moe), pull
-# requests → preview URL shown as a GitHub deployment on the PR. master pushes
-# and manual runs also publish a build against the staging API to the fixed
-# alias `staging.<project>.pages.dev`, the Mini App URL of the staging bot.
+# (docs/webapp.md). This workflow never touches production:
+#   - pull requests → per-branch preview (`<branch>.<project>.pages.dev`);
+#   - master pushes and manual runs → the fixed alias `staging.<project>.pages.dev`,
+#     the Mini App of the staging bot.
+# Both use the `webapp-preview` environment (staging API, staging Turnstile key,
+# dev/staging Cloudflare token). Production only receives builds through
+# webapp-promote.yml, for commits that passed the staging acceptance.
 #
-# Needs repository variable CLOUDFLARE_ACCOUNT_ID, and on each of the
-# `webapp-production` / `webapp-preview` environments the secret
-# CLOUDFLARE_API_TOKEN (prod and dev/staging use different tokens) plus the
-# variables VITE_API_BASE_URL and VITE_TURNSTILE_SITE_KEY. Until the token exists (and for fork PRs, which get no secrets)
-# the build and the dev-mock check still run; only the upload is skipped.
+# Needs repository variable CLOUDFLARE_ACCOUNT_ID and, on `webapp-preview`, the
+# secret CLOUDFLARE_API_TOKEN plus the variables VITE_API_BASE_URL and
+# VITE_TURNSTILE_SITE_KEY. Without the token (e.g. fork PRs) the build and the
+# dev-mock check still run; only the upload is skipped.
 
 on:
+  # Every master commit is published to staging so that the staging Mini App
+  # always matches the commit under staging acceptance (dist/version.json).
   push:
     branches: [master]
-    paths: &paths
+  pull_request:
+    paths:
       - apps/webapp/**
+      - .github/actions/webapp-build/**
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - .nvmrc
       - .github/workflows/webapp-deploy.yml
-  pull_request:
-    paths: *paths
   workflow_dispatch:
 
 concurrency:
@@ -40,30 +44,17 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # `branch`: production on master, otherwise a per-branch preview.
-        # `staging`: fixed `staging` alias built with the preview (staging) settings.
-        target: ${{ fromJSON(github.event_name == 'pull_request' && '["branch"]' || '["branch", "staging"]') }}
     environment:
-      name: ${{ (matrix.target == 'branch' && github.ref == 'refs/heads/master') && 'webapp-production' || 'webapp-preview' }}
+      name: webapp-preview
       url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/webapp-build
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Build
-        env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-          VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
-        run: pnpm --filter @akkiabot/webapp build
-      - name: No dev-only Telegram mock in the bundle
-        run: bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist
+          api-base-url: ${{ vars.VITE_API_BASE_URL }}
+          turnstile-site-key: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+          sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          environment: ${{ github.event_name == 'pull_request' && 'preview' || 'staging' }}
       - name: Decide whether to upload
         id: gate
         env:
@@ -71,7 +62,13 @@ jobs:
           ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
           SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
+          # Branch aliases that belong to other targets must never come from a PR.
+          if [[ "$HEAD_REF" == "staging" || "$HEAD_REF" == "master" ]]; then
+            echo "::error::PR branch name '$HEAD_REF' is reserved for a deployment alias"
+            exit 1
+          fi
           if [[ "$HAS_TOKEN" != "true" ]]; then
             echo "::notice::CLOUDFLARE_API_TOKEN is not available (not configured yet, or a fork PR); skipping the Pages upload."
             echo "upload=false" >> "$GITHUB_OUTPUT"
@@ -93,8 +90,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Untrusted branch names go through env, never interpolated into the script.
-          BRANCH: ${{ matrix.target == 'staging' && 'staging' || github.head_ref || github.ref_name }}
-          PRODUCTION: ${{ matrix.target == 'branch' && github.ref == 'refs/heads/master' }}
+          BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || 'staging' }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
         run: |
@@ -103,9 +99,6 @@ jobs:
             --branch="$BRANCH" \
             --commit-hash="$COMMIT_SHA" \
             --commit-dirty=true
-          # Production: the immutable deployment URL; previews: the stable per-branch alias.
-          filter='select(.type == "pages-deploy-detailed") | .url'
-          [[ "$PRODUCTION" == true ]] || filter='select(.type == "pages-deploy-detailed") | .alias // .url'
-          url="$(jq -r "$filter" "$WRANGLER_OUTPUT_FILE_PATH" | tail -n1)"
+          url="$(jq -r 'select(.type == "pages-deploy-detailed") | .alias // .url' "$WRANGLER_OUTPUT_FILE_PATH" | tail -n1)"
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Deployed: $url" >> "$GITHUB_STEP_SUMMARY"
