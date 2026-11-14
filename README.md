@@ -7,6 +7,7 @@ AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Clou
 - 架构与技术栈：[docs/architecture.md](docs/architecture.md)
 - 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
 - 真实 Telegram 验收（Telegram 测试环境 + 1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
+- 部署与运维（生产 / 预发布 compose、配置项、升级回滚、备份、DNS）：[docs/operations.md](docs/operations.md)
 - 仓库约定（密钥、日志、验收）：[AGENTS.md](AGENTS.md)
 
 ## 开发
@@ -75,7 +76,7 @@ just e2e         # 真实 Telegram 验收（需 1Password，见 docs/e2e-accepta
 
 ### 数据库与测试
 
-- 迁移脚本位于 `packages/core/src/akkiabot_core/db/migrations/`（随包发布，镜像内可直接执行 `akkiabot migrate`）。迁移不在应用进程内自动执行，部署时需在启动应用前运行。
+- 迁移脚本位于 `packages/core/src/akkiabot_core/db/migrations/`（随包发布，镜像内可直接执行 `akkiabot migrate`）。迁移不在应用进程内自动执行，部署时需在启动应用前运行（`deploy/compose.yaml` 中由 `migrate` 服务负责）。
 - `just test` 默认只用 SQLite 与内存 / fakeredis 运行；设置 `AKKIABOT_TEST_DATABASE_URL`、`AKKIABOT_TEST_REDIS_URL`（或使用 `just test-integration`）后，同一套迁移、repository 和缓存契约测试也会在 PostgreSQL / Redis 上运行。**测试会清空该数据库的 public schema**，不要指向有数据的库。CI 中两者都会运行。
 
 ### 模块边界

@@ -1,0 +1,297 @@
+# AkkiaBot 运维手册
+
+本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复，以及 DNS 和预发布环境。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
+
+## 1. 总览
+
+```mermaid
+flowchart LR
+  TG[Telegram] <-->|polling / webhook| app
+  user[Mini App 浏览器] -->|https://bot-api.akkia.moe| CF[Cloudflare]
+  CF -->|tunnel| cloudflared --> |http://app:8000| app
+  subgraph host[服务器 · docker compose]
+    cloudflared
+    app[app<br/>akkiabot serve<br/>:8000 API · :9464 /metrics]
+    migrate[migrate<br/>akkiabot migrate] -.先于 app 运行.-> app
+    app --- postgres[(postgres 17)]
+    app --- redis[(redis 7)]
+  end
+```
+
+`deploy/compose.yaml` 定义了五个服务：
+
+| 服务 | 作用 | 网络 | 对外暴露 |
+| --- | --- | --- | --- |
+| `postgres` | PostgreSQL 17，数据在卷 `postgres-data` | backend | 无 |
+| `redis` | 缓存（一次性 payload、限流等），数据在卷 `redis-data` | backend | 无 |
+| `migrate` | 执行 `akkiabot migrate` 后退出；成功后才会启动 `app` | backend | 无 |
+| `app` | `akkiabot serve`：bot 和 HTTP API（`/healthz`、`/readyz`、`/telegram/webhook`、`/api/v1/...`） | backend、edge | 仅宿主机回环 `127.0.0.1:${AKKIABOT_HTTP_PORT}` → 8000 |
+| `cloudflared` | Cloudflare tunnel，把公网域名转发到 `http://app:8000` | edge | 无入站端口 |
+
+网络边界：
+
+- `backend` 是 internal 网络，没有出网路由；postgres、redis、migrate 只在这个网络里。
+- `edge` 只有 `app` 和 `cloudflared`，tunnel 只需要访问 app。
+- `/metrics` 由单独的监听器提供（容器内 `:9464`），**不发布到宿主机，也不能配置为 tunnel 的目标**。只有同一 compose 网络中的采集器（M9 的 Alloy）可以抓取。tunnel 的转发规则只指向 `http://app:8000`，所以公网访问 `https://bot-api.akkia.moe/metrics` 会得到 404。
+
+## 2. 服务器上的文件
+
+每套环境一个目录，生产环境和预发布环境互不共用：
+
+```text
+/opt/akkiabot/production/       # 预发布环境为 /opt/akkiabot/staging/
+├── compose.yaml                # 来自仓库 deploy/compose.yaml（固定在某个 commit）
+├── .env                        # compose 变量，来自 deploy/.env.example；chmod 600
+├── app.env                     # 应用配置，来自 deploy/app.env.example；chmod 600
+├── backup.sh                   # 来自仓库 deploy/backup.sh
+└── backups/                    # pg_dump 备份（backup.sh 创建）
+```
+
+`.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。生产密钥由负责人保管（不放在 `AkkiaBot-Staging` vault）。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
+
+## 3. 配置项
+
+### 3.1 compose 变量（`.env`）
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `COMPOSE_PROJECT_NAME` | 是 | 栈名称，决定容器、卷、网络的前缀。生产用 `akkiabot`，预发布用 `akkiabot-staging`。**部署后不要改**，否则 compose 会新建一套空的数据卷。 |
+| `AKKIABOT_IMAGE` | 否 | 镜像仓库，默认 `ghcr.io/akkialab/akkiabot`。 |
+| `AKKIABOT_TAG` | 否 | 镜像标签，默认 `latest`。master 的每次推送都会发布 `:<完整 commit sha>` 和 `:latest`（`.github/workflows/release.yml`）。**生产环境固定为某个 sha**，回滚只需改回旧 sha。 |
+| `AKKIABOT_HTTP_PORT` | 否 | app 在宿主机回环地址上的端口，默认 8000。同一台机器跑两套环境时错开（预发布用 8001）。 |
+| `POSTGRES_PASSWORD` | 是 | 数据库密码。它会被拼进 `DB_URL`，只能用字母和数字：`openssl rand -hex 32`。第一次启动后数据库已用该密码初始化，之后修改需要同时在库内改密码。 |
+| `CLOUDFLARED_TOKEN` | 是 | 本环境 Cloudflare tunnel 的 token（§7）。 |
+
+缺少 `POSTGRES_PASSWORD` 或 `CLOUDFLARED_TOKEN` 时，`docker compose` 会直接报错退出，不会用默认值启动。
+
+### 3.2 由 compose 设定的应用配置
+
+以下配置写死在 `compose.yaml` 中，会覆盖 `app.env` 里的同名项，`app.env` 不需要写：
+
+| 变量 | 取值 | 说明 |
+| --- | --- | --- |
+| `DB_URL` | `postgresql+asyncpg://akkiabot:<POSTGRES_PASSWORD>@postgres:5432/akkiabot` | 数据库连接（日志中密码显示为 `***`）。 |
+| `REDIS_URL` | `redis://redis:6379/0` | 留空时使用进程内缓存，本栈始终使用 Redis。 |
+| `SERVER_HOST`、`SERVER_PORT` | `0.0.0.0`、`8000` | HTTP API 监听地址。 |
+| `OBSERVABILITY_LOG_FORMAT` | `json` | 结构化日志写到 stdout，由 Docker 的 json-file 驱动保存（单文件 10 MB，保留 5 个）；M9 由 Alloy 采集。 |
+| `OBSERVABILITY_METRICS_HOST`、`OBSERVABILITY_METRICS_PORT` | `0.0.0.0`、`9464` | `/metrics` 监听器。只在 compose 网络内可达，见 §1。 |
+
+### 3.3 应用配置（`app.env`）
+
+变量名为 `<分组>_<字段>`，空值视为未设置；完整定义见 `packages/core/src/akkiabot_core/config.py`。启动时必填项缺失或格式错误，`app` 会记录错误并退出，错误信息不会带出密钥。
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | 必填 | @BotFather 发放的 bot token。生产用正式 bot；预发布用测试环境的测试 bot。 |
+| `TELEGRAM_MODE` | `polling` | `polling` 主动拉取更新；`webhook` 由 Telegram 推送到 `<TELEGRAM_WEBHOOK_URL>/telegram/webhook`（经 tunnel）。同一个 token 同一时间只能有一个进程拉取更新。 |
+| `TELEGRAM_WEBHOOK_URL` | 空 | webhook 模式的公网 API 地址，例如 `https://bot-api.akkia.moe`。 |
+| `TELEGRAM_WEBHOOK_SECRET` | 空 | webhook 模式必填：1–256 位 `A-Z a-z 0-9 _ -`，Telegram 会在请求头里带回，用于校验。 |
+| `TELEGRAM_TEST_ENVIRONMENT` | `false` | `true` 时使用 Telegram 测试环境（`/bot<token>/test/`），只能配合测试环境的 bot。生产必须为 `false`。 |
+| `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS` | `30` | `message_log` 的保留天数，超过的由定时任务删除。 |
+| `TELEGRAM_MESSAGE_LOG_CLEANUP_INTERVAL` | `3600` | 两次清理之间的秒数（≥ 60）。 |
+| `TELEGRAM_START_PAYLOAD_TTL` | `600` | 一次性 `/start` 深链 payload 的有效秒数。 |
+| `DB_ECHO` | `false` | 打印 SQL，仅用于排障，生产保持关闭。 |
+| `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` | 空 | OpenAI 兼容接口，反垃圾使用（M5）。 |
+| `WHOIS_IPINFO_TOKEN` | 空 | ipinfo token；为空时 `/ip` 只使用 ip-api。 |
+| `WHOIS_TIMEOUT` | `5` | 单次查询超时（秒）。 |
+| `WHOIS_CACHE_TTL`、`WHOIS_CACHE_SIZE` | `3600`、`1024` | 进程内查询缓存的秒数和条数。 |
+| `WHOIS_RATE_LIMIT`、`WHOIS_RATE_WINDOW` | `5`、`60` | 每个用户在 `WHOIS_RATE_WINDOW` 秒内最多查询 `WHOIS_RATE_LIMIT` 次。 |
+| `TURNSTILE_SECRET_KEY` | 空 | Cloudflare Turnstile 服务端密钥（M6 入群验证）。 |
+| `WEBAPP_URL` | 空 | Mini App 地址，生产为 `https://bot.akkia.moe`。 |
+| `WEBAPP_INIT_DATA_MAX_AGE` | `3600` | Mini App initData 自 `auth_date` 起的有效秒数。 |
+| `CORS_ALLOW_ORIGINS` | 空 | 允许跨域访问 API 的来源，逗号分隔；生产为 `https://bot.akkia.moe`。 |
+| `OBSERVABILITY_LOG_LEVEL` | `INFO` | 日志级别。即使设为 `DEBUG`，会在 URL 中带出 token 的第三方日志器也保持固定级别。 |
+| `OBSERVABILITY_SENTRY_DSN` | 空 | 为空时不启用 Sentry。 |
+| `OBSERVABILITY_SENTRY_ENVIRONMENT` | `development` | Sentry 环境名：生产用 `production`，预发布用 `staging`。 |
+| `OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Sentry 性能采样率，0–1。 |
+| `OBSERVABILITY_METRICS_ENABLED` | `true` | 是否启动 `/metrics` 监听器。 |
+
+## 4. 首次部署（干净机器）
+
+> **M10 切换之前，生产栈不得使用正式 bot token 启动。** Go 版 core 仍在用同一个 token 拉取更新，两个进程会争抢 update，并且新服务会直接作用在真实群组上。M8 的部署演练和验收在预发布环境（§8）完成；生产目录可以提前准备好，并用 `docker compose up -d --wait postgres redis && docker compose run --rm migrate` 验证数据库和迁移，但不要启动 `app`（也不要执行不带服务名的 `up`）。
+
+### 4.1 前置条件
+
+- Linux 服务器（x86_64），可以访问 `ghcr.io`、`api.telegram.org` 和 Cloudflare。
+- Docker Engine 和 Compose 插件 v2.24 或更高版本：`docker compose version`。
+- 执行部署的用户能运行 docker（属于 `docker` 组，或者使用 root）。
+- 本环境的 Cloudflare tunnel token（§7）。
+- 镜像是公开的，拉取不需要登录 GHCR。
+
+### 4.2 步骤
+
+以下命令在服务器上执行。`REF` 取要部署的 master commit 的完整 sha，镜像标签使用同一个 sha，保证 compose 文件和镜像版本一致：
+
+```bash
+REF=<master 上的完整 commit sha>
+sudo mkdir -p /opt/akkiabot/production && sudo chown "$USER" /opt/akkiabot/production
+cd /opt/akkiabot/production
+
+base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
+curl -fsSLo compose.yaml "$base/compose.yaml"
+curl -fsSLo backup.sh "$base/backup.sh" && chmod +x backup.sh
+curl -fsSLo .env "$base/.env.example"
+curl -fsSLo app.env "$base/app.env.example"
+chmod 600 .env app.env
+
+# 生成数据库密码，并固定镜像版本
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$REF/" .env
+```
+
+然后用编辑器填写：
+
+- `.env` 中的 `CLOUDFLARED_TOKEN`；
+- `app.env` 中的 `TELEGRAM_BOT_TOKEN` 以及需要的其他配置（§3.3）。
+
+不要用把密钥写在命令行参数里的方式填写（会进入 shell 历史和进程列表）。
+
+启动并等待所有服务健康：
+
+```bash
+docker compose pull
+docker compose up -d --wait
+```
+
+`--wait` 会依次等待 postgres/redis 健康 → migrate 成功退出 → app 的 `/readyz` 通过 → cloudflared 连上 Cloudflare。任何一步失败，命令都会以非零退出码返回，此时按 §5.3 排查。
+
+### 4.3 验证
+
+```bash
+docker compose ps                                   # app、postgres、redis、cloudflared 为 healthy；migrate 为 exited (0)
+curl -fsS http://127.0.0.1:8000/readyz              # {"status":"ok","checks":{"db":true,"cache":true}}
+curl -fsS https://bot-api.akkia.moe/healthz         # 经 tunnel：{"status":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' https://bot-api.akkia.moe/metrics   # 404，指标不经 tunnel 暴露
+docker compose logs --tail 50 app                   # JSON 日志，含 "starting akkiabot" 和带 bot_username 的 "bot started"
+```
+
+最后在 Telegram 中私聊 bot 发送 `/start`、`/help`，确认 bot 有回复。
+
+## 5. 日常运维
+
+### 5.1 升级
+
+```bash
+cd /opt/akkiabot/production
+./backup.sh                                         # 先备份（迁移不可自动回退）
+NEW=<新 commit 的完整 sha>
+base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$NEW/deploy"
+curl -fsSLo compose.yaml "$base/compose.yaml"       # compose 文件有变化时
+sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$NEW/" .env
+docker compose pull && docker compose up -d --wait
+```
+
+`up` 会先用新镜像重新运行 `migrate`，成功后再替换 `app`。升级期间 bot 会有几秒到几十秒不处理 update；Telegram 会保留未拉取的 update，恢复后继续处理。新版本 `.env.example` 或 `app.env.example` 增加了配置项时，按 PR 说明补充到服务器上的文件。
+
+### 5.2 回滚
+
+- **没有数据库迁移的版本**：把 `AKKIABOT_TAG` 改回旧 sha，必要时恢复对应版本的 `compose.yaml`，再执行 `docker compose up -d --wait`。
+- **包含数据库迁移的版本**：`akkiabot migrate` 只负责升级，旧版本代码不保证能使用新表结构。按 §6.2 恢复升级前的备份，再按上一条切回旧 sha。恢复之后、回滚之前产生的数据会丢失，回滚前先在 issue 中确认。
+
+### 5.3 排障
+
+| 现象 | 排查 |
+| --- | --- |
+| `up` 报 `required variable ... is missing a value` | `.env` 中缺少该项，按 §3.1 填写。 |
+| `migrate` 退出码非 0 | `docker compose logs migrate`；常见原因是数据库密码与已初始化的卷不一致。 |
+| app 不健康 | `docker compose logs app`。`invalid configuration` 表示 `app.env` 缺项或格式错误；`/readyz` 返回 503 时，`checks` 字段会标出不可用的依赖。 |
+| cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。 |
+| bot 不回复，日志有 `Conflict: terminated by other getUpdates request` | 同一个 token 有另一个进程在拉取（Go 版 core 或另一套环境），停掉其中一个。 |
+
+常用命令：`docker compose logs -f app`、`docker compose restart app`、`docker compose down`（停止，保留数据卷）。**不要执行 `docker compose down -v`**，它会删除数据库卷。
+
+## 6. 备份与恢复
+
+### 6.1 定时备份
+
+`backup.sh` 通过 `docker compose exec postgres pg_dump` 生成自定义格式的备份 `backups/akkiabot-<UTC 时间>.dump`（文件权限 600）。dump 会先写入临时文件，成功后才改名，失败时不会留下半截文件。默认保留最近 14 份，可以用 `BACKUP_KEEP` 调整，用 `BACKUP_DIR` 改变目录。
+
+用 cron 每天备份一次：
+
+```bash
+crontab -e
+# 每天 03:17（服务器时区）备份生产库
+17 3 * * * cd /opt/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+```
+
+备份保存在同一台服务器上，只能应对误操作和升级失败。需要防范整机故障时，再用 rclone 等工具把 `backups/` 同步到异地存储，这部分由负责人决定，暂不在本仓库实现。Redis 只用作缓存，不需要备份。
+
+### 6.2 恢复
+
+```bash
+cd /opt/akkiabot/production
+docker compose stop app                              # 停止写入
+docker compose exec -T postgres pg_restore -U akkiabot -d akkiabot --clean --if-exists \
+  < backups/akkiabot-<时间>.dump
+docker compose up -d --wait                          # migrate 会把表结构升级到当前镜像的版本
+```
+
+建议每季度在预发布环境演练一次恢复：把生产备份复制到预发布服务器，按上面的步骤恢复，确认 `/readyz` 通过。
+
+## 7. DNS 与 tunnel
+
+| 域名 | 指向 | 用途 |
+| --- | --- | --- |
+| `bot.akkia.moe` | Cloudflare Pages（M7） | Mini App 静态页面 |
+| `bot-api.akkia.moe` | 生产 tunnel → `http://app:8000` | 生产后端 API、webhook |
+| `bot-api-staging.akkia.moe` | 预发布 tunnel → `http://app:8000` | 预发布后端 API |
+
+Mini App 和 API 不同源，后端通过 `CORS_ALLOW_ORIGINS` 放行 `https://bot.akkia.moe`。
+
+每套环境使用**单独的** tunnel，由 Cloudflare 远程管理（转发规则保存在 Cloudflare 控制台）。创建方法（需要 `akkia.moe` 所在 Cloudflare 账号的权限）：
+
+1. Cloudflare 控制台 → Zero Trust → Networks → Tunnels → Create a tunnel，类型选 Cloudflared，名称为 `akkiabot-production`（预发布为 `akkiabot-staging`）。
+2. 在安装步骤页面选 Docker，从显示的命令中复制 `--token` 后面的值，填入该环境 `.env` 的 `CLOUDFLARED_TOKEN`。不需要执行页面上的 `docker run` 命令，compose 会运行 cloudflared。
+3. Public Hostname 只添加一条：子域名 `bot-api`（预发布为 `bot-api-staging`），域名 `akkia.moe`，类型 `HTTP`，URL 为 `app:8000`。Cloudflare 会自动创建对应的 CNAME 记录。
+4. **不要**添加指向 `app:9464` 或其他服务的规则。
+
+## 8. 预发布环境
+
+预发布环境用于 M9（Grafana 接入）和 M10（切换演练）。它使用同一个 `compose.yaml`，区别如下：
+
+| 项目 | 预发布 |
+| --- | --- |
+| 目录 | `/opt/akkiabot/staging`（可以和生产在同一台机器上，也可以单独一台） |
+| `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
+| `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：测试环境的测试 bot（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot-Staging` vault |
+| 域名 | `bot-api-staging.akkia.moe` |
+| 镜像 | 一般跟随 `latest`，或者设为待发布到生产的 sha，用来提前验证 |
+
+步骤（在预发布机器上执行，需要能访问 `AkkiaBot-Staging` vault 的 1Password CLI，例如设置了该 vault 服务账号的 `OP_SERVICE_ACCOUNT_TOKEN`）：
+
+```bash
+REF=<master 上的完整 commit sha>
+sudo mkdir -p /opt/akkiabot/staging && sudo chown "$USER" /opt/akkiabot/staging
+cd /opt/akkiabot/staging
+
+base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
+curl -fsSLo compose.yaml "$base/compose.yaml"
+curl -fsSLo backup.sh "$base/backup.sh" && chmod +x backup.sh
+curl -fsSLo .env "$base/staging/.env.example"
+curl -fsSLo app.env.tpl "$base/staging/app.env.tpl"
+chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+# 用编辑器在 .env 中填入预发布 tunnel 的 CLOUDFLARED_TOKEN
+
+umask 077 && op inject -i app.env.tpl -o app.env     # 值只写入 app.env，不会输出到终端
+docker compose pull && docker compose up -d --wait
+```
+
+验证：
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:8001/readyz
+curl -fsS https://bot-api-staging.akkia.moe/healthz
+curl -s -o /dev/null -w '%{http_code}\n' https://bot-api-staging.akkia.moe/metrics   # 404
+```
+
+测试 bot 是否正常响应，可以用 Telegram 测试环境的账号私聊它，也可以用仓库的自动验收（`just e2e`，方法见 `docs/e2e-acceptance.md`）。注意：`just e2e` 默认会在本机用 `--serve` 启动一个 bot 进程，和预发布栈使用同一个测试 bot token 时会争抢 update。对预发布栈做验收时不要带 `--serve`，直接对已运行的 bot 执行：
+
+```bash
+uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run
+```
+
+（`m2.message-log` 场景需要读取本地进程的日志，只在 `--serve` 下运行。）
+
+1Password 中的测试 bot token 更新后（例如重新执行 `just e2e-bootstrap-bot`），重新执行 `op inject` 和 `docker compose up -d --wait`。
