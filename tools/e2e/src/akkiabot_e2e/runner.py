@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from akkiabot_e2e.config import E2EConfig
 from akkiabot_e2e.errors import CheckFailed, E2EError, RateLimitExceeded, SafetyError
-from akkiabot_e2e.group import prepare_group
+from akkiabot_e2e.group import GroupRegistry, prepare_group
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.report import Report, ScenarioResult
@@ -51,6 +51,7 @@ async def run_acceptance(
     pacer: Pacer | None = None,
     poll_interval: float = 1.0,
     message_log: MessageLogProbe | None = None,
+    registry: GroupRegistry | None = None,
 ) -> Report:
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
     report = Report(run_id=run_id, status="failed", started_at=datetime.now(UTC).isoformat())
@@ -79,6 +80,7 @@ async def run_acceptance(
                 bot=bot,
                 config=config,
                 allow_create=allow_create,
+                registry=registry,
             )
         except (E2EError, OSError) as exc:
             report.detail = f"准备阶段失败：{exc}"
@@ -88,10 +90,6 @@ async def run_acceptance(
 
         report.chat = {"id": group.chat.id, "title": group.chat.title, "created": group.created}
         report.setup = list(group.actions)
-        if group.created:
-            report.setup.append(
-                f"新建的群 id {group.chat.id} 需写入 1Password telegram-e2e/allowed_chat_ids"
-            )
         ctx = ScenarioContext(
             admin=admin,
             member=member,

@@ -36,6 +36,7 @@ from akkiabot_e2e.files import (
     state_home,
     write_private_file,
 )
+from akkiabot_e2e.group import VaultGroupRegistry
 from akkiabot_e2e.login import default_session_file, interactive_login
 from akkiabot_e2e.onepassword import default_token_file, op_exec, token_init
 from akkiabot_e2e.pacing import PacedAccount, Pacer
@@ -272,6 +273,8 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
             raise E2EError("--serve 需要 TELEGRAM_BOT_TOKEN（先执行 just e2e-bootstrap-bot）")
         async with httpx.AsyncClient(timeout=15) as http:
             await check_test_bot(Secret(token), config.bot_username, http)
+    # The group allowlist and the pending create-group operation live in 1Password.
+    registry = VaultGroupRegistry(_vault())
     async with session_lock():
         if not args.serve:
             return await run_acceptance(
@@ -280,6 +283,7 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
                 connect=_telethon_connect(config.api),
                 run_id=run_id,
                 allow_create=args.create_group,
+                registry=registry,
             )
         from akkiabot_e2e.server import ManagedServer
 
@@ -290,6 +294,7 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
                 connect=_telethon_connect(config.api),
                 run_id=run_id,
                 allow_create=args.create_group,
+                registry=registry,
                 message_log=server.logged_message_ids,
             )
             report.server_log = str(server.log_path)
@@ -309,12 +314,6 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         (args.report_dir or state_home() / "runs") / f"{stamp}-{uuid.uuid4().hex[:6]}"
     )
     report = asyncio.run(_live(args, env, run_dir))
-    if report.chat and report.chat.get("created"):
-        try:
-            _vault().add_ids(E2E_ITEM, "allowed_chat_ids", [int(report.chat["id"])])
-            report.setup.append("新群 id 已写入 1Password allowed_chat_ids")
-        except E2EError as exc:
-            report.setup.append(f"写入 allowed_chat_ids 失败，请手动补上：{exc}")
     json_path, md_path = report.save(run_dir, redact)
     print(report.to_markdown(redact))
     print(f"报告：{md_path}\nJSON：{json_path}")

@@ -506,3 +506,43 @@ def add_fake_botfather(world: FakeTelegram, *, taken: int = 0, token: str = MOCK
         return f"Done! Use this token to access the HTTP API:\n{token}\nKeep your token secure."
 
     world.add_private_bot(BOTFATHER, reply)
+
+
+class FakeRegistry:
+    """In-memory :class:`~akkiabot_e2e.group.GroupRegistry` with fault injection.
+
+    ``fail`` maps a method name (``begin`` / ``register`` / ``finish``) to the
+    exception it raises once; use a ``BaseException`` (e.g. :class:`Interrupted`)
+    to simulate the process being killed at that point.
+    """
+
+    def __init__(self, allowed: set[int] | None = None, pending: str | None = None) -> None:
+        self.allowed: set[int] = set(allowed or ())
+        self.pending = pending
+        self.fail: dict[str, BaseException] = {}
+        self.calls: list[str] = []
+
+    def _maybe_fail(self, name: str) -> None:
+        self.calls.append(name)
+        error = self.fail.pop(name, None)
+        if error is not None:
+            raise error
+
+    def pending_operation(self) -> str | None:
+        return self.pending
+
+    def begin(self, op_id: str) -> None:
+        self._maybe_fail("begin")
+        self.pending = op_id
+
+    def register(self, chat_id: int) -> None:
+        self._maybe_fail("register")
+        self.allowed.add(chat_id)
+
+    def finish(self) -> None:
+        self._maybe_fail("finish")
+        self.pending = None
+
+
+class Interrupted(BaseException):
+    """Raised by fakes to stop a run abruptly (not caught as an ``E2EError``)."""
