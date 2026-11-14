@@ -4,6 +4,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // VITE_* variables live in the repository-root .env (see .env.example).
+  envDir: "../..",
   test: {
     environment: "jsdom",
     setupFiles: ["./tests/setup.ts"],

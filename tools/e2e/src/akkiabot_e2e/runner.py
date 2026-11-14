@@ -21,7 +21,7 @@ from akkiabot_e2e.langfuse import LangfuseProbe
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.report import Report, ScenarioResult
-from akkiabot_e2e.scenarios import Scenario, ScenarioContext, TraceProbe
+from akkiabot_e2e.scenarios import Scenario, ScenarioContext, TraceProbe, WebProbe
 from akkiabot_e2e.transport import Account, UserInfo
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,7 @@ async def run_acceptance(
     message_log: MessageLogProbe | None = None,
     traces: TraceProbe | None = None,
     registry: GroupRegistry | None = None,
+    web: WebProbe | None = None,
 ) -> Report:
     """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests)."""
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
@@ -111,6 +112,9 @@ async def run_acceptance(
             poll_interval=poll_interval,
             antispam=config.antispam,
             antispam_wait=config.antispam_wait,
+            web=web,
+            api_base_url=config.api_base_url,
+            webapp_url=config.webapp_url,
         )
         if traces is None and config.langfuse is not None:
             probe = LangfuseProbe(config.langfuse)
@@ -118,6 +122,7 @@ async def run_acceptance(
             traces = probe
         ctx.traces = traces
         await _run_scenarios(ctx, scenarios, report)
+        report.not_automated = list(dict.fromkeys(ctx.not_automated))
         if message_log is not None and ctx.plain_message_ids:
             report.results.append(await _check_message_log(ctx, message_log))
     report.flood_wait_seconds = pacer.waited

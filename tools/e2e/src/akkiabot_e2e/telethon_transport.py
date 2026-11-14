@@ -146,6 +146,7 @@ def _buttons(message: Any) -> tuple[Button, ...]:
                     text=button.text,
                     url=getattr(kind, "url", None),
                     data=getattr(kind, "data", None),
+                    web_app=isinstance(kind, types.InlineButtonTypeWebView),
                 )
             )
     return tuple(buttons)
@@ -360,6 +361,22 @@ class TelethonAccount:
                 )
             )
         )
+
+    async def open_web_app(self, bot: UserInfo, url: str) -> str:
+        # Same request a client sends when the user taps an inline web_app button
+        # in the bot's private chat; Telegram signs initData for this account.
+        peer = await _guard(self._client.get_input_entity(bot.username or bot.id))
+        result: Any = await _guard(
+            self._client(
+                functions.messages.RequestWebViewRequest(
+                    peer=peer, bot=peer, platform="tdesktop", url=url, from_bot_menu=False
+                )
+            )
+        )
+        launch = getattr(result, "url", None)
+        if not isinstance(launch, str):
+            raise E2EError("Telegram 没有返回 Mini App 启动地址")
+        return launch
 
     async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
         try:

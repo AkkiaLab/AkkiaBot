@@ -329,7 +329,7 @@ compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANS
 | `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
 | `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot` vault 的 `staging-bot`、`staging-services` 条目 |
 | 域名 | `bot-api-staging.akkia.moe` |
-| 镜像 | 一般跟随 `latest`，或者设为待发布到生产的 sha，用来提前验证 |
+| 镜像 | 固定为本次 staging 发版的 master sha（§8.1），全量验收通过后，生产使用同一个 sha |
 
 1Password `AkkiaBot` vault 中预发布专用的配置分两个条目：`staging-bot`（bot）与 `staging-cloudflare`（tunnel，以及 dev/staging 共用的 Cloudflare API token）：
 
@@ -383,7 +383,26 @@ curl -s -o /dev/null -w '%{http_code}\n' https://bot-api-staging.akkia.moe/metri
 
 staging bot 是否正常响应：用 Telegram 测试环境的账号私聊 staging bot，发送 `/start`、`/help`、`/id`，确认都有回复。
 
-不要用 `just e2e` 去验收预发布栈：e2e 工具读取的是 `e2e-bot` 条目中的 e2e bot，验收的是本机进程，不是预发布栈。
+不要用 `just e2e` 去验收预发布栈：它读取的是 `e2e-bot` 条目中的 e2e bot，验收的是本机进程。验收预发布栈用 `just e2e-staging`（`tools/e2e/staging-release.env.tpl`，见 `docs/e2e-acceptance.md` §6.2）。
+
+### 8.1 staging 发版
+
+staging 可以累积多个已合并的任务后再发版。发版时，前后端使用同一个 master commit：
+
+```bash
+SHA=<master 上的完整 commit sha，release.yml 已推送该镜像>
+cd /opt/akkiabot/staging
+cp -p .env ".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$SHA/" .env
+# 模板有变化时，先从该 commit 更新 app.env.tpl，再重新渲染
+curl -fsSLo app.env.tpl "https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$SHA/deploy/staging/app.env.tpl"
+(umask 077 && op inject -f -i app.env.tpl -o app.env)
+docker compose pull && docker compose up -d --wait
+curl -fsS https://bot-api-staging.akkia.moe/readyz
+curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 $SHA
+```
+
+然后在仓库检出中执行 `just e2e-staging --record-status "$SHA"`，跑全量自动化验收并写入 `staging-acceptance` 状态。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和冒烟，不重复全量验收。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 

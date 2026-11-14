@@ -9,7 +9,7 @@
 - **可观测性从第一天开始**：每个任务都要为新增功能补上结构化日志字段和指标（见架构文档 §5.5），不留到最后统一补。
 - **旧仓库保持只读**，等新系统正式切换上线后再归档。
 - 每个任务都要附带测试，并通过 CI（lint + type + test）。
-- 验收标准中“在测试群中……”一类的真实 Telegram 行为，在 Telegram 测试环境中用 `just e2e` 自动执行并把报告贴回 issue（方法见 [e2e-acceptance.md](./e2e-acceptance.md)）；Mini App 真实客户端与正式 Turnstile 成功路径仍需单独验收。
+- 验收标准中“在测试群中……”一类的真实 Telegram 行为，在 Telegram 测试环境中自动执行（方法见 [e2e-acceptance.md](./e2e-acceptance.md)）。按**分层验收**（2026-11-14 负责人确认）执行：单个任务只验证受影响部分（`just e2e --scenarios …`，报告贴回 issue）；全量自动化验收在 staging 发版时执行（`just e2e-staging --record-status <sha>`，可以汇总多个任务）；prod 只提升已通过 staging 验收的版本，做配置、健康和冒烟检查。无法自动化的第三方交互（目前只有真实 Turnstile 挑战）要在报告中如实列出，不能用 mock 或测试 key 代替。
 - 规模估算：**S** 不超过约 300 行，**M** 约 300–1000 行，**L** 超过 1000 行（含测试）。
 
 ## 已确认的决策（2026-11-14）
@@ -165,13 +165,13 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
   - `apps/webapp` 中的 `/captcha?challenge=…` 页面：初始化 @telegram-apps/sdk-react，渲染 Turnstile 组件，提交后显示成功、失败或已超时状态并提供重试；成功后关闭 Mini App。
   - 只在 `import.meta.env.DEV` 下启用 Telegram 环境模拟（修复旧版生产环境也使用模拟数据的问题）。
   - 使用 openapi-typescript 生成的类型作为请求客户端；API 地址在构建时由 `VITE_API_BASE_URL` 注入。
-  - Cloudflare Pages 部署：`master` 分支发布到生产环境（自定义域名 `bot.akkia.moe`），PR 生成预览地址；SPA 路由回退：项目不放 `404.html`，Pages 会对未知路径自动返回根 `index.html`；如有需要，也可以显式写 `_redirects`（`/* /index.html 200`），并在验收中直接打开 `/captcha?challenge=…` 验证；缓存头写在 `_headers` 中。采用 Pages 的 Git 集成，或在 GitHub Actions 中用 `wrangler pages deploy` 发布，二选一，实现时决定。
+  - Cloudflare Pages 部署（2026-11-14 调整：staging 与 prod 的发布入口分离，见 [webapp.md](./webapp.md)）：PR 生成预览地址；master 推送发布到 staging（`staging.akkiabot-webapp.pages.dev`）；生产环境（自定义域名 `bot.akkia.moe`）只能通过需审批的提升流程，发布已通过 staging 验收的确定 sha；SPA 路由回退：项目不放 `404.html`，Pages 会对未知路径自动返回根 `index.html`；如有需要，也可以显式写 `_redirects`（`/* /index.html 200`），并在验收中直接打开 `/captcha?challenge=…` 验证；缓存头写在 `_headers` 中。采用 Pages 的 Git 集成，或在 GitHub Actions 中用 `wrangler pages deploy` 发布，二选一，实现时决定。
   - 可选：接入 Sentry 浏览器 SDK，捕获前端异常。
 - **依赖**：M6。
-- **验收标准**
+- **验收标准**（2026-11-14 按分层验收调整，替代“合并后 `bot.akkia.moe` 自动更新”和“真实客户端人工走通”）
   - Vitest 测试覆盖提交流程（模拟 fetch）和错误展示；生产构建产物中不包含 mock 代码（CI 中用 grep 检查）。
-  - PR 的预览地址可以打开；合并后 `https://bot.akkia.moe` 自动更新。
-  - 在真实 Telegram 客户端中走通完整流程：入群 → 私聊 → 打开 Mini App → 完成 Turnstile → 解除禁言。
+  - PR 的预览地址可以打开；master 推送后 staging 地址更新；生产只能经提升流程发布已通过 staging 验收的 sha（锁定版本，只替换环境配置）。
+  - staging 发版的全量自动化验收包含 Mini App 入群验证链路（`m7.captcha`：入群 → 禁言 → 私聊 → 打开 Mini App → 验证接口）；真实 Turnstile 挑战无法自动化，在报告中如实列出。
 
 ### M8 · 生产部署环境　`S`
 

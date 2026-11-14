@@ -15,7 +15,10 @@
 ## 真实 Telegram 验收
 
 - 一律使用 Telegram 测试环境（MTProto 测试 DC、Bot API `/test/` 端点、测试环境 BotFather），无法使用时报错阻塞，不回退生产；产品侧开关为 `TELEGRAM_TEST_ENVIRONMENT`。
-- 涉及真实 Telegram 行为的验收标准（M2 起），用 `just e2e` 执行，方法见 `docs/e2e-acceptance.md`；把报告 `report.md` 贴回对应 issue。缺少凭据时工具以退出码 77 跳过，不能当作通过。
-- 只使用白名单中的两个测试账号和专用测试群；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
-- Mini App 真实客户端和正式 Turnstile 成功路径不能用用户账号自动化或测试站点 key 代替验收。
+- 分层验收（负责人于 2026-11-14 确认，取代“每个需求都完整真实验收”和“staging 客户端验收必须人工完成”的旧要求）：
+  - **单个需求 / PR**：只验证受影响的部分。涉及真实 Telegram 行为时用 `just e2e --scenarios <受影响的里程碑或场景>`（本机 `--serve`），把报告 `report.md` 贴回对应 issue。
+  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行全量自动化验收：`just e2e-staging --record-status <master sha>`。通过后写入 commit status `staging-acceptance`，并在发版记录中写明版本和结果。
+  - **prod 发布**：只提升已通过 staging 验收的 sha（前端用 `webapp-promote.yml`）。只做环境配置检查、健康检查和必要冒烟，不重复全量验收。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
+- 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。
+- 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。

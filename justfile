@@ -57,6 +57,11 @@ test-py *args:
 test-web:
     pnpm -r test
 
+# Production build of the Mini App, then check it carries no dev-only Telegram mock
+build-web:
+    pnpm --filter @akkiabot/webapp build
+    bash apps/webapp/scripts/check-no-dev-mock.sh apps/webapp/dist
+
 # Run pytest against the compose postgres/redis (start them with `just dev` or `just services`)
 test-integration *args:
     AKKIABOT_TEST_DATABASE_URL="postgresql+asyncpg://akkiabot:akkiabot@127.0.0.1:5432/akkiabot" \
@@ -117,6 +122,11 @@ e2e *args:
 # Evaluate the antispam prompt on the offline data set (calls the real LLM; LLM_* / ANTISPAM_* from env or .env)
 antispam-eval *args:
     uv run akkiabot-antispam-eval {{ args }}
+
+# Staging release acceptance: full run against the deployed staging stack (no local bot).
+# Add `--record-status <sha>` to write the GitHub commit status that production promotion requires.
+e2e-staging *args:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging-release.env.tpl -- akkiabot-e2e run {{ args }}
 
 # Regenerate the OpenAPI document and the frontend API types (commit both)
 gen-api:
