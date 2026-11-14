@@ -59,12 +59,14 @@ def make_settings(tmp_path: Path) -> MakeSettings:
         telegram: dict[str, Any] | None = None,
         observability: dict[str, Any] | None = None,
         whois: dict[str, Any] | None = None,
+        **groups: dict[str, Any],
     ) -> Settings:
         return Settings(
             telegram={"bot_token": MOCK_BOT_TOKEN, **(telegram or {})},  # pyright: ignore[reportArgumentType]
             db={"url": f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}"},  # pyright: ignore[reportArgumentType]
             observability={"metrics_enabled": False, **(observability or {})},  # pyright: ignore[reportArgumentType]
             whois=whois or {},  # pyright: ignore[reportArgumentType]
+            **groups,  # pyright: ignore[reportArgumentType]
         )
 
     return make

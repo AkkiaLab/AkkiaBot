@@ -4,11 +4,15 @@
 * ``akkiabot migrate [REVISION]`` — apply Alembic migrations (default ``head``)
   to the database configured by ``DB_URL``. Run it before starting the app.
 * ``akkiabot serve`` — run the bot and the HTTP API in one event loop.
+* ``akkiabot openapi [--output FILE]`` — write the OpenAPI document (used by
+  ``just gen-api``); needs no configuration.
 """
 
 import argparse
+import json
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -31,7 +35,20 @@ def build_parser() -> argparse.ArgumentParser:
     migrate = sub.add_parser("migrate", help="执行数据库迁移（读取 DB_URL）")
     migrate.add_argument("revision", nargs="?", default="head", help="目标版本，默认 head")
     sub.add_parser("serve", help="启动机器人与 HTTP API")
+    openapi = sub.add_parser("openapi", help="输出 OpenAPI 文档（just gen-api 使用）")
+    openapi.add_argument("--output", "-o", type=Path, help="写入文件，默认输出到 stdout")
     return parser
+
+
+def _openapi(output: Path | None) -> int:
+    from akkiabot_server.api import openapi_document
+
+    text = json.dumps(openapi_document(), ensure_ascii=False, indent=2) + "\n"
+    if output is None:
+        print(text, end="")
+    else:
+        output.write_text(text, encoding="utf-8")
+    return 0
 
 
 def _migrate(revision: str) -> int:
@@ -85,6 +102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _migrate(args.revision)
     if args.command == "serve":
         return _serve()
+    if args.command == "openapi":
+        return _openapi(args.output)
     print(f"akkiabot {__version__}")
     return 0
 

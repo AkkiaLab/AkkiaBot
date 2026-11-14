@@ -1,2 +1,5 @@
 packages:
   - apps/webapp
+  # openapi-typescript needs the TypeScript 5 compiler API (TypeScript 7 is
+  # native and has none), so it lives in its own package with its own TypeScript.
+  - tools/api-types
