@@ -72,6 +72,20 @@ WHOIS_LOOKUP_TOTAL = Counter(
     namespace=NAMESPACE,
     registry=REGISTRY,
 )
+MODERATION_ACTIONS_TOTAL = Counter(
+    "moderation_actions_total",
+    "Moderation actions carried out (ban / warn / mute / delete; delete counts messages).",
+    ["action"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+TELEGRAM_API_ERRORS_TOTAL = Counter(
+    "telegram_api_errors_total",
+    "Failed Bot API calls made by business code, by method (rate limits included).",
+    ["method"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
 
 
 def count_update(update_type: str) -> None:
@@ -84,6 +98,16 @@ def count_command(command: str, result: str = "ok") -> None:
 
 def count_whois_lookup(provider: str, result: str) -> None:
     WHOIS_LOOKUP_TOTAL.labels(provider=provider, result=result).inc()
+
+
+def count_moderation_action(action: str, amount: int = 1) -> None:
+    """``action`` is ``ban`` / ``warn`` / ``mute`` / ``delete`` (``amount`` = messages)."""
+    if amount > 0:
+        MODERATION_ACTIONS_TOTAL.labels(action=action).inc(amount)
+
+
+def count_telegram_api_error(method: str) -> None:
+    TELEGRAM_API_ERRORS_TOTAL.labels(method=method).inc()
 
 
 type _AsyncFn[**P, R] = Callable[P, Awaitable[R]]

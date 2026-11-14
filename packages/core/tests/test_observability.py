@@ -15,6 +15,8 @@ from akkiabot_core.observability import (
     REGISTRY,
     configure_logging,
     count_command,
+    count_moderation_action,
+    count_telegram_api_error,
     count_update,
     count_whois_lookup,
     get_log_context,
@@ -223,6 +225,20 @@ def test_whois_lookup_counter() -> None:
     before = sample("whois_lookup_total", provider="ipinfo", result="ok")
     count_whois_lookup("ipinfo", "ok")
     assert sample("whois_lookup_total", provider="ipinfo", result="ok") == before + 1
+
+
+def test_moderation_and_api_error_counters() -> None:
+    ban = sample("moderation_actions_total", action="ban")
+    deleted = sample("moderation_actions_total", action="delete")
+    count_moderation_action("ban")
+    count_moderation_action("delete", 7)
+    count_moderation_action("delete", 0)  # nothing deleted: no change
+    assert sample("moderation_actions_total", action="ban") == ban + 1
+    assert sample("moderation_actions_total", action="delete") == deleted + 7
+
+    errors = sample("telegram_api_errors_total", method="deleteMessages")
+    count_telegram_api_error("deleteMessages")
+    assert sample("telegram_api_errors_total", method="deleteMessages") == errors + 1
 
 
 # ------------------------------------------------------------------- sentry
