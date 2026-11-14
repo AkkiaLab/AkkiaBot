@@ -1,0 +1,8 @@
+**
+!pyproject.toml
+!uv.lock
+!apps/server/pyproject.toml
+!apps/server/src/**
+!packages/*/pyproject.toml
+!packages/*/src/**
+**/__pycache__
