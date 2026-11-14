@@ -3,7 +3,17 @@ name = "akkiabot-core"
 version = "0.1.0"
 description = "共享基础设施：配置、日志、数据库、缓存、领域模型"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "prometheus-client>=0.21",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.8",
+    "redis>=5.2",
+    "sentry-sdk>=2.20",
+    "sqlalchemy[asyncio]>=2.0.36",
+]
 
 [build-system]
 requires = ["uv_build>=0.9,<1"]
