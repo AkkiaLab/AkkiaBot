@@ -7,6 +7,7 @@ Runs the real PTB application and FastAPI app on SQLite; the Bot API is
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 import uuid
@@ -30,6 +31,7 @@ from akkiabot_core.db import (
     session_scope,
 )
 from akkiabot_core.db.types import utcnow
+from akkiabot_core.observability import configure_logging
 from akkiabot_core.telegram import sign_init_data
 from akkiabot_server.api import create_app
 from akkiabot_server.bot.captcha import (
@@ -259,6 +261,7 @@ async def flow(
 
 
 async def test_join_mutes_and_posts_redacted_prompt(flow: Flow, api: FakeBotApi) -> None:
+    started = metric_value("akkiabot_captcha_started_total")
     await flow.join(name="Newbie Person")
 
     assert flow.restricts() == [(NEWBIE, False)]
@@ -277,6 +280,7 @@ async def test_join_mutes_and_posts_redacted_prompt(flow: Flow, api: FakeBotApi)
     assert job_queue is not None
     assert job_queue.get_jobs_by_name(f"{TIMEOUT_JOB}:{challenge.id}")
     assert job_queue.get_jobs_by_name(SWEEP_JOB)
+    assert metric_value("akkiabot_captcha_started_total") == started + 1
 
 
 @pytest.mark.parametrize(
@@ -288,10 +292,12 @@ def test_redact_name(name: str, shown: str) -> None:
 
 
 async def test_join_ignored_when_captcha_disabled(flow: Flow, api: FakeBotApi) -> None:
+    started = metric_value("akkiabot_captcha_started_total")
     await flow.enable(False)
     await flow.join()
     assert api.calls_to("restrictChatMember") == []
     assert await flow.challenges() == []
+    assert metric_value("akkiabot_captcha_started_total") == started
 
 
 async def test_bots_admins_and_non_joins_are_ignored(
@@ -888,3 +894,56 @@ async def test_cors_allows_only_configured_origin(client: httpx.AsyncClient) -> 
 
     denied = await client.options(VERIFY, headers={"Origin": "https://evil.example", **preflight})
     assert "access-control-allow-origin" not in denied.headers
+
+
+# ------------------------------------------------------------------ logs
+
+
+@pytest.fixture
+def json_logs() -> io.StringIO:
+    stream = io.StringIO()
+    configure_logging("INFO", fmt="json", stream=stream)
+    return stream
+
+
+def _captcha_lines(stream: io.StringIO) -> dict[str, dict[str, Any]]:
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return {line["message"]: line for line in lines if line["message"].startswith("captcha")}
+
+
+async def test_flow_can_be_followed_by_chat_id(
+    flow: Flow, client: httpx.AsyncClient, turnstile: respx.Route, json_logs: io.StringIO
+) -> None:
+    """Join (group update) and pass (Mini App request) both carry the group id."""
+    await flow.join()
+    challenge = await flow.pending()
+    response = await client.post(VERIFY, json=body(challenge.id))
+    assert response.status_code == 200, response.text
+
+    lines = _captcha_lines(json_logs)
+    for message in ("captcha challenge created", "captcha passed"):
+        assert lines[message]["chat_id"] == CHAT, message
+        assert lines[message]["user_id"] == NEWBIE, message
+    assert lines["captcha passed"]["trace_id"]
+
+
+async def test_timeout_and_rejection_logs_carry_chat_id(
+    flow: Flow, runtime: Runtime, turnstile: respx.Route, json_logs: io.StringIO
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    with pytest.raises(CaptchaRejectedError):  # someone else's initData
+        await runtime.deps.captcha.verify(
+            PtbCaptchaApi(runtime.application.bot),
+            challenge_id=challenge.id,
+            init_data=init_data(STRANGER),
+            turnstile_token=MOCK_TURNSTILE_TOKEN,
+        )
+    assert await flow.expire_now() == 1
+
+    lines = _captcha_lines(json_logs)
+    rejected = lines["captcha verification rejected"]
+    assert (rejected["chat_id"], rejected["user_id"]) == (CHAT, NEWBIE)
+    assert rejected["reason"] == "wrong_user"
+    timed_out = lines["captcha timed out; member stays muted"]
+    assert (timed_out["chat_id"], timed_out["user_id"]) == (CHAT, NEWBIE)

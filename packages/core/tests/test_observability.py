@@ -16,6 +16,7 @@ from akkiabot_core.observability import (
     configure_logging,
     count_antispam_verdict,
     count_captcha,
+    count_captcha_started,
     count_command,
     count_moderation_action,
     count_telegram_api_error,
@@ -27,6 +28,7 @@ from akkiabot_core.observability import (
     new_trace_id,
     observe_antispam_llm,
     observe_captcha_duration,
+    record_telegram_poll,
     render_metrics,
     setup_observability,
     track_handler,
@@ -260,6 +262,27 @@ def test_captcha_metrics() -> None:
     assert sample("captcha_duration_seconds_count") == count + 2
     assert sample("captcha_duration_seconds_sum") == total + 12.5
     assert sample("captcha_duration_seconds_bucket", le="20.0") >= 1
+
+
+def test_captcha_started_counter() -> None:
+    started = sample("captcha_started_total")
+    count_captcha_started()
+    assert sample("captcha_started_total") == started + 1
+
+
+def test_telegram_poll_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    ok = sample("telegram_poll_total", result="ok")
+    errors = sample("telegram_poll_total", result="error")
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000.0)
+    record_telegram_poll(ok=True)
+    assert sample("telegram_poll_last_success_timestamp_seconds") == 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_900.0)
+    record_telegram_poll(ok=False)  # a failed poll keeps the last success time
+    assert sample("telegram_poll_last_success_timestamp_seconds") == 1_700_000_000.0
+    assert sample("telegram_poll_total", result="ok") == ok + 1
+    assert sample("telegram_poll_total", result="error") == errors + 1
 
 
 def test_antispam_metrics() -> None:

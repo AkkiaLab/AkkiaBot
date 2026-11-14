@@ -9,6 +9,7 @@ from akkiabot_core.observability.metrics import (
     REGISTRY,
     count_antispam_verdict,
     count_captcha,
+    count_captcha_started,
     count_command,
     count_moderation_action,
     count_telegram_api_error,
@@ -16,7 +17,9 @@ from akkiabot_core.observability.metrics import (
     count_whois_lookup,
     observe_antispam_llm,
     observe_captcha_duration,
+    record_telegram_poll,
     render_metrics,
+    start_telegram_poll_heartbeat,
     track_handler,
 )
 from akkiabot_core.observability.sentry import init_sentry
@@ -37,6 +40,7 @@ __all__ = [
     "configure_logging",
     "count_antispam_verdict",
     "count_captcha",
+    "count_captcha_started",
     "count_command",
     "count_moderation_action",
     "count_telegram_api_error",
@@ -48,7 +52,9 @@ __all__ = [
     "new_trace_id",
     "observe_antispam_llm",
     "observe_captcha_duration",
+    "record_telegram_poll",
     "render_metrics",
     "setup_observability",
+    "start_telegram_poll_heartbeat",
     "track_handler",
 ]

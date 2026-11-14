@@ -19,6 +19,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     gc_collector,
     generate_latest,
@@ -108,6 +109,12 @@ TELEGRAM_API_ERRORS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+CAPTCHA_STARTED_TOTAL = Counter(
+    "captcha_started_total",
+    "Join captcha challenges created (the top of the funnel; outcomes in captcha_total).",
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
 CAPTCHA_TOTAL = Counter(
     "captcha_total",
     "Join captcha outcomes: passed, timeout, or failed (a rejected verification attempt).",
@@ -121,6 +128,21 @@ CAPTCHA_DURATION_SECONDS = Histogram(
     namespace=NAMESPACE,
     registry=REGISTRY,
     buckets=(5, 10, 20, 30, 45, 60, 90, 120, 180, 240, 300, 600),
+)
+
+TELEGRAM_POLL_TOTAL = Counter(
+    "telegram_poll_total",
+    "getUpdates long polls, by result (ok / error).",
+    ["result"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+TELEGRAM_POLL_LAST_SUCCESS = Gauge(
+    "telegram_poll_last_success_timestamp_seconds",
+    "Unix time of the last successful getUpdates (set when polling starts, "
+    "0 in webhook mode); a stale value means the bot stopped receiving updates.",
+    namespace=NAMESPACE,
+    registry=REGISTRY,
 )
 
 
@@ -160,6 +182,23 @@ def count_telegram_api_error(method: str) -> None:
 def count_captcha(result: str) -> None:
     """``result`` is ``passed`` / ``timeout`` / ``failed``."""
     CAPTCHA_TOTAL.labels(result=result).inc()
+
+
+def count_captcha_started() -> None:
+    CAPTCHA_STARTED_TOTAL.inc()
+
+
+def start_telegram_poll_heartbeat() -> None:
+    """Polling starts: begin the staleness clock now, so a bot that never
+    manages a successful poll still trips the alert."""
+    TELEGRAM_POLL_LAST_SUCCESS.set_to_current_time()
+
+
+def record_telegram_poll(*, ok: bool) -> None:
+    """One getUpdates round trip finished; ``ok`` = Telegram answered successfully."""
+    TELEGRAM_POLL_TOTAL.labels(result="ok" if ok else "error").inc()
+    if ok:
+        TELEGRAM_POLL_LAST_SUCCESS.set_to_current_time()
 
 
 def observe_captcha_duration(seconds: float) -> None:

@@ -50,11 +50,13 @@ from akkiabot_core.db import (
 from akkiabot_core.db.types import utcnow
 from akkiabot_core.observability import (
     count_captcha,
+    count_captcha_started,
     count_moderation_action,
     count_telegram_api_error,
+    log_context,
     observe_captcha_duration,
 )
-from akkiabot_core.telegram import InitDataError, parse_init_data
+from akkiabot_core.telegram import InitDataError, WebAppInitData, parse_init_data
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.moderation import ModerationApiError, RateLimitedError
 from akkiabot_server.services.start_payload import StartPayloadStore
@@ -150,6 +152,9 @@ class CaptchaRejectedError(Exception):
     def __init__(self, reason: RejectReason) -> None:
         super().__init__(reason.value)
         self.reason = reason
+        self.chat_id: int | None = None
+        self.user_id: int | None = None
+        """Group and member of the challenge, once it was found (for the log)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +282,7 @@ class CaptchaService:
             challenge = _Snapshot.of(
                 await challenges.create(chat_id, user_id, ttl=timedelta(seconds=self.timeout))
             )
+        count_captcha_started()
         for old in superseded:
             await self._delete_prompt(api, old)
 
@@ -351,10 +357,11 @@ class CaptchaService:
             )
         except CaptchaRejectedError as exc:
             count_captcha("failed")
-            logger.info(
-                "captcha verification rejected",
-                extra={"challenge_id": str(challenge_id), "reason": exc.reason.value},
-            )
+            with log_context(chat_id=exc.chat_id, user_id=exc.user_id):
+                logger.info(
+                    "captcha verification rejected",
+                    extra={"challenge_id": str(challenge_id), "reason": exc.reason.value},
+                )
             raise
 
     async def _verify(
@@ -390,6 +397,19 @@ class CaptchaService:
         challenge = await self._load(challenge_id)
         if challenge is None:
             raise CaptchaRejectedError(RejectReason.CHALLENGE_NOT_FOUND)
+        # The request comes from the Mini App, not a group update: bind the
+        # group and the member so the flow can be followed by chat_id in Loki.
+        with log_context(chat_id=challenge.chat_id, user_id=challenge.user_id):
+            try:
+                return await self._verify_challenge(api, challenge, data)
+            except CaptchaRejectedError as exc:
+                exc.chat_id, exc.user_id = challenge.chat_id, challenge.user_id
+                raise
+
+    async def _verify_challenge(
+        self, api: CaptchaApi, challenge: _Snapshot, data: WebAppInitData
+    ) -> VerifyResult:
+        assert data.user is not None  # noqa: S101 - checked by _verify
         self._ensure_open(challenge)
         # 4. same user
         if challenge.user_id != data.user.id:
@@ -501,15 +521,13 @@ class CaptchaService:
 
     async def _timed_out(self, api: CaptchaApi, challenge: _Snapshot) -> None:
         count_captcha("timeout")
-        logger.info(
-            "captcha timed out; member stays muted",
-            extra={
-                "chat_id": challenge.chat_id,
-                "target_user_id": challenge.user_id,
-                "challenge_id": str(challenge.id),
-            },
-        )
-        await self._delete_prompt(api, challenge)
+        # Runs in a job, not for an update: bind the group and the member.
+        with log_context(chat_id=challenge.chat_id, user_id=challenge.user_id):
+            logger.info(
+                "captcha timed out; member stays muted",
+                extra={"target_user_id": challenge.user_id, "challenge_id": str(challenge.id)},
+            )
+            await self._delete_prompt(api, challenge)
 
     # ------------------------------------------------- membership sync
     async def handle_unrestricted(

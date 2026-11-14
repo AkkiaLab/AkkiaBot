@@ -29,6 +29,7 @@ from akkiabot_server.bot.handlers.group import (
 )
 from akkiabot_server.bot.instrumentation import count_incoming_update, instrument, on_error
 from akkiabot_server.bot.jobs import schedule_jobs
+from akkiabot_server.bot.polling import PollHeartbeatRequest, default_get_updates_request
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
 from akkiabot_server.services.captcha import START_KIND as CAPTCHA_START_KIND
@@ -64,10 +65,12 @@ def build_application(
         builder = builder.base_url(BOT_API_TEST_URL).base_file_url(BOT_API_TEST_FILE_URL)
     if request is not None:
         builder = builder.request(request)
-    if get_updates_request is not None:
-        builder = builder.get_updates_request(get_updates_request)
     if webhook:
         builder = builder.updater(None)
+    else:
+        builder = builder.get_updates_request(
+            PollHeartbeatRequest(get_updates_request or default_get_updates_request())
+        )
     application = builder.build()
     attach_deps(application, deps)
     deps.on_start(CONFIG_START_KIND, config_start)

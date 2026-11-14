@@ -1,6 +1,6 @@
 # AkkiaBot 运维手册
 
-本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复，以及 DNS 和预发布环境。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
+本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复，以及 DNS 和预发布环境。日志、指标、dashboard 与告警见 `docs/observability.md`。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
 
 ## 1. 总览
 
@@ -15,10 +15,12 @@ flowchart LR
     migrate[migrate<br/>akkiabot migrate] -.先于 app 运行.-> app
     app --- postgres[(postgres 17)]
     app --- redis[(redis 7)]
+    alloy[alloy<br/>日志 · 指标 · /readyz 探测] -.抓取 :9464 / :8000.-> app
   end
+  alloy -->|Loki / Prometheus| GC[Grafana Cloud]
 ```
 
-`deploy/compose.yaml` 定义了五个服务：
+`deploy/compose.yaml` 定义了六个服务：
 
 | 服务 | 作用 | 网络 | 对外暴露 |
 | --- | --- | --- | --- |
@@ -27,12 +29,14 @@ flowchart LR
 | `migrate` | 执行 `akkiabot migrate` 后退出；成功后才会启动 `app` | backend | 无 |
 | `app` | `akkiabot serve`：bot 和 HTTP API（`/healthz`、`/readyz`、`/telegram/webhook`、`/api/v1/...`） | backend、edge | 仅宿主机回环 `127.0.0.1:${AKKIABOT_HTTP_PORT}` → 8000 |
 | `cloudflared` | Cloudflare tunnel，把公网域名转发到 `http://app:8000` | edge | 无入站端口 |
+| `alloy` | Grafana Alloy：采集本栈容器日志、抓取 `app:9464/metrics`、探测 `/readyz`，推送到 Grafana Cloud（`docs/observability.md`） | telemetry | 无 |
 
 网络边界：
 
 - `backend` 是 internal 网络，没有出网路由；postgres、redis、migrate 只在这个网络里。
 - `edge` 只有 `app` 和 `cloudflared`，tunnel 只需要访问 app。
-- `/metrics` 由单独的监听器提供（容器内 `:9464`），**不发布到宿主机，也不能配置为 tunnel 的目标**。只有同一 compose 网络中的采集器（M9 的 Alloy）可以抓取。tunnel 的转发规则只指向 `http://app:8000`，所以公网访问 `https://bot-api.akkia.moe/metrics` 会得到 404。
+- `telemetry` 只有 `app` 和 `alloy`；它不是 internal 网络，Alloy 经由它推送到 Grafana Cloud。Alloy 只读挂载宿主机的 `/var/run/docker.sock`，用于发现本栈（按 `COMPOSE_PROJECT_NAME` 过滤）的容器并读取日志。
+- `/metrics` 由单独的监听器提供（容器内 `:9464`），**不发布到宿主机，也不能配置为 tunnel 的目标**。只有同一 compose 网络中的采集器（Alloy）可以抓取。tunnel 的转发规则只指向 `http://app:8000`，所以公网访问 `https://bot-api.akkia.moe/metrics` 会得到 404。
 
 ## 2. 服务器上的文件
 
@@ -45,6 +49,7 @@ flowchart LR
 ├── app.env                     # 应用配置，来自 deploy/app.env.example；chmod 600
 ├── backup.sh                   # 来自仓库 deploy/backup.sh
 ├── restore.sh                  # 来自仓库 deploy/restore.sh
+├── observability/config.alloy  # 来自仓库 deploy/observability/config.alloy（compose 按相对路径挂载）
 └── backups/                    # pg_dump 备份及 backup.log（部署时用 install -d -m 700 创建）
 ```
 
@@ -62,8 +67,12 @@ flowchart LR
 | `AKKIABOT_HTTP_PORT` | 否 | app 在宿主机回环地址上的端口，默认 8000。同一台机器跑两套环境时错开（预发布用 8001）。 |
 | `POSTGRES_PASSWORD` | 是 | 数据库密码。它会被拼进 `DB_URL`，只能用字母和数字：`openssl rand -hex 32`。第一次启动后数据库已用该密码初始化，之后修改需要同时在库内改密码。 |
 | `CLOUDFLARED_TOKEN` | 是 | 本环境 Cloudflare tunnel 的 token（§7）。 |
+| `AKKIABOT_ENV` | 否 | 日志和指标上的 `env` 标签，默认 `production`；预发布为 `staging`。dashboard 和告警按它区分环境。 |
+| `GRAFANA_CLOUD_PROMETHEUS_URL`、`GRAFANA_CLOUD_PROMETHEUS_USER` | 是 | Grafana Cloud Prometheus 的 remote_write 地址（`…/api/prom/push`）和实例 ID。 |
+| `GRAFANA_CLOUD_LOKI_URL`、`GRAFANA_CLOUD_LOKI_USER` | 是 | Grafana Cloud Loki 的推送地址（`…/loki/api/v1/push`）和实例 ID。 |
+| `GRAFANA_CLOUD_TOKEN` | 是 | Access policy token，权限 `metrics:write`、`logs:write`。1Password：生产 `prod-grafana`，预发布 `staging-grafana`。 |
 
-缺少 `POSTGRES_PASSWORD` 或 `CLOUDFLARED_TOKEN` 时，`docker compose` 会直接报错退出，不会用默认值启动。
+缺少 `POSTGRES_PASSWORD`、`CLOUDFLARED_TOKEN` 或任何 `GRAFANA_CLOUD_*` 时，`docker compose` 会直接报错退出，不会用默认值启动。
 
 ### 3.2 由 compose 设定的应用配置
 
@@ -74,7 +83,7 @@ flowchart LR
 | `DB_URL` | `postgresql+asyncpg://akkiabot:<POSTGRES_PASSWORD>@postgres:5432/akkiabot` | 数据库连接（日志中密码显示为 `***`）。 |
 | `REDIS_URL` | `redis://redis:6379/0` | 留空时使用进程内缓存，本栈始终使用 Redis。 |
 | `SERVER_HOST`、`SERVER_PORT` | `0.0.0.0`、`8000` | HTTP API 监听地址。 |
-| `OBSERVABILITY_LOG_FORMAT` | `json` | 结构化日志写到 stdout，由 Docker 的 json-file 驱动保存（单文件 10 MB，保留 5 个）；M9 由 Alloy 采集。 |
+| `OBSERVABILITY_LOG_FORMAT` | `json` | 结构化日志写到 stdout，由 Docker 的 json-file 驱动保存（单文件 10 MB，保留 5 个），由 Alloy 采集到 Loki。 |
 | `OBSERVABILITY_METRICS_HOST`、`OBSERVABILITY_METRICS_PORT` | `0.0.0.0`、`9464` | `/metrics` 监听器。只在 compose 网络内可达，见 §1。 |
 
 ### 3.3 应用配置（`app.env`）
@@ -145,6 +154,7 @@ base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
 curl -fsSLo backup.sh "$base/backup.sh"
 curl -fsSLo restore.sh "$base/restore.sh"
+curl -fsSLo observability/config.alloy --create-dirs "$base/observability/config.alloy"
 chmod +x backup.sh restore.sh
 install -d -m 700 backups                           # 定时备份的日志也写在这里，必须先建好
 curl -fsSLo .env "$base/.env.example"
@@ -158,7 +168,7 @@ sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$REF/" .env
 
 然后用编辑器填写：
 
-- `.env` 中的 `CLOUDFLARED_TOKEN`；
+- `.env` 中的 `CLOUDFLARED_TOKEN` 和 `GRAFANA_CLOUD_*`（1Password `prod-grafana`，见 `docs/observability.md`）；
 - `app.env` 中的 `TELEGRAM_BOT_TOKEN` 以及需要的其他配置（§3.3）。
 
 不要用把密钥写在命令行参数里的方式填写（会进入 shell 历史和进程列表）。
@@ -175,7 +185,7 @@ docker compose up -d --wait
 ### 4.3 验证
 
 ```bash
-docker compose ps                                   # app、postgres、redis、cloudflared 为 healthy；migrate 为 exited (0)
+docker compose ps                                   # app、postgres、redis、cloudflared 为 healthy；alloy 为 running；migrate 为 exited (0)
 curl -fsS http://127.0.0.1:8000/readyz              # {"status":"ok","checks":{"db":true,"cache":true}}
 curl -fsS https://bot-api.akkia.moe/healthz         # 经 tunnel：{"status":"ok"}
 curl -s -o /dev/null -w '%{http_code}\n' https://bot-api.akkia.moe/metrics   # 404，指标不经 tunnel 暴露
@@ -195,6 +205,7 @@ grep '^AKKIABOT_TAG=' .env                           # 记下当前（旧）sha�
 NEW=<新 commit 的完整 sha>
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$NEW/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"       # compose 文件有变化时
+curl -fsSLo observability/config.alloy --create-dirs "$base/observability/config.alloy"
 sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$NEW/" .env
 docker compose pull && docker compose up -d --wait
 ```
@@ -240,6 +251,7 @@ docker compose up -d --wait
 | `migrate` 退出码非 0 | `docker compose logs migrate`；常见原因是数据库密码与已初始化的卷不一致。 |
 | app 不健康 | `docker compose logs app`。`invalid configuration` 表示 `app.env` 缺项或格式错误；`/readyz` 返回 503 时，`checks` 字段会标出不可用的依赖。 |
 | cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。日志中的 `Registered tunnel connection` 应带 `protocol=http2`；反复出现 `Connection terminated` 时，检查到 Cloudflare 边缘的出站 TCP 7844 是否被防火墙拦截或不稳定（见 §7）。 |
+| Grafana 中没有数据 | `docker compose logs alloy`：`401`/`403` 表示 `GRAFANA_CLOUD_TOKEN` 或实例 ID 不对；`permission denied ... docker.sock` 表示宿主机 docker socket 不可读。详见 `docs/observability.md`。 |
 | bot 不回复，日志有 `Conflict: terminated by other getUpdates request` | 同一个 token 有另一个进程在拉取（Go 版 core 或另一套环境），停掉其中一个。 |
 
 常用命令：`docker compose logs -f app`、`docker compose restart app`、`docker compose down`（停止，保留数据卷）。**不要执行 `docker compose down -v`**，它会删除数据库卷。
@@ -326,6 +338,7 @@ compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANS
 | `staging-bot`：`bot_token`、`bot_username` | staging bot（测试环境 BotFather 创建，当前为 `@akkiabot_staging_669a8d_bot`）。它和 e2e 自动验收用的 bot（`e2e-bot` 条目）是两个不同的 bot，所以 `just e2e --serve` 不会和预发布栈争抢 update。 |
 | `staging-cloudflare`：`cloudflared_token`、`tunnel_id` | 预发布 tunnel `akkiabot-staging` 的 token 和 ID |
 | `staging-bot`：`environment` | 固定为 `test` |
+| `staging-grafana` | dev/staging 共用的 Grafana Cloud：Alloy 推送用的地址、实例 ID 与 `cloud_token`，以及上传 dashboard 和告警用的 `grafana_url`、`grafana_sa_token`（`docs/observability.md`） |
 
 tunnel 和 DNS 记录可以按 §7 在控制台创建，也可以用 `staging-cloudflare/api_token`（dev/staging 共用的 token，权限：Account · Cloudflare Tunnel · Edit、Cloudflare Pages · Edit、Turnstile · Edit，Zone · DNS · Edit、Zone · Read，zone 范围仅 `akkia.moe`；生产使用 `prod-cloudflare/api_token`）通过 Cloudflare API 创建，效果相同：远程管理的 tunnel，ingress 只有 `bot-api-staging.akkia.moe → http://app:8000`，其余请求返回 `http_status:404`；外加一条代理的 CNAME `bot-api-staging` → `<tunnel_id>.cfargotunnel.com`。
 
@@ -340,10 +353,12 @@ base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
 curl -fsSLo backup.sh "$base/backup.sh"
 curl -fsSLo restore.sh "$base/restore.sh"
+curl -fsSLo observability/config.alloy --create-dirs "$base/observability/config.alloy"
 chmod +x backup.sh restore.sh
 install -d -m 700 backups                           # 定时备份的日志也写在这里，必须先建好
 curl -fsSLo .env "$base/staging/.env.example"
 curl -fsSLo app.env.tpl "$base/staging/app.env.tpl"
+curl -fsSLo grafana.env.tpl "$base/staging/grafana.env.tpl"
 chmod 600 .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
 
@@ -352,6 +367,8 @@ umask 077
 op inject -f -i app.env.tpl -o app.env
 sed -i '/^CLOUDFLARED_TOKEN=/d' .env
 echo 'CLOUDFLARED_TOKEN={{ op://AkkiaBot/staging-cloudflare/cloudflared_token }}' | op inject >> .env
+sed -i '/^GRAFANA_CLOUD_/d' .env
+op inject -i grafana.env.tpl >> .env               # Alloy → Grafana Cloud（staging-grafana 条目）
 docker compose pull && docker compose up -d --wait
 ```
 
@@ -389,4 +406,4 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
-1Password 中 `staging-*` 条目的值更新后，重新执行上面的两条 `op inject` 和 `docker compose up -d --wait`。
+1Password 中 `staging-*` 条目的值更新后，重新执行上面的三条 `op inject` 和 `docker compose up -d --wait`。

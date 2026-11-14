@@ -36,6 +36,14 @@ STACK_WIRED = {
     "OBSERVABILITY_METRICS_HOST",
     "OBSERVABILITY_METRICS_PORT",
 }
+#: Grafana Cloud wiring for Alloy; compose must refuse to start without them.
+GRAFANA_VARS = (
+    "GRAFANA_CLOUD_PROMETHEUS_URL",
+    "GRAFANA_CLOUD_PROMETHEUS_USER",
+    "GRAFANA_CLOUD_LOKI_URL",
+    "GRAFANA_CLOUD_LOKI_USER",
+    "GRAFANA_CLOUD_TOKEN",
+)
 #: Settings that hold credentials: templates may only reference them via op://.
 SECRET_KEYS = {
     "TELEGRAM_BOT_TOKEN",
@@ -84,7 +92,7 @@ def _settings_env_names() -> set[str]:
 
 
 def test_stack_services() -> None:
-    assert set(_services()) == {"app", "migrate", "postgres", "redis", "cloudflared"}
+    assert set(_services()) == {"app", "migrate", "postgres", "redis", "cloudflared", "alloy"}
 
 
 def test_migrate_runs_before_app() -> None:
@@ -137,6 +145,29 @@ def test_healthchecks_present() -> None:
     assert services["cloudflared"]["depends_on"]["app"]["condition"] == "service_healthy"
 
 
+def test_alloy_only_on_telemetry_network() -> None:
+    compose = _compose()
+    services = compose["services"]
+    alloy = services["alloy"]
+    assert alloy["networks"] == ["telemetry"]
+    assert "ports" not in alloy, "Alloy has nothing to publish"
+    assert "depends_on" not in alloy, "keep reporting /readyz failures while the app is down"
+    assert "internal" not in compose["networks"]["telemetry"]  # pushes to Grafana Cloud
+    on_telemetry = {n for n, s in services.items() if "telemetry" in s.get("networks", [])}
+    assert on_telemetry == {"app", "alloy"}
+    env = alloy["environment"]
+    assert env["AKKIABOT_METRICS_TARGET"] == f"app:{METRICS_PORT}"
+    assert env["AKKIABOT_READYZ_URL"] == f"http://app:{APP_PORT}/readyz"
+    sources = [v.split(":")[0] for v in alloy["volumes"]]
+    assert "./observability/config.alloy" in sources
+    assert (DEPLOY / "observability" / "config.alloy").is_file()
+
+
+def test_staging_labels_its_telemetry() -> None:
+    assert _env_keys(DEPLOY / "staging" / ".env.example")["AKKIABOT_ENV"] == "staging"
+    assert _env_keys(DEPLOY / ".env.example")["AKKIABOT_ENV"] == "production"
+
+
 def test_tunnel_uses_http2() -> None:
     """QUIC (UDP) dropped repeatedly on the staging host; both stacks use HTTP/2 over TCP."""
     assert _services()["cloudflared"]["environment"]["TUNNEL_TRANSPORT_PROTOCOL"] == "http2"
@@ -152,7 +183,7 @@ def test_operations_documents_tunnel_port() -> None:
 
 def test_data_lives_in_named_volumes() -> None:
     compose = _compose()
-    assert set(compose["volumes"]) == {"postgres-data", "redis-data"}
+    assert set(compose["volumes"]) == {"postgres-data", "redis-data", "alloy-data"}
     assert "postgres-data:/var/lib/postgresql/data" in compose["services"]["postgres"]["volumes"]
 
 
@@ -173,6 +204,7 @@ def test_compose_variables_documented(path: Path) -> None:
     # Secrets are left for the operator to fill in.
     assert keys["POSTGRES_PASSWORD"] == ""
     assert keys["CLOUDFLARED_TOKEN"] == ""
+    assert all(keys[name] == "" for name in GRAFANA_VARS)
 
 
 def test_staging_stack_does_not_collide_with_production() -> None:
@@ -204,6 +236,12 @@ def test_staging_template_uses_test_bot_and_op_references() -> None:
         assert keys[key].startswith("op://AkkiaBot/staging-"), key
 
 
+def test_staging_grafana_template_covers_compose_wiring() -> None:
+    keys = _env_keys(DEPLOY / "staging" / "grafana.env.tpl")
+    assert set(keys) == set(GRAFANA_VARS)
+    assert all(v.startswith("op://AkkiaBot/staging-grafana/") for v in keys.values())
+
+
 def test_staging_uses_its_own_bot() -> None:
     """The e2e bot (item ``e2e-bot``) is polled by ``just e2e --serve``; staging must not share it."""
     keys = _env_keys(DEPLOY / "staging" / "app.env.tpl")
@@ -212,9 +250,10 @@ def test_staging_uses_its_own_bot() -> None:
     assert keys["TELEGRAM_BOT_TOKEN"] != e2e["TELEGRAM_BOT_TOKEN"]
 
 
-def test_staging_template_comments_have_no_references() -> None:
+@pytest.mark.parametrize("name", ["app.env.tpl", "grafana.env.tpl"])
+def test_staging_template_comments_have_no_references(name: str) -> None:
     """``op inject`` resolves every reference, including ones inside comments."""
-    for line in (DEPLOY / "staging" / "app.env.tpl").read_text(encoding="utf-8").splitlines():
+    for line in (DEPLOY / "staging" / name).read_text(encoding="utf-8").splitlines():
         if line.lstrip().startswith("#"):
             assert "op://" not in line, line
 
@@ -245,9 +284,15 @@ def test_compose_config_resolves(tmp_path: Path) -> None:
     shutil.copy(DEPLOY / "app.env.example", tmp_path / "app.env")
     env_example = (DEPLOY / ".env.example").read_text(encoding="utf-8")
     (tmp_path / ".env").write_text(
-        env_example.replace("POSTGRES_PASSWORD=", "POSTGRES_PASSWORD=fakepasswordfortests").replace(
-            "CLOUDFLARED_TOKEN=", "CLOUDFLARED_TOKEN=fake-tunnel-token-for-tests"
-        ),
+        env_example.replace("POSTGRES_PASSWORD=", "POSTGRES_PASSWORD=fakepasswordfortests")
+        .replace("CLOUDFLARED_TOKEN=", "CLOUDFLARED_TOKEN=fake-tunnel-token-for-tests")
+        .replace(
+            "GRAFANA_CLOUD_PROMETHEUS_URL=", "GRAFANA_CLOUD_PROMETHEUS_URL=https://prom.invalid"
+        )
+        .replace("GRAFANA_CLOUD_PROMETHEUS_USER=", "GRAFANA_CLOUD_PROMETHEUS_USER=1")
+        .replace("GRAFANA_CLOUD_LOKI_URL=", "GRAFANA_CLOUD_LOKI_URL=https://loki.invalid")
+        .replace("GRAFANA_CLOUD_LOKI_USER=", "GRAFANA_CLOUD_LOKI_USER=2")
+        .replace("GRAFANA_CLOUD_TOKEN=", "GRAFANA_CLOUD_TOKEN=fake-grafana-token-for-tests"),
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -267,6 +312,13 @@ def test_compose_config_resolves(tmp_path: Path) -> None:
     assert app["environment"]["TELEGRAM_MODE"] == "polling"  # merged from app.env
     published = [(p.get("host_ip"), int(p["target"])) for p in app["ports"]]
     assert published == [("127.0.0.1", APP_PORT)]
+    alloy = config["services"]["alloy"]
+    assert alloy["environment"]["AKKIABOT_COMPOSE_PROJECT"] == "akkiabot"
+    assert alloy["environment"]["AKKIABOT_ENV"] == "production"
+    mounts = {v["target"]: v for v in alloy["volumes"]}
+    assert Path(mounts["/etc/alloy/config.alloy"]["source"]) == tmp_path / "observability" / (
+        "config.alloy"
+    )
 
 
 def test_compose_requires_secrets() -> None:
@@ -276,6 +328,9 @@ def test_compose_requires_secrets() -> None:
     assert "${CLOUDFLARED_TOKEN:?" in text
     assert "${POSTGRES_PASSWORD:-" not in text
     assert "${CLOUDFLARED_TOKEN:-" not in text
+    for name in GRAFANA_VARS:
+        assert f"${{{name}:?" in text, name
+        assert f"${{{name}:-" not in text, name
 
 
 # ----------------------------------------------------------------- backup

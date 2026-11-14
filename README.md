@@ -8,6 +8,7 @@ AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Clou
 - 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
 - 真实 Telegram 验收（Telegram 测试环境 + 1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
 - 部署与运维（生产 / 预发布 compose、配置项、升级回滚、备份、DNS）：[docs/operations.md](docs/operations.md)
+- 可观测性（Grafana Alloy、dashboard、告警、本地 Grafana）：[docs/observability.md](docs/observability.md)
 - 仓库约定（密钥、日志、验收）：[AGENTS.md](AGENTS.md)
 
 ## 开发
