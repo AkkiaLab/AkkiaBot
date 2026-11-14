@@ -229,7 +229,7 @@ docker compose up -d --wait
 | `up` 报 `required variable ... is missing a value` | `.env` 中缺少该项，按 §3.1 填写。 |
 | `migrate` 退出码非 0 | `docker compose logs migrate`；常见原因是数据库密码与已初始化的卷不一致。 |
 | app 不健康 | `docker compose logs app`。`invalid configuration` 表示 `app.env` 缺项或格式错误；`/readyz` 返回 503 时，`checks` 字段会标出不可用的依赖。 |
-| cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。 |
+| cloudflared 不健康 | `docker compose logs cloudflared`；检查 token 是否属于本环境的 tunnel，以及 tunnel 的 public hostname 是否指向 `http://app:8000`。日志中的 `Registered tunnel connection` 应带 `protocol=http2`；反复出现 `Connection terminated` 时，检查出站 TCP 443 是否稳定。 |
 | bot 不回复，日志有 `Conflict: terminated by other getUpdates request` | 同一个 token 有另一个进程在拉取（Go 版 core 或另一套环境），停掉其中一个。 |
 
 常用命令：`docker compose logs -f app`、`docker compose restart app`、`docker compose down`（停止，保留数据卷）。**不要执行 `docker compose down -v`**，它会删除数据库卷。
@@ -283,6 +283,8 @@ Mini App 和 API 不同源，后端通过 `CORS_ALLOW_ORIGINS` 放行 `https://b
 2. 在安装步骤页面选 Docker，从显示的命令中复制 `--token` 后面的值，填入该环境 `.env` 的 `CLOUDFLARED_TOKEN`。不需要执行页面上的 `docker run` 命令，compose 会运行 cloudflared。
 3. Public Hostname 只添加一条：子域名 `bot-api`（预发布为 `bot-api-staging`），域名 `akkia.moe`，类型 `HTTP`，URL 为 `app:8000`。Cloudflare 会自动创建对应的 CNAME 记录。
 4. **不要**添加指向 `app:9464` 或其他服务的规则。
+
+compose 中的 cloudflared 固定使用 HTTP/2（TCP 443）连接 Cloudflare（`TUNNEL_TRANSPORT_PROTOCOL=http2`），不使用默认的 QUIC（UDP 7844）：预发布主机上 QUIC 连接多次超时断开，健康检查随之反复失败。服务器只需要允许出站 TCP 443。
 
 ## 8. 预发布环境
 

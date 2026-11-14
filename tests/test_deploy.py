@@ -135,6 +135,11 @@ def test_healthchecks_present() -> None:
     assert services["cloudflared"]["depends_on"]["app"]["condition"] == "service_healthy"
 
 
+def test_tunnel_uses_http2() -> None:
+    """QUIC (UDP) dropped repeatedly on the staging host; both stacks use HTTP/2 over TCP."""
+    assert _services()["cloudflared"]["environment"]["TUNNEL_TRANSPORT_PROTOCOL"] == "http2"
+
+
 def test_data_lives_in_named_volumes() -> None:
     compose = _compose()
     assert set(compose["volumes"]) == {"postgres-data", "redis-data"}

@@ -106,6 +106,9 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARED_TOKEN:?set CLOUDFLARED_TOKEN in .env}
       TUNNEL_METRICS: 127.0.0.1:20241
+      # HTTP/2 over TCP instead of the default QUIC (UDP): QUIC dropped repeatedly
+      # on the staging host (BOT-14); used for production too.
+      TUNNEL_TRANSPORT_PROTOCOL: http2
       NO_AUTOUPDATE: "true"
     depends_on:
       app:
