@@ -44,11 +44,13 @@ class Entity:
 
 @dataclass(frozen=True, slots=True)
 class Button:
-    """An inline keyboard button: either a URL or a callback button."""
+    """An inline keyboard button: a URL, a callback or a Mini App (``web_app``) button."""
 
     text: str
     url: str | None = None
     data: bytes | None = None
+    web_app: bool = False
+    """``url`` opens a Mini App (Bot API ``web_app`` button) instead of a link."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,14 @@ class Account(Protocol):
 
     async def click(self, chat_id: int, message_id: int, data: bytes) -> str | None:
         """Press a callback button; returns the bot's answer text (``None`` if none)."""
+        ...
+
+    async def open_web_app(self, bot: UserInfo, url: str) -> str:
+        """Open the Mini App behind a ``web_app`` button sent by ``bot`` in its private chat.
+
+        Returns the launch URL Telegram hands to the client: ``url`` plus a
+        ``#tgWebAppData=…`` fragment with the initData signed for this account.
+        """
         ...
 
     async def history(self, chat_id: int, *, min_id: int, limit: int = 50) -> list[Msg]:

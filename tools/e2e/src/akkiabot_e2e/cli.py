@@ -23,6 +23,7 @@ from pathlib import Path
 
 from akkiabot_e2e.config import (
     ApiCredentials,
+    E2EConfig,
     build_redactor,
     env_float,
     load_api_credentials,
@@ -41,11 +42,19 @@ from akkiabot_e2e.login import default_session_file, interactive_login
 from akkiabot_e2e.onepassword import default_token_file, op_exec, token_init
 from akkiabot_e2e.pacing import PacedAccount, Pacer
 from akkiabot_e2e.redaction import Redactor, Secret
+from akkiabot_e2e.release import (
+    DEFAULT_REPO,
+    STATUS_CONTEXT,
+    check_sha,
+    deployed_webapp_sha,
+    record_status,
+)
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import Connect, run_acceptance
-from akkiabot_e2e.scenarios import SCENARIOS, select_scenarios
+from akkiabot_e2e.scenarios import SCENARIOS, Scenario, select_scenarios
 from akkiabot_e2e.transport import UserInfo
 from akkiabot_e2e.vault import BOT_ITEM, E2E_ITEM, FieldValue, Vault, shred_file
+from akkiabot_e2e.web import HttpWebProbe
 
 EXIT_PASSED, EXIT_FAILED, EXIT_USAGE, EXIT_SKIPPED = 0, 1, 2, 77
 DEFAULT_ENV_FILE = Path("tools/e2e/staging.env.tpl")
@@ -92,6 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--serve", action="store_true", help="在本进程旁启动 akkiabot serve 作为被测 bot"
     )
     run.add_argument("--report-dir", type=Path, default=None)
+    run.add_argument(
+        "--record-status",
+        metavar="SHA",
+        default=None,
+        help=(
+            "staging 发版验收：先确认 E2E_WEBAPP_URL 的 version.json 就是该 commit，"
+            "全量运行后把结果写为 GitHub commit status staging-acceptance"
+        ),
+    )
 
     sub.add_parser("list", help="列出验收场景")
     return parser
@@ -267,7 +285,6 @@ def session_lock() -> AbstractAsyncContextManager[None]:
 async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path) -> Report:
     config = load_config(env)
     selected = select_scenarios(args.scenarios)
-    run_id = run_dir.name
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     if args.serve or token:
         import httpx
@@ -278,6 +295,37 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
             raise E2EError("--serve 需要 TELEGRAM_BOT_TOKEN（先执行 just e2e-bootstrap-bot）")
         async with httpx.AsyncClient(timeout=15) as http:
             await check_test_bot(Secret(token), config.bot_username, http)
+    web = HttpWebProbe() if config.api_base_url or config.webapp_url else None
+    try:
+        if args.record_status:
+            await _check_release_target(args.record_status, config.webapp_url, web)
+        return await _run_live(args, env, run_dir, config, selected, web)
+    finally:
+        if web is not None:
+            await web.aclose()
+
+
+async def _check_release_target(sha: str, webapp_url: str | None, web: HttpWebProbe | None) -> None:
+    check_sha(sha)
+    if webapp_url is None or web is None:
+        raise E2EError("--record-status 需要 E2E_WEBAPP_URL（被验收的 staging Mini App 地址）")
+    deployed = await deployed_webapp_sha(web, webapp_url)
+    if deployed != sha:
+        raise E2EError(
+            f"{webapp_url} 当前部署的是 {deployed or '未知版本'}，不是要验收的 {sha}；"
+            "先把该 commit 发布到 staging"
+        )
+
+
+async def _run_live(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    run_dir: Path,
+    config: E2EConfig,
+    selected: list[Scenario],
+    web: HttpWebProbe | None,
+) -> Report:
+    run_id = run_dir.name
     # The group allowlist and the pending create-group operation live in 1Password.
     registry = VaultGroupRegistry(_vault())
     async with session_lock():
@@ -289,6 +337,7 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
                 run_id=run_id,
                 allow_create=args.create_group,
                 registry=registry,
+                web=web,
             )
         from akkiabot_e2e.server import ManagedServer
 
@@ -301,6 +350,7 @@ async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path)
                 allow_create=args.create_group,
                 registry=registry,
                 message_log=server.logged_message_ids,
+                web=web,
             )
             report.server_log = str(server.log_path)
             return report
@@ -313,6 +363,12 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         print(_skipped_report(missing).to_markdown(redact))
         return EXIT_SKIPPED
     select_scenarios(args.scenarios)  # validate before touching Telegram
+    if args.record_status:
+        check_sha(args.record_status)
+        if args.scenarios or args.serve:
+            raise E2EError(
+                "--record-status 只用于针对已部署 staging 的全量验收，不能与 --scenarios / --serve 同用"
+            )
     _setup_logging()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = ensure_private_dir(
@@ -322,6 +378,11 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     json_path, md_path = report.save(run_dir, redact)
     print(report.to_markdown(redact))
     print(f"报告：{md_path}\nJSON：{json_path}")
+    if args.record_status:
+        state = record_status(
+            args.record_status, report, repo=env.get("GITHUB_REPOSITORY") or DEFAULT_REPO
+        )
+        print(f"已写入 commit status {STATUS_CONTEXT}={state}（{args.record_status}）")
     return EXIT_PASSED if report.status == "passed" else EXIT_FAILED
 
 

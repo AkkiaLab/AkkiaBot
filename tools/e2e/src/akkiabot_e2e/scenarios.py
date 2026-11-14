@@ -1,4 +1,4 @@
-"""M2 / M3 / M4 / M5 acceptance scenarios, driven by real user accounts.
+"""M2–M5 and M7 acceptance scenarios, driven by real user accounts.
 
 Each scenario sends messages as a test user, waits for the bot's reply and
 checks what a user actually sees: the rendered text (MarkdownV2 must be
@@ -8,8 +8,10 @@ consumed, i.e. no escape backslashes) and the code entities around values.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+import urllib.parse
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -26,6 +28,28 @@ class TraceProbe(Protocol):
     async def wait_for_markers(
         self, markers: Sequence[str], *, since: datetime
     ) -> dict[str, int]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HttpResult:
+    status: int
+    text: str
+    headers: Mapping[str, str] = field(default_factory=dict)
+    """Lower-cased header names."""
+
+    def json(self) -> Any:
+        try:
+            return json.loads(self.text)
+        except ValueError:
+            return None
+
+
+class WebProbe(Protocol):
+    """Plain HTTP against the deployed Mini App and API (M7)."""
+
+    async def get(self, url: str) -> HttpResult: ...
+
+    async def post_json(self, url: str, body: Mapping[str, Any], *, origin: str) -> HttpResult: ...
 
 
 @dataclass(slots=True)
@@ -49,6 +73,13 @@ class ScenarioContext:
     classified_markers: list[str] = field(default_factory=list)
     """Markers of messages the bot must have classified (checked in Langfuse)."""
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    web: WebProbe | None = None
+    api_base_url: str | None = None
+    """Public API of the bot under test (M7)."""
+    webapp_url: str | None = None
+    """Expected Mini App origin (M7); ``None`` accepts whatever the bot links to."""
+    not_automated: list[str] = field(default_factory=list)
+    """Steps a scenario could not perform automatically; reported, never counted as passed."""
 
     def record(self, step: str, msg: Msg | None = None, **extra: Any) -> None:
         item: dict[str, Any] = {"step": step}
@@ -567,6 +598,155 @@ async def langfuse_scenario(ctx: ScenarioContext) -> None:
     check(not missing, f"Langfuse 中没有这些判定的记录：{missing}")
 
 
+# ------------------------------------------------------------------ M7
+
+CAPTCHA_LABEL = "入群验证"
+CAPTCHA_PROMPT_BUTTON = "开始入群验证"
+CAPTCHA_START_TEXT = "点击下方按钮完成入群验证"
+#: Placeholder sent as the Turnstile token. A real token needs a person to solve
+#: the challenge in a browser; the API must reject this one.
+UNSOLVED_TURNSTILE_TOKEN = "e2e-unsolved-turnstile-token"  # noqa: S105 - not a credential
+_CHALLENGE = re.compile(
+    r"/captcha\?challenge=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+TURNSTILE_NOT_AUTOMATED = (
+    "m7.captcha：真实 Turnstile 挑战的完成与随后的解除禁言需要真人在浏览器中完成，"
+    "工具不求解挑战、也不使用测试 key；本次只验证到“未通过 Turnstile 的提交被拒绝且成员保持禁言”"
+)
+
+
+def require_web(ctx: ScenarioContext) -> tuple[WebProbe, str]:
+    if ctx.web is None or ctx.api_base_url is None:
+        raise ScenarioSkipped(
+            "未配置 E2E_API_BASE_URL（被测环境的公开 API），无法验收 Mini App 链路"
+        )
+    return ctx.web, ctx.api_base_url
+
+
+async def set_captcha(ctx: ScenarioContext, enabled: bool) -> None:
+    menu = await open_config_menu(ctx)
+    if _enabled(menu, CAPTCHA_LABEL) is not enabled:
+        await toggle(ctx, menu, CAPTCHA_LABEL)
+    ctx.record(f"入群验证开关已{'开启' if enabled else '关闭'}")
+
+
+async def wait_captcha_prompt(ctx: ScenarioContext, after: int) -> str:
+    """The bot's group prompt for the member; returns its ``start`` payload."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ctx.reply_timeout
+    while True:
+        for msg in await ctx.admin.history(ctx.chat.id, min_id=after):
+            button = msg.button(CAPTCHA_PROMPT_BUTTON)
+            if msg.sender_id == ctx.bot.id and button is not None and button.url:
+                ctx.record("bot 在群内发送验证提示", msg, link=button.url)
+                check(
+                    str(ctx.member_user.id) in msg.text or ctx.member_user.first_name in msg.text,
+                    "验证提示没有提到入群成员",
+                )
+                token = _START_TOKEN.search(button.url)
+                check(
+                    button.url.startswith(f"https://t.me/{ctx.bot.username}?")
+                    and token is not None,
+                    f"验证按钮 {button.url!r} 不是指向被测 bot 的深链",
+                )
+                assert token is not None  # noqa: S101 - narrowed by check()
+                return token.group(1)
+        if loop.time() >= deadline:
+            raise CheckFailed(f"成员入群后 {ctx.reply_timeout:g} 秒内没有看到 bot 的验证提示")
+        await asyncio.sleep(ctx.poll_interval)
+
+
+def launch_init_data(launch_url: str) -> str:
+    """The raw ``tgWebAppData`` (initData) from a Mini App launch URL fragment."""
+    fragment = urllib.parse.urlsplit(launch_url).fragment
+    values = urllib.parse.parse_qs(fragment, keep_blank_values=True).get("tgWebAppData", [])
+    return values[0] if values else ""
+
+
+async def captcha_scenario(ctx: ScenarioContext) -> None:
+    """Join → muted → prompt → private /start → Mini App → API, as the member really sees it."""
+    web, api = require_web(ctx)
+    await set_captcha(ctx, True)
+    try:
+        if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is not None:
+            await ctx.member.leave(ctx.chat.id)
+            ctx.record("成员退群")
+        anchor = await post_anchor(ctx, "M7 入群验证开始")
+        link = await ctx.admin.export_invite_link(ctx.chat.id)
+        await ctx.member.join_by_link(link)
+        ctx.record("成员通过邀请链接入群")
+        token = await wait_captcha_prompt(ctx, anchor.id)
+        await wait_restricted(ctx)
+
+        request = await ctx.member.send(ctx.bot.id, f"/start {token}")
+        ctx.record("成员在私聊中打开验证深链", request)
+        reply = await wait_for_reply(ctx, ctx.member, request)
+        ctx.record("bot 私聊回复", reply, buttons=[b.text for b in reply.buttons])
+        check(CAPTCHA_START_TEXT in reply.text, f"私聊回复不是验证入口：{reply.text!r}")
+        button = next((b for b in reply.buttons if b.web_app and b.url), None)
+        check(button is not None, "私聊回复中没有打开 Mini App 的 web_app 按钮")
+        assert button is not None  # noqa: S101 - narrowed by check()
+        assert button.url is not None  # noqa: S101
+        page_url = button.url
+        match = _CHALLENGE.search(page_url)
+        check(match is not None, f"Mini App 地址 {page_url!r} 不是 /captcha?challenge=<uuid>")
+        origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(page_url))
+        if ctx.webapp_url is not None:
+            check(origin == ctx.webapp_url, f"Mini App 来源 {origin} 不是预期的 {ctx.webapp_url}")
+
+        launch = await ctx.member.open_web_app(ctx.bot, page_url)
+        init_data = launch_init_data(launch)
+        fields = urllib.parse.parse_qs(init_data)
+        user = json.loads(fields.get("user", ["{}"])[0] or "{}")
+        ctx.record(
+            "Telegram 签发 Mini App 启动参数",
+            init_data_length=len(init_data),
+            init_data_fields=sorted(fields),
+        )
+        check("hash" in fields and "auth_date" in fields, "启动参数中没有签名过的 initData")
+        check(user.get("id") == ctx.member_user.id, "initData 中的用户不是入群成员")
+
+        page = await web.get(page_url)
+        ctx.record(
+            "打开 Mini App 页面", status=page.status, cache=page.headers.get("cache-control")
+        )
+        check(page.status == 200, f"Mini App 页面返回 HTTP {page.status}")
+        check('<div id="root">' in page.text, "Mini App 页面不是预期的单页应用")
+
+        body = {
+            "challenge_id": match.group(1) if match else "",
+            "init_data": init_data,
+            "turnstile_token": UNSOLVED_TURNSTILE_TOKEN,
+        }
+        result = await web.post_json(f"{api}/api/v1/captcha/verify", body, origin=origin)
+        answer = result.json() or {}
+        ctx.record(
+            "以未通过 Turnstile 的 token 提交验证",
+            status=result.status,
+            error=answer.get("error"),
+            cors=result.headers.get("access-control-allow-origin"),
+        )
+        check(
+            result.headers.get("access-control-allow-origin") == origin,
+            f"API 没有对 Mini App 来源 {origin} 放行 CORS",
+        )
+        check(
+            result.status == 400 and answer.get("error") == "turnstile_failed",
+            f"未通过 Turnstile 的提交应返回 400 turnstile_failed，实际为 {result.status} {answer}",
+        )
+        still = await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id)
+        ctx.record("提交被拒绝后检查成员状态", restricted=still)
+        check(still, "Turnstile 未通过，成员却被解除了禁言")
+        ctx.not_automated.append(TURNSTILE_NOT_AUTOMATED)
+    finally:
+        # Switch the captcha off first so that restoring the member cannot mute it again.
+        try:
+            await set_captcha(ctx, False)
+        finally:
+            await restore_member(ctx)
+            await restore_unmuted(ctx)
+
+
 SCENARIOS: tuple[Scenario, ...] = (
     # M5 first: the spam check only applies to members with at most 3 recorded
     # messages, and every scenario below makes the member post more.
@@ -596,6 +776,12 @@ SCENARIOS: tuple[Scenario, ...] = (
         "M5",
         "成员不能举报群主；群主 /spam 直接封禁并删除历史消息",
         spam_command_scenario,
+    ),
+    Scenario(
+        "m7.captcha",
+        "M7",
+        "入群被禁言 → 群内提示 → 私聊深链 → Mini App（真实签名 initData）→ 验证接口与 CORS",
+        captcha_scenario,
     ),
     # Last: it makes the member leave and rejoin the group.
     Scenario(

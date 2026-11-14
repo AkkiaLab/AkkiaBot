@@ -69,6 +69,10 @@ class E2EConfig:
     langfuse: LangfuseCredentials | None = None
     antispam_wait: float = 20.0
     """How long M5 waits to be sure a message is *not* acted upon."""
+    api_base_url: str | None = None
+    """Public API of the bot under test (``E2E_API_BASE_URL``); M7 calls the captcha endpoint."""
+    webapp_url: str | None = None
+    """Mini App origin the bot under test links to (``E2E_WEBAPP_URL``); checked by M7."""
 
 
 def missing_variables(env: Mapping[str, str], names: tuple[str, ...] = REQUIRED) -> list[str]:
@@ -132,7 +136,18 @@ def load_config(env: Mapping[str, str]) -> E2EConfig:
         antispam=not missing_variables(env, ("LLM_API_KEY", "LLM_MODEL")),
         langfuse=load_langfuse(env),
         antispam_wait=env_float(env, "E2E_ANTISPAM_WAIT", 20.0),
+        api_base_url=_url(env, "E2E_API_BASE_URL"),
+        webapp_url=_url(env, "E2E_WEBAPP_URL"),
     )
+
+
+def _url(env: Mapping[str, str], name: str) -> str | None:
+    value = env.get(name, "").strip().rstrip("/")
+    if not value:
+        return None
+    if not value.startswith("https://"):
+        raise ConfigError(f"{name} 必须是 https:// 地址")
+    return value
 
 
 def load_langfuse(env: Mapping[str, str]) -> LangfuseCredentials | None:

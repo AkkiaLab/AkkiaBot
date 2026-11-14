@@ -99,3 +99,25 @@ async def test_flood_wait_is_translated() -> None:
     with pytest.raises(FloodWait) as info:
         await _guard(flood())
     assert info.value.seconds == 17
+
+
+def test_web_app_button_is_marked() -> None:
+    markup = types.ReplyInlineMarkup(
+        rows=[
+            types.KeyboardInlineButtonRow(
+                buttons=[
+                    types.KeyboardInlineButton(
+                        text="开始验证",
+                        type=types.InlineButtonTypeWebView(
+                            url="https://w.example/captcha?challenge=x"
+                        ),
+                    )
+                ]
+            )
+        ]
+    )
+    message = types.Message(
+        id=1, peer_id=types.PeerUser(5), date=NOW, message="go", reply_markup=markup
+    )
+    (button,) = _msg(5, message).buttons
+    assert (button.url, button.web_app) == ("https://w.example/captcha?challenge=x", True)

@@ -8,13 +8,17 @@ can prove that the scenarios catch them.
 from __future__ import annotations
 
 import itertools
+import json
+import urllib.parse
+import uuid
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from akkiabot_e2e.errors import E2EError, FloodWait
 from akkiabot_e2e.redaction import Secret
+from akkiabot_e2e.scenarios import HttpResult
 from akkiabot_e2e.transport import Account, Button, ChatRef, Entity, Msg, Role, UserInfo
 
 ADMIN = UserInfo(1001, "群主测试", "e2e_admin")
@@ -44,6 +48,8 @@ def live_env(**overrides: str) -> dict[str, str]:
         "E2E_ANTISPAM_WAIT": "0.01",
         "LLM_API_KEY": MOCK_LLM_API_KEY,
         "LLM_MODEL": "fake-model",
+        "E2E_API_BASE_URL": "https://api.example.test",
+        "E2E_WEBAPP_URL": "https://webapp.example.test",
     }
     env.update(overrides)
     return env
@@ -116,10 +122,18 @@ class FakeBot:
     """Check long-standing members too."""
     antispam_no_mute: bool = False
     """Delete spam but never mute."""
+    # -- M7 knobs --
+    webapp_origin: str = field(default="https://webapp.example.test", init=False)
+    captcha_no_mute: bool = False
+    """Post the prompt but never mute the newcomer."""
+    captcha_plain_link: bool = False
+    """Answer /start with a URL button instead of a web_app button."""
     # -- state --
     settings: dict[int, dict[str, bool]] = field(default_factory=dict, init=False)
     warns: dict[tuple[int, int], int] = field(default_factory=dict, init=False)
     tokens: dict[str, tuple[int, int]] = field(default_factory=dict, init=False)
+    challenges: dict[str, tuple[int, int, str]] = field(default_factory=dict, init=False)
+    """start token → (chat id, user id, challenge id)."""
     _token_ids: itertools.count[int] = field(default_factory=itertools.count, init=False)
 
     def _switches(self, chat_id: int) -> dict[str, bool]:
@@ -145,9 +159,43 @@ class FakeBot:
         )
         return f"群名：{chat.title}\n功能开关（点击切换）", buttons
 
+    def on_join(self, world: FakeTelegram, chat: FakeChat, user_id: int) -> None:
+        """Captcha: mute the newcomer and post the prompt with a deep link."""
+        if not self._switches(chat.id)["captcha"] or chat.members.get(user_id) != "member":
+            return
+        if not self.captcha_no_mute:
+            chat.restricted.add(user_id)
+        token = f"cap{next(self._token_ids)}"
+        self.challenges[token] = (chat.id, user_id, str(uuid.uuid4()))
+        user = world.users[user_id]
+        link = f"https://t.me/{self.user.username}?start={token}"
+        world.post(
+            chat,
+            self.user.id,
+            f"你好 {user.first_name} 👋\n请在 5 分钟内完成入群验证。",
+            buttons=(Button("👉点击此处开始入群验证👈", url=link),),
+        )
+
+    def challenge_of(self, challenge_id: str) -> tuple[int, int] | None:
+        for chat_id, user_id, challenge in self.challenges.values():
+            if challenge == challenge_id:
+                return chat_id, user_id
+        return None
+
     def respond_private(self, world: FakeTelegram, private: FakeChat, msg: Msg) -> None:
         command, _, token = msg.text.partition(" ")
         if command != "/start":
+            return
+        if token in self.challenges:
+            _, user_id, challenge = self.challenges[token]
+            if user_id != msg.sender_id:
+                world.post(
+                    private, self.user.id, "❌该验证按钮不属于你，请使用你自己的链接进行验证❌"
+                )
+                return
+            url = f"{self.webapp_origin}/captcha?challenge={challenge}"
+            button = Button("开始验证", url=url, web_app=not self.captcha_plain_link)
+            world.post(private, self.user.id, "👇点击下方按钮完成入群验证👇", buttons=(button,))
             return
         bound = self.tokens.pop(token, None)
         if bound is None:
@@ -271,6 +319,8 @@ class FakeBot:
                 self.user.id, frozenset()
             ):
                 chat.messages.pop(msg.id, None)
+            if msg.service == "chat_joined_by_link" and msg.sender_id is not None:
+                self.on_join(world, chat, msg.sender_id)
             return
         if not msg.text.startswith("/"):
             self.check_spam(world, chat, msg)
@@ -518,6 +568,17 @@ class FakeAccount:
         assert chat_id == bot.user.id  # noqa: S101 - only the bot sends buttons here
         return bot.on_callback(self.world, self.user.id, self._chat(chat_id), message_id, data)
 
+    async def open_web_app(self, bot: UserInfo, url: str) -> str:
+        self._op("open_web_app")
+        # mock: unsigned stand-in for the initData Telegram would sign.
+        mock_init_data = urllib.parse.urlencode(
+            {"user": json.dumps({"id": self.user.id}), "auth_date": "1", "hash": "fake-hash"}
+        )
+        fragment = urllib.parse.urlencode(
+            {"tgWebAppData": mock_init_data, "tgWebAppVersion": "8.0"}
+        )
+        return f"{url}#{fragment}"
+
     async def send(self, chat_id: int, text: str, *, reply_to: int | None = None) -> Msg:
         self._op("send")
         return self.world.post(self._chat(chat_id), self.user.id, text, reply_to=reply_to)
@@ -533,6 +594,51 @@ class FakeAccount:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeWeb:
+    """The deployed Mini App + captcha API of :class:`FakeBot` (M7).
+
+    Like the real API it checks Turnstile first, so a placeholder token is
+    rejected with ``turnstile_failed``.
+    """
+
+    def __init__(
+        self,
+        world: FakeTelegram,
+        *,
+        cors: bool = True,
+        accept_any_token: bool = False,
+        page_status: int = 200,
+    ) -> None:
+        self.world = world
+        self.cors = cors
+        self.accept_any_token = accept_any_token
+        """Regression: unmute without a solved Turnstile challenge."""
+        self.page_status = page_status
+        self.requests: list[tuple[str, str]] = []
+
+    def _bot(self) -> FakeBot:
+        assert self.world.bot is not None  # noqa: S101
+        return self.world.bot
+
+    async def get(self, url: str) -> HttpResult:
+        self.requests.append(("GET", url))
+        if not url.startswith(self._bot().webapp_origin):
+            return HttpResult(404, "not found")
+        return HttpResult(self.page_status, '<!doctype html><div id="root"></div>')
+
+    async def post_json(self, url: str, body: Mapping[str, object], *, origin: str) -> HttpResult:
+        self.requests.append(("POST", url))
+        bot = self._bot()
+        headers = {"access-control-allow-origin": origin} if self.cors else {}
+        if not self.accept_any_token:
+            answer = {"error": "turnstile_failed", "message": "人机验证未通过，请重试。"}
+            return HttpResult(400, json.dumps(answer), headers)
+        target = bot.challenge_of(str(body.get("challenge_id")))
+        if target is not None:
+            self.world.chats[target[0]].restricted.discard(target[1])
+        return HttpResult(200, json.dumps({"status": "passed", "message": "ok"}), headers)
 
 
 class FakeTraces:

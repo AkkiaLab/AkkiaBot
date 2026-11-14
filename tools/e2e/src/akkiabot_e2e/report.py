@@ -39,6 +39,9 @@ class Report:
     results: list[ScenarioResult] = field(default_factory=list)
     flood_wait_seconds: float = 0.0
     server_log: str | None = None
+    not_automated: list[str] = field(default_factory=list)
+    """Steps the run could not perform automatically (e.g. a real Turnstile
+    challenge). They are listed, never counted as passed."""
 
     def finish(self) -> None:
         """Overall status: passed only if at least one scenario ran and all passed."""
@@ -64,6 +67,8 @@ class Report:
             lines.append(f"- 因限流等待：{self.flood_wait_seconds:g} 秒")
         if self.detail:
             lines.append(f"- 说明：{self.detail}")
+        for item in self.not_automated:
+            lines.append(f"- 未自动化（不计入通过）：{item}")
         if self.results:
             lines += ["", "| 场景 | 里程碑 | 结果 | 说明 |", "| --- | --- | --- | --- |"]
             for r in self.results:
