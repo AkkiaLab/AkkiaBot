@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal, override
 
@@ -34,6 +34,21 @@ class Redactor:
         # Very short values would mask random substrings; ignore them.
         new = {s for s in secrets if len(s) >= 4} | set(self._secrets)
         self._secrets = sorted(new, key=len, reverse=True)
+
+    def redact_value(self, value: Any) -> Any:
+        """Recursively redact strings in ``value``; non-JSON objects become ``str``."""
+        if isinstance(value, str):
+            return self(value)
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        if isinstance(value, Mapping):
+            return {
+                self(str(k)): self.redact_value(v)
+                for k, v in value.items()  # pyright: ignore[reportUnknownVariableType]
+            }
+        if isinstance(value, list | tuple | set | frozenset):
+            return [self.redact_value(v) for v in value]  # pyright: ignore[reportUnknownVariableType]
+        return self(str(value))
 
     def __call__(self, text: str) -> str:
         for secret in self._secrets:
@@ -66,7 +81,9 @@ class JsonFormatter(logging.Formatter):
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
             payload["stack_info"] = self.formatStack(record.stack_info)
-        return self.redactor(json.dumps(payload, ensure_ascii=False, default=str))
+        # Redact the raw values *before* serialising: JSON escaping would turn
+        # a secret containing `"`, `\\` or a newline into a different string.
+        return json.dumps(self.redactor.redact_value(payload), ensure_ascii=False)
 
 
 class ConsoleFormatter(logging.Formatter):

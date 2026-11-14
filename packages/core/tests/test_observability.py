@@ -126,6 +126,35 @@ def test_secrets_redacted(log_stream: io.StringIO) -> None:
     assert "https://api.telegram.org/bot***/getUpdates" in out
 
 
+TRICKY_SECRET = 'p"a\\ss\nw\u00f6rd'
+
+
+def test_secrets_with_json_special_chars_redacted() -> None:
+    stream = io.StringIO()
+    handler = configure_logging("INFO", secrets=[TRICKY_SECRET], stream=stream)
+    log = logging.getLogger("t")
+    try:
+        log.info("password is %s", TRICKY_SECRET)
+        log.info("extra", extra={"cfg": {"db": [f"x{TRICKY_SECRET}y"]}, TRICKY_SECRET: 1})
+        log.info("obj", extra={"obj": RuntimeError(TRICKY_SECRET)})
+        try:
+            raise ValueError(TRICKY_SECRET)
+        except ValueError:
+            log.exception("failed")
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+    raw = stream.getvalue()
+    decoded = [json.loads(line) for line in raw.splitlines()]
+    assert TRICKY_SECRET not in json.dumps(decoded, ensure_ascii=False)
+    assert TRICKY_SECRET not in raw
+    assert decoded[0]["message"] == "password is ***"
+    assert decoded[1]["cfg"] == {"db": ["x***y"]}
+    assert decoded[1]["***"] == 1
+    assert decoded[2]["obj"] == "***"
+    assert "ValueError: ***" in decoded[3]["exc_info"]
+
+
 def test_redactor_ignores_tiny_secrets() -> None:
     assert Redactor(["ab", ""])("abc") == "abc"
 
