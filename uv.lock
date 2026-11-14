@@ -144,6 +144,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
     { name = "respx" },
     { name = "ruff" },
 ]
@@ -159,6 +160,7 @@ dev = [
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "respx", specifier = ">=0.22" },
     { name = "ruff", specifier = ">=0.11" },
 ]
