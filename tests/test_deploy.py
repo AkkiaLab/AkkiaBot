@@ -201,13 +201,13 @@ def test_staging_template_uses_test_bot_and_op_references() -> None:
     keys = _env_keys(DEPLOY / "staging" / "app.env.tpl")
     assert keys["TELEGRAM_TEST_ENVIRONMENT"] == "true"
     for key in SECRET_KEYS & set(keys):
-        assert keys[key].startswith("op://AkkiaBot-Staging/"), key
+        assert keys[key].startswith("op://AkkiaBot/staging-"), key
 
 
 def test_staging_uses_its_own_bot() -> None:
-    """The e2e bot (item ``runtime``) is polled by ``just e2e --serve``; staging must not share it."""
+    """The e2e bot (item ``e2e-bot``) is polled by ``just e2e --serve``; staging must not share it."""
     keys = _env_keys(DEPLOY / "staging" / "app.env.tpl")
-    assert keys["TELEGRAM_BOT_TOKEN"] == "op://AkkiaBot-Staging/staging/bot_token"
+    assert keys["TELEGRAM_BOT_TOKEN"] == "op://AkkiaBot/staging-bot/bot_token"
     e2e = _env_keys(REPO_ROOT / "tools" / "e2e" / "staging.env.tpl")
     assert keys["TELEGRAM_BOT_TOKEN"] != e2e["TELEGRAM_BOT_TOKEN"]
 

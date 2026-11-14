@@ -48,7 +48,7 @@ flowchart LR
 └── backups/                    # pg_dump 备份及 backup.log（部署时用 install -d -m 700 创建）
 ```
 
-`.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。生产密钥由负责人保管（不放在 `AkkiaBot-Staging` vault）。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
+`.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。密钥都在 1Password 的 `AkkiaBot` vault 中：生产用 `prod-*` 条目（如 `prod-cloudflare`、`prod-bot`，由负责人填写），预发布与本地开发共用 `staging-*` 条目。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
 
 ## 3. 配置项
 
@@ -315,21 +315,21 @@ compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANS
 | --- | --- |
 | 目录 | `/opt/akkiabot/staging`（可以和生产在同一台机器上，也可以单独一台） |
 | `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
-| `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot-Staging` vault |
+| `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot` vault 的 `staging-bot`、`staging-services` 条目 |
 | 域名 | `bot-api-staging.akkia.moe` |
 | 镜像 | 一般跟随 `latest`，或者设为待发布到生产的 sha，用来提前验证 |
 
-1Password `AkkiaBot-Staging` vault 的 `staging` 条目保存预发布专用的配置：
+1Password `AkkiaBot` vault 中预发布专用的配置分两个条目：`staging-bot`（bot）与 `staging-cloudflare`（tunnel，以及 dev/staging 共用的 Cloudflare API token）：
 
 | 字段 | 内容 |
 | --- | --- |
-| `bot_token`、`bot_username` | staging bot（测试环境 BotFather 创建，当前为 `@akkiabot_staging_669a8d_bot`）。它和 e2e 自动验收用的 bot（`runtime` 条目）是两个不同的 bot，所以 `just e2e --serve` 不会和预发布栈争抢 update。 |
-| `cloudflared_token`、`tunnel_id` | 预发布 tunnel `akkiabot-staging` 的 token 和 ID |
-| `environment` | 固定为 `test` |
+| `staging-bot`：`bot_token`、`bot_username` | staging bot（测试环境 BotFather 创建，当前为 `@akkiabot_staging_669a8d_bot`）。它和 e2e 自动验收用的 bot（`e2e-bot` 条目）是两个不同的 bot，所以 `just e2e --serve` 不会和预发布栈争抢 update。 |
+| `staging-cloudflare`：`cloudflared_token`、`tunnel_id` | 预发布 tunnel `akkiabot-staging` 的 token 和 ID |
+| `staging-bot`：`environment` | 固定为 `test` |
 
-tunnel 和 DNS 记录可以按 §7 在控制台创建，也可以用 `cloudflare` 条目中的 API token（权限：Account · Cloudflare Tunnel · Edit，Zone · DNS · Edit，Zone · Zone · Read，范围仅 `akkia.moe`）通过 Cloudflare API 创建，效果相同：远程管理的 tunnel，ingress 只有 `bot-api-staging.akkia.moe → http://app:8000`，其余请求返回 `http_status:404`；外加一条代理的 CNAME `bot-api-staging` → `<tunnel_id>.cfargotunnel.com`。
+tunnel 和 DNS 记录可以按 §7 在控制台创建，也可以用 `staging-cloudflare/api_token`（dev/staging 共用的 token，权限：Account · Cloudflare Tunnel · Edit、Cloudflare Pages · Edit、Turnstile · Edit，Zone · DNS · Edit、Zone · Read，zone 范围仅 `akkia.moe`；生产使用 `prod-cloudflare/api_token`）通过 Cloudflare API 创建，效果相同：远程管理的 tunnel，ingress 只有 `bot-api-staging.akkia.moe → http://app:8000`，其余请求返回 `http_status:404`；外加一条代理的 CNAME `bot-api-staging` → `<tunnel_id>.cfargotunnel.com`。
 
-步骤（在预发布机器上执行，需要能访问 `AkkiaBot-Staging` vault 的 1Password CLI，例如设置了该 vault 服务账号的 `OP_SERVICE_ACCOUNT_TOKEN`）：
+步骤（在预发布机器上执行，需要能访问 `AkkiaBot` vault 的 1Password CLI，例如设置了该 vault 服务账号的 `OP_SERVICE_ACCOUNT_TOKEN`）：
 
 ```bash
 REF=<master 上的完整 commit sha>
@@ -351,7 +351,7 @@ sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
 umask 077
 op inject -f -i app.env.tpl -o app.env
 sed -i '/^CLOUDFLARED_TOKEN=/d' .env
-echo 'CLOUDFLARED_TOKEN={{ op://AkkiaBot-Staging/staging/cloudflared_token }}' | op inject >> .env
+echo 'CLOUDFLARED_TOKEN={{ op://AkkiaBot/staging-cloudflare/cloudflared_token }}' | op inject >> .env
 docker compose pull && docker compose up -d --wait
 ```
 
@@ -366,8 +366,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://bot-api-staging.akkia.moe/metri
 
 staging bot 是否正常响应：用 Telegram 测试环境的账号私聊 staging bot，发送 `/start`、`/help`、`/id`，确认都有回复。
 
-不要用 `just e2e` 去验收预发布栈：e2e 工具读取的是 `runtime` 条目中的 e2e bot，验收的是本机进程，不是预发布栈。
+不要用 `just e2e` 去验收预发布栈：e2e 工具读取的是 `e2e-bot` 条目中的 e2e bot，验收的是本机进程，不是预发布栈。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
-1Password 中 `staging` 条目的值更新后，重新执行上面的两条 `op inject` 和 `docker compose up -d --wait`。
+1Password 中 `staging-*` 条目的值更新后，重新执行上面的两条 `op inject` 和 `docker compose up -d --wait`。

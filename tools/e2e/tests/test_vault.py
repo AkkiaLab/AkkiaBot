@@ -54,7 +54,7 @@ class FakeOp:
         if verb == "get":
             item = self.items.get(argv[3])
             if item is None:
-                return 1, b"", b'[ERROR] "x" isn\'t an item in the "AkkiaBot-Staging" vault.'
+                return 1, b"", b'[ERROR] "x" isn\'t an item in the "AkkiaBot" vault.'
             return 0, json.dumps(item).encode(), b""
         data = json.loads(stdin or b"{}")
         old = self.items.get(data.get("title", ""), {})
@@ -74,15 +74,15 @@ def labels(op: FakeOp, title: str) -> dict[str, tuple[str, str | None]]:
 
 
 def test_set_fields_edits_existing_item_via_stdin_only() -> None:
-    op = FakeOp({"telegram-e2e": [{"id": "a", "label": "api_id", "type": "STRING", "value": "1"}]})
+    op = FakeOp({"e2e-telegram": [{"id": "a", "label": "api_id", "type": "STRING", "value": "1"}]})
 
-    Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
+    Vault(run=op).set_fields("e2e-telegram", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
 
     assert MOCK_ADMIN_SESSION not in op.argv_text()
     edit = [stdin for argv, stdin in op.calls if argv[:3] == ["op", "item", "edit"]]
     assert len(edit) == 1
     assert MOCK_ADMIN_SESSION in (edit[0] or b"").decode()
-    assert labels(op, "telegram-e2e") == {
+    assert labels(op, "e2e-telegram") == {
         "api_id": ("STRING", "1"),
         "admin_session": ("CONCEALED", MOCK_ADMIN_SESSION),
     }
@@ -90,24 +90,24 @@ def test_set_fields_edits_existing_item_via_stdin_only() -> None:
 
 def test_set_fields_creates_missing_item() -> None:
     op = FakeOp()
-    Vault(run=op).set_fields("runtime", {"bot_token": FieldValue(MOCK_VAULT_BOT_TOKEN)})
-    assert ["op", "item", "create", "--vault=AkkiaBot-Staging", "-"] in [a for a, _ in op.calls]
-    assert labels(op, "runtime") == {"bot_token": ("CONCEALED", MOCK_VAULT_BOT_TOKEN)}
+    Vault(run=op).set_fields("e2e-bot", {"bot_token": FieldValue(MOCK_VAULT_BOT_TOKEN)})
+    assert ["op", "item", "create", "--vault=AkkiaBot", "-"] in [a for a, _ in op.calls]
+    assert labels(op, "e2e-bot") == {"bot_token": ("CONCEALED", MOCK_VAULT_BOT_TOKEN)}
     assert "fake-token" not in op.argv_text()
 
 
 def test_write_errors_are_redacted_and_readback_is_checked() -> None:
-    op = FakeOp({"telegram-e2e": []})
+    op = FakeOp({"e2e-telegram": []})
     op.fail = "edit"
     with pytest.raises(ConfigError, match="写入") as info:
-        Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
+        Vault(run=op).set_fields("e2e-telegram", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)})
     assert MOCK_ADMIN_SESSION not in str(info.value)
 
     op.fail, op.corrupt_reads = None, True
     waits: list[float] = []
     with pytest.raises(ConfigError, match="不一致"):
         Vault(run=op, sleep=waits.append).set_fields(
-            "telegram-e2e", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)}
+            "e2e-telegram", {"admin_session": FieldValue(MOCK_ADMIN_SESSION)}
         )
     assert len(waits) == 4  # gave up after 5 reads
 
@@ -115,44 +115,44 @@ def test_write_errors_are_redacted_and_readback_is_checked() -> None:
 def test_readback_tolerates_eventual_consistency() -> None:
     # Regression: a read right after the edit returned the old (empty) value and
     # the fresh member login was reported as a failed write.
-    op = FakeOp({"telegram-e2e": [{"id": "s", "label": "member_session", "value": ""}]})
+    op = FakeOp({"e2e-telegram": [{"id": "s", "label": "member_session", "value": ""}]})
     op.stale_reads = 2
     waits: list[float] = []
     Vault(run=op, sleep=waits.append).set_fields(
-        "telegram-e2e", {"member_session": FieldValue(MOCK_ADMIN_SESSION)}
+        "e2e-telegram", {"member_session": FieldValue(MOCK_ADMIN_SESSION)}
     )
     assert waits == [1.0, 2.0]
-    assert labels(op, "telegram-e2e")["member_session"] == ("CONCEALED", MOCK_ADMIN_SESSION)
+    assert labels(op, "e2e-telegram")["member_session"] == ("CONCEALED", MOCK_ADMIN_SESSION)
 
 
 def test_add_ids_merges_and_drops_placeholder() -> None:
-    op = FakeOp({"telegram-e2e": [{"id": "x", "label": "allowed_chat_ids", "value": "0"}]})
+    op = FakeOp({"e2e-telegram": [{"id": "x", "label": "allowed_chat_ids", "value": "0"}]})
     vault = Vault(run=op)
-    assert vault.add_ids("telegram-e2e", "allowed_chat_ids", [-1002]) == [-1002]
-    assert vault.add_ids("telegram-e2e", "allowed_chat_ids", [-1001, -1002]) == [-1002, -1001]
-    assert labels(op, "telegram-e2e")["allowed_chat_ids"] == ("STRING", "-1002,-1001")
+    assert vault.add_ids("e2e-telegram", "allowed_chat_ids", [-1002]) == [-1002]
+    assert vault.add_ids("e2e-telegram", "allowed_chat_ids", [-1001, -1002]) == [-1002, -1001]
+    assert labels(op, "e2e-telegram")["allowed_chat_ids"] == ("STRING", "-1002,-1001")
 
 
 def test_group_registry_records_and_clears_the_pending_operation() -> None:
-    op = FakeOp({"telegram-e2e": [{"id": "c", "label": "allowed_chat_ids", "value": "-1001"}]})
+    op = FakeOp({"e2e-telegram": [{"id": "c", "label": "allowed_chat_ids", "value": "-1001"}]})
     registry = VaultGroupRegistry(Vault(run=op))
     assert registry.pending_operation() is None  # field does not exist yet
 
     registry.begin("0123abcd4567")
     assert registry.pending_operation() == "0123abcd4567"
-    assert labels(op, "telegram-e2e")["pending_group_operation"] == ("STRING", "0123abcd4567")
+    assert labels(op, "e2e-telegram")["pending_group_operation"] == ("STRING", "0123abcd4567")
 
     registry.register(-1002)
     registry.finish()
     assert registry.pending_operation() is None
-    assert labels(op, "telegram-e2e") == {
+    assert labels(op, "e2e-telegram") == {
         "allowed_chat_ids": ("STRING", "-1002,-1001"),
         "pending_group_operation": ("STRING", ""),
     }
 
 
 def test_clearing_accepts_an_empty_field_that_reads_back_as_missing() -> None:
-    op = FakeOp({"telegram-e2e": [{"id": "p", "label": "pending_group_operation", "value": "x"}]})
+    op = FakeOp({"e2e-telegram": [{"id": "p", "label": "pending_group_operation", "value": "x"}]})
 
     def run(argv, stdin):
         code, out, err = op(argv, stdin)
@@ -160,8 +160,8 @@ def test_clearing_accepts_an_empty_field_that_reads_back_as_missing() -> None:
             return 1, b"", b"[ERROR] field has no value"
         return code, out, err
 
-    Vault(run=run, sleep=lambda _: None).clear_field("telegram-e2e", "pending_group_operation")
-    assert labels(op, "telegram-e2e")["pending_group_operation"] == ("STRING", "")
+    Vault(run=run, sleep=lambda _: None).clear_field("e2e-telegram", "pending_group_operation")
+    assert labels(op, "e2e-telegram")["pending_group_operation"] == ("STRING", "")
 
 
 def test_session_store_cli_writes_vault_then_deletes_file(
@@ -169,7 +169,7 @@ def test_session_store_cli_writes_vault_then_deletes_file(
 ) -> None:
     session_file = tmp_path / "admin.session"
     write_private_file(session_file, MOCK_ADMIN_SESSION + "\n")
-    op = FakeOp({"telegram-e2e": []})
+    op = FakeOp({"e2e-telegram": []})
     op.fail = "edit"
     monkeypatch.setattr(cli, "_vault", lambda: Vault(run=op))
 
@@ -185,6 +185,6 @@ def test_session_store_cli_writes_vault_then_deletes_file(
     op.fail = None
     assert cli.main(args, env=live_env()) == cli.EXIT_PASSED
     assert not session_file.exists()
-    assert labels(op, "telegram-e2e")["allowed_user_ids"] == ("STRING", str(ADMIN.id))
+    assert labels(op, "e2e-telegram")["allowed_user_ids"] == ("STRING", str(ADMIN.id))
     out = capsys.readouterr()
     assert MOCK_ADMIN_SESSION not in out.out + out.err

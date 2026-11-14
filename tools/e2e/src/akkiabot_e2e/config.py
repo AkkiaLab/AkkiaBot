@@ -1,7 +1,7 @@
 """Acceptance configuration, read from environment variables.
 
 In normal use ``op run --env-file tools/e2e/staging.env.tpl`` injects these
-from the ``AkkiaBot-Staging`` vault; nothing is read from files in the repo.
+from the ``AkkiaBot`` vault (items ``e2e-*`` and ``staging-services``); nothing is read from files in the repo.
 """
 
 from __future__ import annotations
