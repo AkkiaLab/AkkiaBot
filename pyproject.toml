@@ -53,7 +53,7 @@ ignore = [
 "scripts/**" = ["T20"]
 "**/akkiabot_server/main.py" = ["T20"]
 # CLI tool: prints user-facing (redacted) output.
-"tools/e2e/src/akkiabot_e2e/{cli,onepassword,lock}.py" = ["T20"]
+"tools/e2e/src/akkiabot_e2e/{cli,onepassword,lock,telethon_transport}.py" = ["T20"]
 
 [tool.ruff.lint.isort]
 known-first-party = [

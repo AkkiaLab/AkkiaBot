@@ -42,15 +42,50 @@ def quiet_third_party_logs() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+#: Telegram test environment data centres (https://core.telegram.org/api/auth#test-accounts).
+#: The tool never connects anywhere else: there is no production fallback.
+TEST_DC_ADDRESSES: dict[int, str] = {
+    1: "149.154.175.10",
+    2: "149.154.167.40",
+    3: "149.154.175.117",
+}
+TEST_DC_PORT = 443
+_INITIAL_TEST_DC = 2
+
+
+def _session(session: Secret | None) -> StringSession:
+    """A session pinned to the test environment; refuses sessions from anywhere else."""
+    if session is None:
+        fresh = StringSession()
+        fresh.set_dc(_INITIAL_TEST_DC, TEST_DC_ADDRESSES[_INITIAL_TEST_DC], TEST_DC_PORT)
+        return fresh
+    try:
+        restored = StringSession(session.reveal())
+    except ValueError:
+        raise SafetyError("会话格式无效，请重新执行 just e2e-login") from None
+    if restored.server_address not in TEST_DC_ADDRESSES.values():
+        raise SafetyError("会话不属于 Telegram 测试环境，拒绝连接（不会回退到生产环境）")
+    return restored
+
+
 def _client(api: ApiCredentials, session: Secret | None) -> TelegramClient:
     return TelegramClient(
-        StringSession(session.reveal()) if session else StringSession(),
+        _session(session),
         api.api_id,
         api.api_hash.reveal(),
         flood_sleep_threshold=0,
         receive_updates=False,
         device_model="akkiabot-e2e",
     )
+
+
+async def ensure_test_environment(client: Any) -> None:
+    """Ask the connected server itself; ``help.getConfig`` reports ``test_mode``."""
+    config = await _guard(client(functions.help.GetConfigRequest()))
+    address = getattr(client.session, "server_address", None)
+    if not getattr(config, "test_mode", False) or address not in TEST_DC_ADDRESSES.values():
+        await _disconnect(client)
+        raise SafetyError("连接的不是 Telegram 测试环境，已断开（不会回退到生产环境）")
 
 
 async def _guard[T](awaitable: Awaitable[T]) -> T:
@@ -113,6 +148,7 @@ class TelethonAccount:
     async def connect(cls, api: ApiCredentials, session: Secret, role: str) -> TelethonAccount:
         client = _client(api, session)
         await client.connect()
+        await ensure_test_environment(client)
         if not await client.is_user_authorized():
             await _disconnect(client)
             raise SafetyError(
@@ -290,15 +326,41 @@ class TelethonAccount:
 
 
 class TelethonLogin:
-    """:class:`~akkiabot_e2e.login.LoginClient` backed by a fresh ``StringSession``."""
+    """:class:`~akkiabot_e2e.login.LoginClient` on a fresh test-environment session.
+
+    Third-party clients can no longer sign up new accounts, so the phone number
+    must already be registered in the test environment (official app, test mode).
+    """
 
     def __init__(self, api: ApiCredentials) -> None:
-        self._client = _client(api, None)
+        self._client: Any = _client(api, None)
 
     async def login(self, phone: Ask, code: Ask, password: Ask) -> UserInfo:
-        start: Any = self._client.start(phone=phone, code_callback=code, password=password)
-        await start
-        return _user(await self._client.get_me())
+        client = self._client
+        await client.connect()
+        await ensure_test_environment(client)
+        number = phone().strip()
+        sent = await _guard(client.send_code_request(number))
+        for _ in range(3):
+            try:
+                await _guard(
+                    client.sign_in(number, code().strip(), phone_code_hash=sent.phone_code_hash)
+                )
+                break
+            except errors.SessionPasswordNeededError:
+                await _guard(client.sign_in(password=password()))
+                break
+            except errors.PhoneNumberUnoccupiedError:
+                raise E2EError(
+                    "该手机号尚未在 Telegram 测试环境注册：请先用官方客户端的测试模式注册（见文档）"
+                ) from None
+            except (errors.PhoneCodeInvalidError, errors.PhoneCodeEmptyError):
+                print("验证码不正确，请重试。", flush=True)
+        else:
+            raise E2EError("验证码连续 3 次错误，已放弃")
+        # A PHONE_MIGRATE may have moved us; it must still be a test DC.
+        await ensure_test_environment(client)
+        return _user(await _guard(client.get_me()))
 
     def session_string(self) -> str:
         session = self._client.session
@@ -308,6 +370,25 @@ class TelethonLogin:
 
     async def close(self) -> None:
         await _disconnect(self._client)
+
+
+async def check_test_environment(api: ApiCredentials) -> int:
+    """Connect without logging in and confirm the server is the test environment."""
+    client: Any = _client(api, None)
+    await client.connect()
+    try:
+        await ensure_test_environment(client)
+        return int(client.session.dc_id)
+    finally:
+        await _disconnect(client)
+
+
+async def session_user(api: ApiCredentials, session: Secret) -> UserInfo:
+    account = await TelethonAccount.connect(api, session, "session")
+    try:
+        return await account.me()
+    finally:
+        await account.close()
 
 
 async def connect_account(api: ApiCredentials, role: str, session: Secret) -> TelethonAccount:

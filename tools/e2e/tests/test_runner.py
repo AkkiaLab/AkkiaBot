@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from akkiabot_e2e.config import E2EConfig, load_config
@@ -312,6 +314,20 @@ def test_cli_live_run_saves_private_redacted_report(
     leaky = world.add_user(UserInfo(MEMBER.id, "123456:bot-token-must-not-leak", MEMBER.username))
     connector = Connector(world, {ADMIN_SESSION: ADMIN, MEMBER_SESSION: leaky})
     monkeypatch.setattr(cli, "_telethon_connect", lambda api: connector)
+    checked: list[str] = []
+
+    async def fake_check(token, username, http) -> None:
+        checked.append(username)
+
+    class FakeVault:
+        added: ClassVar[list[tuple[str, str, list[int]]]] = []
+
+        def add_ids(self, item: str, field: str, ids) -> list[int]:
+            self.added.append((item, field, list(ids)))
+            return list(ids)
+
+    monkeypatch.setattr("akkiabot_e2e.bot_api.check_test_bot", fake_check)
+    monkeypatch.setattr(cli, "_vault", FakeVault)
     env = live_env(TELEGRAM_BOT_TOKEN="123456:bot-token-must-not-leak")
 
     code = cli.main(
@@ -329,6 +345,10 @@ def test_cli_live_run_saves_private_redacted_report(
         assert "bot-token-must-not-leak" not in path.read_text()
     assert "bot-token-must-not-leak" not in out
     assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+    # Bot token was checked on the test endpoint first; the new group id was written back.
+    assert checked == ["akkiabot_staging_bot"]
+    (chat,) = world.chats.values()
+    assert FakeVault.added == [("telegram-e2e", "allowed_chat_ids", [chat.id])]
 
 
 @pytest.mark.parametrize("missing", ["leave", "join"])

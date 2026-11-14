@@ -84,21 +84,29 @@ dev:
 dev-down:
     {{ compose_dev }} down
 
-# --- Real Telegram acceptance (docs/e2e-acceptance.md). Sends real messages; never run in CI.
+# --- Real Telegram acceptance in the Telegram TEST environment (docs/e2e-acceptance.md). Never run in CI.
 
 # Store this machine's 1Password service account token (prompted, not echoed)
 e2e-token-init *args:
     uv run akkiabot-e2e token-init {{ args }}
 
-# First interactive login of a test account (role: admin | member)
+# Connect to the Telegram test environment and confirm test_mode (no account needed)
+e2e-check-env:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/login.env.tpl -- akkiabot-e2e check-env
+
+# Interactive login of a test-environment account (role: admin | member); session goes to 1Password
 e2e-login role *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/login.env.tpl -- akkiabot-e2e login --role {{ role }} {{ args }}
 
-# Save a logged-in session into 1Password with your own (writable) sign-in, via stdin
+# Store a session file from `e2e-login <role> --out <file>` into 1Password (via stdin)
 e2e-session-store role *args:
-    uv run akkiabot-e2e session-store --role {{ role }} {{ args }}
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/login.env.tpl -- akkiabot-e2e session-store --role {{ role }} {{ args }}
 
-# Start the bot from this checkout and run the live M2/M3 acceptance (e.g. `just e2e --scenarios m2`)
+# Create the test bot via the test-environment BotFather and write it back to 1Password
+e2e-bootstrap-bot *args:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e bootstrap-bot {{ args }}
+
+# Start the bot (test environment) from this checkout and run the live M2/M3 acceptance
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
 

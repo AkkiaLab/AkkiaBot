@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Protocol
 
 from akkiabot_e2e.errors import SafetyError
-from akkiabot_e2e.files import config_home, write_private_file
+from akkiabot_e2e.files import config_home
+from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.transport import UserInfo
 
 Prompt = Callable[[str], str]
@@ -27,26 +28,17 @@ def default_session_file(role: str) -> Path:
 
 
 async def interactive_login(
-    client: LoginClient,
-    out: Path,
-    *,
-    prompt: Prompt,
-    secret_prompt: Prompt,
-    overwrite: bool = False,
-) -> UserInfo:
-    """Log in and write the session string to an owner-only file; never prints it."""
+    client: LoginClient, *, prompt: Prompt, secret_prompt: Prompt
+) -> tuple[UserInfo, Secret]:
+    """Log in; returns the user and the session (kept in memory, never printed)."""
     try:
-        if out.exists() and not overwrite:  # noqa: ASYNC240 - a single stat before user input
-            # Fail before asking Telegram for a code that would then be wasted.
-            raise SafetyError(f"{out} 已存在；确认要覆盖时加 --force")
         user = await client.login(
-            lambda: prompt("手机号（含国家码，如 +8613800000000）："),
-            lambda: prompt("Telegram 发来的验证码："),
+            lambda: prompt("测试环境账号手机号（含国家码，如 +8613800000000）："),
+            lambda: prompt("Telegram 测试环境发来的验证码："),
             lambda: secret_prompt("两步验证密码（输入不回显）："),
         )
         if user.is_bot:
             raise SafetyError("登录的是 bot 账号，需要真实用户账号")
-        write_private_file(out, client.session_string() + "\n", overwrite=overwrite)
+        return user, Secret(client.session_string())
     finally:
         await client.close()
-    return user

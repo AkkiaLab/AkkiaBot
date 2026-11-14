@@ -8,6 +8,7 @@ can prove that the scenarios catch them.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from akkiabot_e2e.errors import FloodWait
@@ -134,6 +135,7 @@ class FakeTelegram:
         self.floods: dict[str, list[float]] = defaultdict(list)
         """Pending flood waits per operation name, raised once each."""
         self.calls: list[str] = []
+        self.private_bots: dict[int, Callable[[str], str]] = {}
         self._next_chat = 1_000_000
 
     def add_user(self, user: UserInfo) -> UserInfo:
@@ -144,6 +146,11 @@ class FakeTelegram:
         self.add_user(user)
         self.bot = FakeBot(user, **knobs)
         return self.bot
+
+    def add_private_bot(self, user: UserInfo, reply: Callable[[str], str]) -> None:
+        """A bot answering private messages (e.g. BotFather); its chat id is its user id."""
+        self.add_user(user)
+        self.private_bots[user.id] = reply
 
     def add_chat(self, title: str, creator: UserInfo) -> FakeChat:
         self._next_chat += 1
@@ -165,7 +172,9 @@ class FakeTelegram:
         msg = Msg(chat.next_id, chat.id, sender_id, text, reply_to, entities, service)
         chat.next_id += 1
         chat.messages[msg.id] = msg
-        if self.bot is not None and sender_id != self.bot.user.id:
+        if chat.id in self.private_bots and sender_id != chat.id:
+            self.post(chat, chat.id, self.private_bots[chat.id](text))
+        elif self.bot is not None and sender_id != self.bot.user.id:
             self.bot.respond(self, chat, msg)
         return msg
 
@@ -186,6 +195,11 @@ class FakeAccount:
             raise FloodWait(pending.pop(0))
 
     def _chat(self, chat_id: int) -> FakeChat:
+        if chat_id not in self.world.chats and chat_id in self.world.private_bots:
+            peer = self.world.users[chat_id]
+            chat = FakeChat(chat_id, peer.first_name, self.user.id)
+            chat.members.update({self.user.id: "member", chat_id: "member"})
+            self.world.chats[chat_id] = chat
         return self.world.chats[chat_id]
 
     async def me(self) -> UserInfo:

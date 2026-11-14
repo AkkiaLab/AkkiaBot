@@ -39,6 +39,8 @@ def server_env(
         DB_URL=f"sqlite+aiosqlite:///{db_path}",
         REDIS_URL="",
         TELEGRAM_MODE="polling",
+        # The bot under test always talks to the Telegram test environment.
+        TELEGRAM_TEST_ENVIRONMENT="true",
         SERVER_HOST="127.0.0.1",
         SERVER_PORT=str(port),
         OBSERVABILITY_METRICS_HOST="127.0.0.1",

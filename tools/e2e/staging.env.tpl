@@ -2,7 +2,7 @@
 # Only op:// paths live here; values are resolved by `op run` at run time and
 # exist only in the child process environment. Field list: docs/e2e-acceptance.md.
 
-# --- bot under test (vault AkkiaBot-Staging, item "runtime")
+# --- bot under test (vault AkkiaBot-Staging, item "runtime"); test-environment bot only
 TELEGRAM_BOT_TOKEN=op://AkkiaBot-Staging/runtime/bot_token
 OBSERVABILITY_SENTRY_DSN=op://AkkiaBot-Staging/runtime/sentry_dsn
 WHOIS_IPINFO_TOKEN=op://AkkiaBot-Staging/runtime/ipinfo_token
@@ -17,6 +17,8 @@ E2E_ALLOWED_USER_IDS=op://AkkiaBot-Staging/telegram-e2e/allowed_user_ids
 E2E_ALLOWED_CHAT_IDS=op://AkkiaBot-Staging/telegram-e2e/allowed_chat_ids
 
 # --- plain settings (optional; defaults shown)
+# Bot API test endpoints (/bot<token>/test/); `run --serve` forces this anyway.
+TELEGRAM_TEST_ENVIRONMENT=true
 OBSERVABILITY_SENTRY_ENVIRONMENT=staging
 # E2E_CHAT_TITLE=AkkiaBot E2E 自动验收群
 # E2E_REPLY_TIMEOUT=30
