@@ -6,10 +6,11 @@ Runs the real PTB application and FastAPI app on SQLite; the Bot API is
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlencode
@@ -41,7 +42,7 @@ from akkiabot_server.bot.captcha import (
     prompt_text,
 )
 from akkiabot_server.runtime import Runtime
-from akkiabot_server.services.captcha import redact_name
+from akkiabot_server.services.captcha import CaptchaRejectedError, RejectReason, redact_name
 from akkiabot_server.services.chat_settings import Toggle
 from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
@@ -87,6 +88,46 @@ async def client(runtime: Runtime) -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture(autouse=True)
 def _answer_web_app_query(api: FakeBotApi) -> None:
     api.respond("answerWebAppQuery", lambda _p: {"inline_message_id": "fake-inline-message"})
+
+
+class TelegramMembers:
+    """Remembers restrictChatMember calls so getChatMember answers like Telegram."""
+
+    def __init__(self, api: FakeBotApi) -> None:
+        self.api = api
+        self.members: dict[int, dict[str, Any]] = {}
+        api.respond("restrictChatMember", self.restrict)
+        api.respond("getChatMember", self.get)
+
+    def restrict(self, params: dict[str, Any]) -> bool:
+        user_id = int(params["user_id"])
+        permissions = _json(params["permissions"])
+        user = UpdateFactory.user(user_id, "Newbie")
+        if all(permissions.values()):
+            self.members[user_id] = UpdateFactory.chat_member(user, "member")
+        else:
+            self.set(user_id, **permissions)
+        return True
+
+    def set(self, user_id: int, **fields: Any) -> None:
+        """Restrict ``user_id`` directly, as an admin would in the Telegram UI."""
+        user = UpdateFactory.user(user_id, "Newbie")
+        self.members[user_id] = UpdateFactory.chat_member(user, "restricted", **fields)
+
+    def get(self, params: dict[str, Any]) -> dict[str, Any]:
+        user_id = int(params["user_id"])
+        member = self.members.get(user_id)
+        if member is None:
+            return UpdateFactory.chat_member(UpdateFactory.user(user_id, "Newbie"), "member")
+        return json.loads(json.dumps(member))
+
+    def restore(self) -> None:
+        self.api.respond("restrictChatMember", self.restrict)
+
+
+@pytest.fixture
+def telegram(api: FakeBotApi) -> TelegramMembers:
+    return TelegramMembers(api)
 
 
 def _json(value: Any) -> Any:
@@ -206,7 +247,9 @@ class Flow:
 
 
 @pytest.fixture
-async def flow(runtime: Runtime, api: FakeBotApi, updates: UpdateFactory) -> Flow:
+async def flow(
+    runtime: Runtime, api: FakeBotApi, updates: UpdateFactory, telegram: TelegramMembers
+) -> Flow:
     f = Flow(runtime, api, updates)
     await f.enable()
     return f
@@ -467,7 +510,11 @@ async def test_unknown_challenge(client: httpx.AsyncClient, turnstile: respx.Rou
 
 
 async def test_unmute_failure_lets_the_user_retry(
-    flow: Flow, api: FakeBotApi, client: httpx.AsyncClient, turnstile: respx.Route
+    flow: Flow,
+    api: FakeBotApi,
+    telegram: TelegramMembers,
+    client: httpx.AsyncClient,
+    turnstile: respx.Route,
 ) -> None:
     await flow.join()
     challenge = await flow.pending()
@@ -478,7 +525,7 @@ async def test_unmute_failure_lets_the_user_retry(
     assert await flow.status(challenge.id) is CaptchaStatus.PENDING
     assert await flow.restriction() is Restriction.CAPTCHA_MUTE
 
-    del api.responders["restrictChatMember"]
+    telegram.restore()
     assert (await client.post(VERIFY, json=body(challenge.id))).status_code == 200
 
 
@@ -506,6 +553,200 @@ async def test_verify_unavailable_without_turnstile_secret(
 async def test_malformed_request_is_422(client: httpx.AsyncClient) -> None:
     response = await client.post(VERIFY, json={"challenge_id": "nope", "init_data": ""})
     assert response.status_code == 422
+
+
+class GatedApi(PtbCaptchaApi):
+    """PtbCaptchaApi whose live check / unmute can be paused or sabotaged."""
+
+    def __init__(self, runtime: Runtime) -> None:
+        super().__init__(runtime.application.bot)
+        self.runtime = runtime
+        self.checking = asyncio.Event()
+        self.proceed = asyncio.Event()
+        self.proceed.set()
+        self.before_unmute: Callable[[], Awaitable[None]] | None = None
+
+    async def is_captcha_muted(self, chat_id: int, user_id: int) -> bool:
+        self.checking.set()
+        await self.proceed.wait()
+        return await super().is_captcha_muted(chat_id, user_id)
+
+    async def unmute(self, chat_id: int, user_id: int) -> None:
+        if self.before_unmute is not None:
+            await self.before_unmute()
+        await super().unmute(chat_id, user_id)
+
+
+async def _expire_in_db(runtime: Runtime, challenge_id: uuid.UUID) -> None:
+    async with session_scope(runtime.session_factory) as session:
+        await session.execute(
+            update(CaptchaChallenge)
+            .where(CaptchaChallenge.id == challenge_id)
+            .values(expires_at=utcnow() - timedelta(seconds=1))
+        )
+
+
+async def test_admin_restricting_a_pending_member_is_not_lifted(
+    flow: Flow,
+    updates: UpdateFactory,
+    telegram: TelegramMembers,
+    client: httpx.AsyncClient,
+    turnstile: respx.Route,
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    # The admin re-restricts the muted member in Telegram (restricted → restricted).
+    user = updates.user(NEWBIE, "Newbie")
+    old = UpdateFactory.chat_member(user, "restricted")
+    telegram.set(NEWBIE, until_date=int(time.time()) + 86_400)
+    new = telegram.get({"user_id": NEWBIE})
+    admin = updates.user(ADMIN, "Admin")
+    await flow.feed(updates.chat_member_update(user, old=old, new=new, chat=flow.chat, by=admin))
+    assert await flow.restriction() is Restriction.ADMIN_MUTE
+
+    response = await client.post(VERIFY, json=body(challenge.id))
+    assert response.status_code == 409
+    assert response.json()["error"] == "not_captcha_restricted"
+    assert flow.restricts() == [(NEWBIE, False)]  # the admin's restriction stays
+    assert await flow.status(challenge.id) is CaptchaStatus.PENDING
+
+
+async def test_admin_restricting_a_member_is_recorded_but_own_mute_is_not(
+    flow: Flow, updates: UpdateFactory
+) -> None:
+    user = updates.user(NEWBIE, "Newbie")
+    muted = UpdateFactory.chat_member(user, "restricted")
+    bot = updates.user(100_000, "AkkiaBot", is_bot=True)
+    # Our own restrictChatMember echoes back from the bot: ignored.
+    await flow.feed(
+        updates.chat_member_update(user, old="member", new=muted, chat=flow.chat, by=bot)
+    )
+    assert await flow.restriction() is Restriction.NONE
+    admin = updates.user(ADMIN, "Admin")
+    await flow.feed(
+        updates.chat_member_update(user, old="member", new=muted, chat=flow.chat, by=admin)
+    )
+    assert await flow.restriction() is Restriction.ADMIN_MUTE
+    # A recorded spam mute is more specific and is kept.
+    await flow.set_restriction(Restriction.SPAM_MUTE)
+    await flow.feed(
+        updates.chat_member_update(user, old=muted, new=muted, chat=flow.chat, by=admin)
+    )
+    assert await flow.restriction() is Restriction.SPAM_MUTE
+
+
+async def test_live_restriction_change_not_yet_synced_is_not_lifted(
+    flow: Flow, telegram: TelegramMembers, client: httpx.AsyncClient, turnstile: respx.Route
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    # Telegram already shows the admin's restriction; its update is still in flight.
+    telegram.set(NEWBIE, can_send_messages=True)
+    response = await client.post(VERIFY, json=body(challenge.id))
+    assert response.status_code == 409
+    assert response.json()["error"] == "not_captcha_restricted"
+    assert flow.restricts() == [(NEWBIE, False)]
+    assert await flow.status(challenge.id) is CaptchaStatus.PENDING
+
+
+async def test_member_lookup_failure_does_not_unmute(
+    flow: Flow, api: FakeBotApi, client: httpx.AsyncClient, turnstile: respx.Route
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    api.fail("getChatMember", "Bad Request: user not found")
+    response = await client.post(VERIFY, json=body(challenge.id))
+    assert response.status_code == 502
+    assert flow.restricts() == [(NEWBIE, False)]
+    assert await flow.status(challenge.id) is CaptchaStatus.PENDING
+
+
+async def test_restriction_sync_waits_for_an_inflight_verification(
+    flow: Flow, runtime: Runtime, turnstile: respx.Route
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    gated = GatedApi(runtime)
+    gated.proceed.clear()
+    service = runtime.deps.captcha
+    verify = asyncio.create_task(
+        service.verify(
+            gated,
+            challenge_id=challenge.id,
+            init_data=init_data(),
+            turnstile_token=MOCK_TURNSTILE_TOKEN,
+        )
+    )
+    await gated.checking.wait()  # verify holds the member lock
+    sync = asyncio.create_task(service.handle_restricted(CHAT, NEWBIE, by=ADMIN))
+    await asyncio.sleep(0.05)
+    assert not sync.done()  # serialised behind the verification
+
+    gated.proceed.set()
+    await verify
+    assert await sync is True
+    # The later admin restriction wins over the verification's "none".
+    assert await flow.restriction() is Restriction.ADMIN_MUTE
+
+
+async def test_verify_waits_for_an_inflight_restriction_sync(
+    flow: Flow, runtime: Runtime, turnstile: respx.Route
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    service = runtime.deps.captcha
+    async with service._member_lock(CHAT, NEWBIE):  # pyright: ignore[reportPrivateUsage]
+        verify = asyncio.create_task(
+            service.verify(
+                GatedApi(runtime),
+                challenge_id=challenge.id,
+                init_data=init_data(),
+                turnstile_token=MOCK_TURNSTILE_TOKEN,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not verify.done()
+        # The admin restriction lands while verify waits for the lock.
+        async with session_scope(runtime.session_factory) as session:
+            await ChatMemberRepository(session).set_restriction(
+                CHAT, NEWBIE, Restriction.ADMIN_MUTE
+            )
+    with pytest.raises(CaptchaRejectedError) as exc_info:
+        await verify
+    assert exc_info.value.reason is RejectReason.NOT_CAPTCHA_RESTRICTED
+    assert flow.restricts() == [(NEWBIE, False)]
+
+
+async def test_unmute_failing_after_the_deadline_finishes_as_timeout(
+    flow: Flow, runtime: Runtime, api: FakeBotApi, turnstile: respx.Route
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    gated = GatedApi(runtime)
+
+    async def deadline_passes_then_telegram_fails() -> None:
+        await _expire_in_db(runtime, challenge.id)  # claimed in time, now overdue
+        api.fail("restrictChatMember", "Bad Request: not enough rights")
+
+    gated.before_unmute = deadline_passes_then_telegram_fails
+    timeouts = metric_value("akkiabot_captcha_total", result="timeout")
+
+    with pytest.raises(CaptchaRejectedError) as exc_info:
+        await runtime.deps.captcha.verify(
+            gated,
+            challenge_id=challenge.id,
+            init_data=init_data(),
+            turnstile_token=MOCK_TURNSTILE_TOKEN,
+        )
+
+    assert exc_info.value.reason is RejectReason.CHALLENGE_EXPIRED
+    assert await flow.status(challenge.id) is CaptchaStatus.EXPIRED  # not left as passed
+    assert await flow.restriction() is Restriction.CAPTCHA_MUTE  # still muted
+    assert [int(p["message_id"]) for p in api.calls_to("deleteMessage")] == [
+        challenge.group_message_id
+    ]
+    assert metric_value("akkiabot_captcha_total", result="timeout") == timeouts + 1
+    assert await flow.expire_now() == 0  # nothing left for the sweep
 
 
 # --------------------------------------------------------------- timeout

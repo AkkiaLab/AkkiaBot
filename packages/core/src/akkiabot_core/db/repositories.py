@@ -276,20 +276,34 @@ class CaptchaChallengeRepository:
             .values(group_message_id=message_id)
         )
 
-    async def reopen(self, challenge_id: uuid.UUID, *, now: datetime | None = None) -> bool:
-        """Undo a ``PASSED`` claim (the follow-up Telegram call failed) so the
-        user can retry. Only while the challenge has not expired."""
-        result = await self.session.execute(
-            update(CaptchaChallenge)
-            .where(
-                CaptchaChallenge.id == challenge_id,
-                CaptchaChallenge.status == CaptchaStatus.PASSED,
-                CaptchaChallenge.expires_at > (now or utcnow()),
+    async def release_claim(
+        self, challenge_id: uuid.UUID, *, now: datetime | None = None
+    ) -> CaptchaStatus | None:
+        """Undo a ``PASSED`` claim whose follow-up Telegram call failed.
+
+        Back to ``PENDING`` (the user may retry) while the challenge has not
+        expired; otherwise straight to ``EXPIRED``, so it is never left behind
+        as "passed" for a member who is in fact still muted. Returns the new
+        status, or ``None`` if the challenge was not ``PASSED``.
+        """
+        now = now or utcnow()
+        for status, still_valid in (
+            (CaptchaStatus.PENDING, CaptchaChallenge.expires_at > now),
+            (CaptchaStatus.EXPIRED, CaptchaChallenge.expires_at <= now),
+        ):
+            result = await self.session.execute(
+                update(CaptchaChallenge)
+                .where(
+                    CaptchaChallenge.id == challenge_id,
+                    CaptchaChallenge.status == CaptchaStatus.PASSED,
+                    still_valid,
+                )
+                .values(status=status)
             )
-            .values(status=CaptchaStatus.PENDING)
-        )
-        assert isinstance(result, CursorResult)  # noqa: S101
-        return result.rowcount == 1
+            assert isinstance(result, CursorResult)  # noqa: S101
+            if result.rowcount == 1:
+                return status
+        return None
 
     async def resolve(
         self, challenge_id: uuid.UUID, status: CaptchaStatus, *, now: datetime | None = None

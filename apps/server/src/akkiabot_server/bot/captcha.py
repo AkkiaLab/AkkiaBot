@@ -17,6 +17,7 @@ from telegram import (
     Bot,
     ChatMember,
     ChatMemberRestricted,
+    ChatMemberUpdated,
     ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -84,6 +85,28 @@ def ban_lifted(old: ChatMember, new: ChatMember) -> bool:
     return old.status == ChatMember.BANNED and new.status != ChatMember.BANNED
 
 
+def restricted_by_admin(change: ChatMemberUpdated, bot_id: int) -> bool:
+    """Someone other than the bot set restrictions on a member who stays in the
+    chat (member → restricted, or restricted → restricted with new rights)."""
+    new = change.new_chat_member
+    return (
+        change.from_user.id != bot_id
+        and isinstance(new, ChatMemberRestricted)
+        and new.is_member
+        and _is_member(change.old_chat_member)
+    )
+
+
+def is_captcha_mute(member: ChatMember) -> bool:
+    """Exactly what :meth:`PtbCaptchaApi.mute` applies: every permission off, forever."""
+    if not isinstance(member, ChatMemberRestricted) or not member.is_member:
+        return False
+    if member.until_date is not None and member.until_date.timestamp() > 0:
+        return False
+    permissions = ChatPermissions.no_permissions().to_dict()
+    return not any(getattr(member, name, False) for name in permissions)
+
+
 def _duration_text(seconds: int) -> str:
     return f"{seconds // 60} 分钟" if seconds % 60 == 0 else f"{seconds} 秒"
 
@@ -112,6 +135,10 @@ class PtbCaptchaApi:
             await self._bot.restrict_chat_member(
                 chat_id, user_id, ChatPermissions.all_permissions()
             )
+
+    async def is_captcha_muted(self, chat_id: int, user_id: int) -> bool:
+        with translate_errors():
+            return is_captcha_mute(await self._bot.get_chat_member(chat_id, user_id))
 
     async def send_prompt(
         self, chat_id: int, user_id: int, display_name: str, start_token: str, ttl: int
@@ -175,6 +202,8 @@ async def handle_chat_member(update: Update, context: Context) -> None:
         await deps.captcha.handle_unrestricted(change.chat.id, user.id, cleared=MUTE_RESTRICTIONS)
     elif ban_lifted(old, new):
         await deps.captcha.handle_unrestricted(change.chat.id, user.id, cleared=BAN_RESTRICTIONS)
+    elif restricted_by_admin(change, context.bot.id):
+        await deps.captcha.handle_restricted(change.chat.id, user.id, by=change.from_user.id)
 
 
 async def captcha_start(update: Update, context: Context, payload: StartPayload) -> None:

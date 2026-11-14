@@ -10,7 +10,12 @@ Flow (docs/migration-plan.md M6)::
       → button opening ``<webapp.url>/captcha?challenge=<id>``
     POST /api/v1/captcha/verify
       → Turnstile → initData → challenge pending and not expired → same user
-      → member still under *captcha* mute → unmute → answerWebAppQuery receipt
+      → member still under *captcha* mute, both in ``chat_member`` and live in
+        Telegram (``getChatMember``) → unmute → answerWebAppQuery receipt
+    admin changes the member's restrictions in Telegram
+      → ``chat_member`` becomes ``admin_mute`` (or ``none`` when lifted), so the
+        captcha can no longer lift them; all restriction changes of one member
+        are serialised by a per-member lock.
     timeout job
       → challenge ``expired`` (reported as ``timeout``), member **stays muted**,
         group prompt deleted; rejoining creates a new challenge.
@@ -22,9 +27,11 @@ The service is framework independent: Telegram is reached through
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -76,6 +83,11 @@ class CaptchaApi(Protocol):
     async def mute(self, chat_id: int, user_id: int) -> None: ...
 
     async def unmute(self, chat_id: int, user_id: int) -> None: ...
+
+    async def is_captcha_muted(self, chat_id: int, user_id: int) -> bool:
+        """Whether Telegram *currently* shows exactly the mute :meth:`mute` applies
+        (still a member, every permission off, no end date)."""
+        ...
 
     async def send_prompt(
         self, chat_id: int, user_id: int, display_name: str, start_token: str, ttl: int
@@ -200,6 +212,22 @@ class CaptchaService:
         self.timeout = timeout
         self._init_data_max_age = timedelta(seconds=init_data_max_age)
         self._turnstile = turnstile
+        self._locks: dict[tuple[int, int], tuple[asyncio.Lock, list[int]]] = {}
+
+    @asynccontextmanager
+    async def _member_lock(self, chat_id: int, user_id: int) -> AsyncIterator[None]:
+        """Serialise every restriction change of one member (join, verify, admin
+        sync) inside this process. The bot runs as a single instance."""
+        key = (chat_id, user_id)
+        lock, users = self._locks.setdefault(key, (asyncio.Lock(), [0]))
+        users[0] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            users[0] -= 1
+            if users[0] == 0:
+                del self._locks[key]
 
     # ------------------------------------------------------------- join
     async def handle_join(
@@ -209,6 +237,12 @@ class CaptchaService:
         settings = await self._chat_settings.get(chat_id)
         if not settings.captcha:
             return JoinResult(JoinOutcome.DISABLED)
+        async with self._member_lock(chat_id, user_id):
+            return await self._handle_join(api, chat_id, user_id, first_name)
+
+    async def _handle_join(
+        self, api: CaptchaApi, chat_id: int, user_id: int, first_name: str
+    ) -> JoinResult:
         async with session_scope(self._session_factory) as session:
             member = await ChatMemberRepository(session).get(chat_id, user_id)
             restriction = member.restriction if member else Restriction.NONE
@@ -360,44 +394,8 @@ class CaptchaService:
         # 4. same user
         if challenge.user_id != data.user.id:
             raise CaptchaRejectedError(RejectReason.WRONG_USER)
-        # 5. only a captcha mute can be lifted here
-        async with session_scope(self._session_factory) as session:
-            member = await ChatMemberRepository(session).get(challenge.chat_id, challenge.user_id)
-            restriction = member.restriction if member else Restriction.NONE
-        if restriction is not Restriction.CAPTCHA_MUTE:
-            raise CaptchaRejectedError(RejectReason.NOT_CAPTCHA_RESTRICTED)
-
-        # Claim the challenge first: concurrent or replayed requests lose here.
-        async with session_scope(self._session_factory) as session:
-            claimed = await CaptchaChallengeRepository(session).resolve(
-                challenge.id, CaptchaStatus.PASSED
-            )
-        if not claimed:
-            current = await self._load(challenge.id)
-            if current is not None:
-                self._ensure_open(current)
-            raise CaptchaRejectedError(RejectReason.CHALLENGE_USED)
-
-        try:
-            await api.unmute(challenge.chat_id, challenge.user_id)
-        except (ModerationApiError, RateLimitedError) as exc:
-            count_telegram_api_error("restrictChatMember")
-            logger.warning(
-                "captcha unmute failed",
-                extra={"target_user_id": challenge.user_id, "error": str(exc)},
-            )
-            async with session_scope(self._session_factory) as session:
-                await CaptchaChallengeRepository(session).reopen(challenge.id)
-            raise CaptchaRejectedError(RejectReason.UNMUTE_FAILED) from None
-
-        async with session_scope(self._session_factory) as session:
-            members = ChatMemberRepository(session)
-            current_member = await members.get(challenge.chat_id, challenge.user_id)
-            # Do not overwrite a restriction set while we were unmuting.
-            if current_member is None or current_member.restriction is Restriction.CAPTCHA_MUTE:
-                await members.set_restriction(
-                    challenge.chat_id, challenge.user_id, Restriction.NONE
-                )
+        async with self._member_lock(challenge.chat_id, challenge.user_id):
+            await self._lift_captcha_mute(api, challenge)
 
         duration = (utcnow() - challenge.created_at).total_seconds()
         count_captcha("passed")
@@ -419,6 +417,64 @@ class CaptchaService:
                 logger.warning("captcha receipt failed", extra={"error": str(exc)})
         return VerifyResult(challenge.chat_id, challenge.user_id, duration)
 
+    async def _lift_captcha_mute(self, api: CaptchaApi, challenge: _Snapshot) -> None:
+        """Steps 5-6 of :meth:`verify`, run under the member lock so that no
+        restriction change of this member is processed in between."""
+        chat_id, user_id = challenge.chat_id, challenge.user_id
+        # 5. only a captcha mute can be lifted here: our record says so…
+        async with session_scope(self._session_factory) as session:
+            member = await ChatMemberRepository(session).get(chat_id, user_id)
+            restriction = member.restriction if member else Restriction.NONE
+        if restriction is not Restriction.CAPTCHA_MUTE:
+            raise CaptchaRejectedError(RejectReason.NOT_CAPTCHA_RESTRICTED)
+        # …and so does Telegram right now (an admin may have changed the
+        # restriction and its chat_member update has not been processed yet).
+        try:
+            live = await api.is_captcha_muted(chat_id, user_id)
+        except (ModerationApiError, RateLimitedError) as exc:
+            count_telegram_api_error("getChatMember")
+            logger.warning(
+                "captcha member lookup failed", extra={"target_user_id": user_id, "error": str(exc)}
+            )
+            raise CaptchaRejectedError(RejectReason.UNMUTE_FAILED) from None
+        if not live:
+            logger.warning(
+                "captcha refused: telegram restriction differs from the captcha mute",
+                extra={"target_user_id": user_id, "challenge_id": str(challenge.id)},
+            )
+            raise CaptchaRejectedError(RejectReason.NOT_CAPTCHA_RESTRICTED)
+
+        # Claim the challenge: concurrent or replayed requests lose here.
+        async with session_scope(self._session_factory) as session:
+            claimed = await CaptchaChallengeRepository(session).resolve(
+                challenge.id, CaptchaStatus.PASSED
+            )
+        if not claimed:
+            current = await self._load(challenge.id)
+            if current is not None:
+                self._ensure_open(current)
+            raise CaptchaRejectedError(RejectReason.CHALLENGE_USED)
+
+        # 6. unmute
+        try:
+            await api.unmute(chat_id, user_id)
+        except (ModerationApiError, RateLimitedError) as exc:
+            count_telegram_api_error("restrictChatMember")
+            logger.warning(
+                "captcha unmute failed", extra={"target_user_id": user_id, "error": str(exc)}
+            )
+            async with session_scope(self._session_factory) as session:
+                released = await CaptchaChallengeRepository(session).release_claim(challenge.id)
+            if released is CaptchaStatus.EXPIRED:
+                # Claimed in time, but the deadline passed while Telegram failed:
+                # finish it as a timeout (member stays muted, prompt removed).
+                await self._timed_out(api, challenge)
+                raise CaptchaRejectedError(RejectReason.CHALLENGE_EXPIRED) from None
+            raise CaptchaRejectedError(RejectReason.UNMUTE_FAILED) from None
+
+        async with session_scope(self._session_factory) as session:
+            await ChatMemberRepository(session).set_restriction(chat_id, user_id, Restriction.NONE)
+
     @staticmethod
     def _ensure_open(challenge: _Snapshot) -> None:
         if challenge.status is CaptchaStatus.EXPIRED or challenge.expires_at <= utcnow():
@@ -437,17 +493,20 @@ class CaptchaService:
                 _Snapshot.of(c) for c in await CaptchaChallengeRepository(session).expire_due(now)
             ]
         for challenge in expired:
-            count_captcha("timeout")
-            logger.info(
-                "captcha timed out; member stays muted",
-                extra={
-                    "chat_id": challenge.chat_id,
-                    "target_user_id": challenge.user_id,
-                    "challenge_id": str(challenge.id),
-                },
-            )
-            await self._delete_prompt(api, challenge)
+            await self._timed_out(api, challenge)
         return len(expired)
+
+    async def _timed_out(self, api: CaptchaApi, challenge: _Snapshot) -> None:
+        count_captcha("timeout")
+        logger.info(
+            "captcha timed out; member stays muted",
+            extra={
+                "chat_id": challenge.chat_id,
+                "target_user_id": challenge.user_id,
+                "challenge_id": str(challenge.id),
+            },
+        )
+        await self._delete_prompt(api, challenge)
 
     # ------------------------------------------------- membership sync
     async def handle_unrestricted(
@@ -456,7 +515,10 @@ class CaptchaService:
         """An admin lifted a mute (``cleared=MUTE_RESTRICTIONS``) or a ban
         (``BAN_RESTRICTIONS``) in Telegram: reset a matching recorded
         restriction to ``none``. Returns whether ``chat_member`` changed."""
-        async with session_scope(self._session_factory) as session:
+        async with (
+            self._member_lock(chat_id, user_id),
+            session_scope(self._session_factory) as session,
+        ):
             members = ChatMemberRepository(session)
             member = await members.get(chat_id, user_id)
             if member is None or member.restriction not in cleared:
@@ -465,6 +527,29 @@ class CaptchaService:
             await members.set_restriction(chat_id, user_id, Restriction.NONE)
         logger.info(
             "member restriction lifted in telegram",
+            extra={"target_user_id": user_id, "previous_restriction": previous.value},
+        )
+        return True
+
+    async def handle_restricted(self, chat_id: int, user_id: int, *, by: int) -> bool:
+        """Someone other than the bot (an admin) set restrictions on the member
+        in Telegram. Record them as ``admin_mute`` unless a more specific
+        non-captcha restriction is already recorded, so that the captcha can no
+        longer lift them. Returns whether ``chat_member`` changed."""
+        async with (
+            self._member_lock(chat_id, user_id),
+            session_scope(self._session_factory) as session,
+        ):
+            members = ChatMemberRepository(session)
+            member = await members.get(chat_id, user_id)
+            previous = member.restriction if member else Restriction.NONE
+            if previous not in _CAPTCHA_ELIGIBLE:
+                return False
+            await members.set_restriction(
+                chat_id, user_id, Restriction.ADMIN_MUTE, restricted_by=by
+            )
+        logger.info(
+            "member restricted by an admin in telegram",
             extra={"target_user_id": user_id, "previous_restriction": previous.value},
         )
         return True
