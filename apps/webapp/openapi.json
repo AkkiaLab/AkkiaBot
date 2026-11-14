@@ -1,0 +1,319 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AkkiaBot",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Healthz",
+        "description": "Liveness: the process is up and serving HTTP.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Healthz Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readyz",
+        "description": "Readiness: database and cache are reachable.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/captcha/verify": {
+      "post": {
+        "tags": [
+          "captcha"
+        ],
+        "summary": "提交入群验证",
+        "description": "Verify a captcha submission and lift the member's captcha mute.",
+        "operationId": "verifyCaptcha",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptchaVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaVerifyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "turnstile_failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "init_data_invalid、init_data_expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "wrong_user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "challenge_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "challenge_used、not_captcha_restricted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "challenge_expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "unmute_failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "captcha_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CaptchaError": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/RejectReason"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "CaptchaError"
+      },
+      "CaptchaVerifyRequest": {
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Challenge Id",
+            "description": "来自 Mini App URL 的 `challenge` 参数"
+          },
+          "init_data": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Init Data",
+            "description": "`Telegram.WebApp.initData` 原始字符串"
+          },
+          "turnstile_token": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Turnstile Token",
+            "description": "Turnstile 组件返回的 token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "challenge_id",
+          "init_data",
+          "turnstile_token"
+        ],
+        "title": "CaptchaVerifyRequest"
+      },
+      "CaptchaVerifyResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "passed",
+            "title": "Status",
+            "default": "passed"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "CaptchaVerifyResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "RejectReason": {
+        "type": "string",
+        "enum": [
+          "captcha_unavailable",
+          "turnstile_failed",
+          "init_data_invalid",
+          "init_data_expired",
+          "challenge_not_found",
+          "challenge_expired",
+          "challenge_used",
+          "wrong_user",
+          "not_captcha_restricted",
+          "unmute_failed"
+        ],
+        "title": "RejectReason",
+        "description": "Why ``/api/v1/captcha/verify`` refused a request (API error codes)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
