@@ -133,6 +133,35 @@ async def test_structured_request_that_answers_digits(llm: FakeLlm) -> None:
     assert verdict.source is VerdictSource.TEXT
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # Regression: the last number (confidence 1) used to be read as "spam".
+        '{"is_spam": false, "category": "unknown", "confidence": 1}',
+        '{"is_spam": false, "confidence": 1',
+        "结论是 1",
+        "置信度 0.1",
+        "10",
+    ],
+)
+async def test_invalid_structured_answer_fails_open(llm: FakeLlm, answer: str) -> None:
+    llm.queue(completion(answer))
+    verdict = await make(llm).classify("今天天气真好啊")
+    assert not verdict.is_spam
+    assert (verdict.source, verdict.error) == (VerdictSource.FAIL_OPEN, "parse_error")
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"), [("0", False), (" 1\n", True), ("```\n1\n```", True)]
+)
+async def test_structured_mode_accepts_bare_digit(
+    llm: FakeLlm, answer: str, expected: bool
+) -> None:
+    llm.queue(completion(answer))
+    verdict = await make(llm).classify("x")
+    assert (verdict.is_spam, verdict.source) == (expected, VerdictSource.TEXT)
+
+
 # --------------------------------------------------------------- 0/1 fallback
 
 

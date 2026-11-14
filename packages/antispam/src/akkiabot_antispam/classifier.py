@@ -77,6 +77,22 @@ def parse_text_answer(content: str) -> bool:
     return numbers[-1] == "1"
 
 
+_BARE_DIGIT = re.compile(r"[01]")
+
+
+def parse_bare_digit(content: str) -> bool:
+    """Strict fallback for structured mode: the whole answer must be ``0`` or ``1``.
+
+    Anything else (notably invalid JSON that merely contains numbers such as a
+    ``confidence`` of 1) is a parse error, so it fails open instead of being
+    read as a verdict.
+    """
+    text = _strip_fence(content)
+    if not _BARE_DIGIT.fullmatch(text):
+        raise AnswerParseError("expected a JSON verdict or a bare 0/1")
+    return text == "1"
+
+
 def parse_structured_answer(content: str) -> _StructuredAnswer:
     try:
         return _StructuredAnswer.model_validate_json(_strip_fence(content))
@@ -205,8 +221,8 @@ class AntiSpamClassifier:
             try:
                 parsed = parse_structured_answer(answer)
             except AnswerParseError:
-                # Some endpoints accept response_format but still answer 0/1.
-                is_spam = parse_text_answer(answer)
+                # Some endpoints accept response_format but still answer a bare 0/1.
+                is_spam = parse_bare_digit(answer)
                 return SpamVerdict(
                     is_spam=is_spam,
                     category="other" if is_spam else "none",
