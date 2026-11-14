@@ -31,13 +31,26 @@ def ensure_public(ip: IpAddress) -> IpAddress:
 def extract_ip(text: str) -> IpAddress | None:
     """The first IP address found anywhere in ``text`` (e.g. a replied message)."""
     for match in _CANDIDATE.finditer(text):
-        token = match.group().strip(".")
-        candidates = [token]
-        if token.count(":") == 1 and "." in token:  # 1.2.3.4:443
-            candidates.append(token.split(":", 1)[0])
-        for candidate in candidates:
+        for candidate in _candidates(match.group().strip(".")):
             try:
                 return ip_address(candidate)
             except ValueError:
                 continue
     return None
+
+
+def _candidates(token: str) -> list[str]:
+    """Interpretations of one character run, most literal first.
+
+    A label colon (``IP:1.1.1.1``, ``ip:2001:db8::1``) or a port
+    (``1.1.1.1:443``) is glued to the address by the character class, so also
+    try the run without leading / trailing colons and, for IPv4, each
+    colon-separated part.
+    """
+    candidates = [token]
+    trimmed = token.strip(":")
+    if trimmed and trimmed != token:
+        candidates.append(trimmed)
+    if "." in token:
+        candidates.extend(part.strip(".") for part in token.split(":") if "." in part)
+    return candidates

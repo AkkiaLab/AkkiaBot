@@ -42,13 +42,21 @@ def test_ensure_public_rejects(text: str) -> None:
         ("look at [2606:4700:4700::1111]:443", "2606:4700:4700::1111"),
         ("version 1.2.3 then 4.4.4.4", "4.4.4.4"),
         ("deadbeef cafe 2001:db8::1", "2001:db8::1"),
+        ("IP:1.1.1.1", "1.1.1.1"),
+        ("ip:8.8.8.8", "8.8.8.8"),
+        ("IP: 1.1.1.1", "1.1.1.1"),
+        ("IP:1.1.1.1:443", "1.1.1.1"),
+        ("ip：9.9.9.9", "9.9.9.9"),
+        ("IP:2001:db8::1", "2001:db8::1"),
+        ("addr ::ffff:1.2.3.4", "::ffff:1.2.3.4"),
+        ("loopback ::1", "::1"),
     ],
 )
 def test_extract_ip(text: str, expected: str) -> None:
     assert extract_ip(text) == ip_address(expected)
 
 
-@pytest.mark.parametrize("text", ["", "no address here", "1.2.3", "12:30 见", "999.1.1.1"])
+@pytest.mark.parametrize("text", ["", "no address here", "1.2.3", "12:30 见", "999.1.1.1", "IP:999.1.1.1", "1.2.3.4.5", "ip:1.2.3"])
 def test_extract_ip_none(text: str) -> None:
     assert extract_ip(text) is None
 

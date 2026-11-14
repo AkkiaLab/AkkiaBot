@@ -120,6 +120,23 @@ async def test_ip_from_replied_message(
     assert api.sent_texts()[0].startswith("IP: `1.1.1.1`")
 
 
+@pytest.mark.parametrize("text", ["IP:1.1.1.1", "ip:1.1.1.1:443", "出口 IP：1.1.1.1。"])
+async def test_ip_from_replied_labelled_text(
+    runtime: Runtime,
+    api: FakeBotApi,
+    updates: UpdateFactory,
+    mock_api: respx.MockRouter,
+    text: str,
+) -> None:
+    route = mock_api.get(IPINFO_URL).respond(json=IPINFO_OK)
+    group = updates.group()
+    replied = updates.message_dict(chat=group, from_user=updates.user(7, "Bob"), text=text)
+    await runtime.application.process_update(updates.command("/ip", chat=group, reply_to=replied))
+
+    assert route.call_count == 1
+    assert api.sent_texts()[0].startswith("IP: `1.1.1.1`")
+
+
 async def test_ip_from_replied_caption(
     runtime: Runtime, api: FakeBotApi, updates: UpdateFactory, mock_api: respx.MockRouter
 ) -> None:
