@@ -143,6 +143,11 @@ class PacedAccount:
             self._label("is_banned"), lambda: self.inner.is_banned(chat_id, user_id)
         )
 
+    async def is_restricted(self, chat_id: int, user_id: int) -> bool:
+        return await self.pacer.call(
+            self._label("is_restricted"), lambda: self.inner.is_restricted(chat_id, user_id)
+        )
+
     async def unban(self, chat_id: int, user_id: int) -> None:
         await self.pacer.call(self._label("unban"), lambda: self.inner.unban(chat_id, user_id))
 

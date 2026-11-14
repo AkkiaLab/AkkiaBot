@@ -81,7 +81,16 @@ def test_invalid_description_rejected(description: str) -> None:
 
 def test_builtin_commands() -> None:
     registry = CommandRegistry(COMMANDS)
-    assert [c.name for c in registry] == ["start", "help", "id", "ip", "config", "ban", "warn"]
+    assert [c.name for c in registry] == [
+        "start",
+        "help",
+        "id",
+        "ip",
+        "config",
+        "ban",
+        "warn",
+        "spam",
+    ]
     assert [c.command for c in registry.bot_commands()] == [
         "help",
         "id",
@@ -89,6 +98,7 @@ def test_builtin_commands() -> None:
         "config",
         "ban",
         "warn",
+        "spam",
     ]
 
 
@@ -105,6 +115,7 @@ async def test_start_publishes_command_menu(settings: Settings, api: FakeBotApi)
                     {"command": "config", "description": "功能配置"},
                     {"command": "ban", "description": "封禁用户"},
                     {"command": "warn", "description": "警告用户"},
+                    {"command": "spam", "description": "举报垃圾信息"},
                 ]
             }
         ]

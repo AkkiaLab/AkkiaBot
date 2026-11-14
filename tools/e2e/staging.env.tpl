@@ -6,6 +6,13 @@
 TELEGRAM_BOT_TOKEN=op://AkkiaBot-Staging/runtime/bot_token
 OBSERVABILITY_SENTRY_DSN=op://AkkiaBot-Staging/runtime/sentry_dsn
 WHOIS_IPINFO_TOKEN=op://AkkiaBot-Staging/runtime/ipinfo_token
+# M5 antispam: OpenAI-compatible LLM + Langfuse (also read by the M5 Langfuse check)
+LLM_BASE_URL=op://AkkiaBot-Staging/runtime/llm_base_url
+LLM_API_KEY=op://AkkiaBot-Staging/runtime/llm_api_key
+LLM_MODEL=op://AkkiaBot-Staging/runtime/llm_model
+LANGFUSE_PUBLIC_KEY=op://AkkiaBot-Staging/runtime/langfuse_public_key
+LANGFUSE_SECRET_KEY=op://AkkiaBot-Staging/runtime/langfuse_secret_key
+LANGFUSE_HOST=op://AkkiaBot-Staging/runtime/langfuse_host
 
 # --- user-account automation (item "telegram-e2e")
 E2E_API_ID=op://AkkiaBot-Staging/telegram-e2e/api_id
@@ -24,3 +31,5 @@ OBSERVABILITY_SENTRY_ENVIRONMENT=staging
 # E2E_REPLY_TIMEOUT=30
 # E2E_FLOOD_MAX_WAIT=120
 # E2E_SEND_INTERVAL=2
+# Seconds M5 waits to be sure a message is NOT deleted (switch off / exempt member)
+# E2E_ANTISPAM_WAIT=20

@@ -1,4 +1,4 @@
-"""M2 / M3 / M4 acceptance scenarios, driven by real user accounts.
+"""M2 / M3 / M4 / M5 acceptance scenarios, driven by real user accounts.
 
 Each scenario sends messages as a test user, waits for the bot's reply and
 checks what a user actually sees: the rendered text (MarkdownV2 must be
@@ -9,14 +9,23 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol
 
-from akkiabot_e2e.errors import CheckFailed
+from akkiabot_e2e.errors import CheckFailed, ScenarioSkipped
 from akkiabot_e2e.transport import Account, ChatRef, Msg, UserInfo, code_spans
 
 Status = Literal["passed", "failed", "error", "not_run"]
+
+
+class TraceProbe(Protocol):
+    """Looks up the bot's LLM traces (Langfuse) by run-specific markers."""
+
+    async def wait_for_markers(
+        self, markers: Sequence[str], *, since: datetime
+    ) -> dict[str, int]: ...
 
 
 @dataclass(slots=True)
@@ -33,6 +42,13 @@ class ScenarioContext:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     plain_message_ids: list[int] = field(default_factory=list)
     """Ordinary (non-command) group messages sent this run; used for the message_log check."""
+    antispam: bool = False
+    """The bot under test has an LLM configured (M5)."""
+    antispam_wait: float = 20.0
+    traces: TraceProbe | None = None
+    classified_markers: list[str] = field(default_factory=list)
+    """Markers of messages the bot must have classified (checked in Langfuse)."""
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def record(self, step: str, msg: Msg | None = None, **extra: Any) -> None:
         item: dict[str, Any] = {"step": step}
@@ -401,7 +417,165 @@ async def ban_scenario(ctx: ScenarioContext) -> None:
         await restore_member(ctx)
 
 
+# ------------------------------------------------------------------ M5
+
+ANTISPAM_LABEL = "反垃圾"
+SPAM_NOTICE = "内容命中反垃圾策略"
+#: An unmistakable gambling ad (the LLM must flag it).
+SPAM_TEXT = (
+    "【限时福利】国际正规博彩平台，注册即送888彩金，百家乐、体育、电子随便玩，"
+    "提款秒到账，私聊我领取 USDT 返利"
+)
+HAM_TEXTS = ("今天天气真好啊", "周末有人一起去爬山吗", "这个版本的更新日志我看了，修了不少问题")
+
+
+def require_antispam(ctx: ScenarioContext) -> None:
+    if not ctx.antispam:
+        raise ScenarioSkipped(
+            "被测 bot 未配置 LLM（1Password runtime/llm_api_key、llm_model），无法验收反垃圾"
+        )
+
+
+async def set_antispam(ctx: ScenarioContext, enabled: bool) -> None:
+    menu = await open_config_menu(ctx)
+    if _enabled(menu, ANTISPAM_LABEL) is not enabled:
+        await toggle(ctx, menu, ANTISPAM_LABEL)
+    ctx.record(f"反垃圾开关已{'开启' if enabled else '关闭'}")
+
+
+async def member_posts(ctx: ScenarioContext, text: str, marker: str) -> Msg:
+    """The member posts ``text`` tagged with a run-specific ``marker``."""
+    tagged = f"{marker} {ctx.run_id}"
+    msg = await ctx.member.send(ctx.chat.id, f"{text}（E2E {tagged}）")
+    ctx.record("成员发送", msg)
+    return msg
+
+
+def marker_of(ctx: ScenarioContext, marker: str) -> str:
+    return f"{marker} {ctx.run_id}"
+
+
+async def wait_notice(ctx: ScenarioContext, after: int) -> Msg:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ctx.reply_timeout
+    while True:
+        for msg in await ctx.admin.history(ctx.chat.id, min_id=after):
+            if msg.sender_id == ctx.bot.id and SPAM_NOTICE in msg.text:
+                ctx.record("bot 发送反垃圾通知", msg)
+                return msg
+        if loop.time() >= deadline:
+            raise CheckFailed(f"{ctx.reply_timeout:g} 秒内没有看到反垃圾通知")
+        await asyncio.sleep(ctx.poll_interval)
+
+
+async def wait_restricted(ctx: ScenarioContext) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ctx.reply_timeout
+    while not await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id):
+        if loop.time() >= deadline:
+            raise CheckFailed("成员没有被禁言")
+        await asyncio.sleep(ctx.poll_interval)
+    ctx.record("成员已被禁言")
+
+
+async def check_untouched(ctx: ScenarioContext, msg: Msg, why: str) -> None:
+    """Wait ``antispam_wait`` seconds; the message must survive and the member stay free."""
+    await asyncio.sleep(ctx.antispam_wait)
+    still_there = await ctx.admin.get_message(ctx.chat.id, msg.id) is not None
+    restricted = await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id)
+    ctx.record(f"等待 {ctx.antispam_wait:g} 秒后检查", kept=still_there, restricted=restricted)
+    check(still_there, f"{why}，但消息 {msg.id} 被删除了")
+    check(not restricted, f"{why}，但成员被禁言了")
+
+
+async def restore_unmuted(ctx: ScenarioContext) -> None:
+    if await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id):
+        await ctx.admin.unban(ctx.chat.id, ctx.member_user.id)
+        ctx.record("群主解除成员禁言")
+
+
+async def spam_scenario(ctx: ScenarioContext) -> None:
+    """Switch on: an obvious ad from a new member is deleted, the member muted, a notice posted."""
+    require_antispam(ctx)
+    await set_antispam(ctx, True)
+    try:
+        ad = await member_posts(ctx, SPAM_TEXT, "spam")
+        ctx.classified_markers.append(marker_of(ctx, "spam"))
+        await wait_deleted(ctx, [ad.id], "广告消息")
+        await wait_restricted(ctx)
+        notice = await wait_notice(ctx, ad.id)
+        check_rendered(notice)
+        check(
+            any(e.kind == "mention_name" for e in notice.entities),
+            "反垃圾通知中没有提及被处理的成员",
+        )
+    finally:
+        await restore_unmuted(ctx)
+
+
+async def disabled_scenario(ctx: ScenarioContext) -> None:
+    """Switch off: the same ad is left alone."""
+    require_antispam(ctx)
+    await set_antispam(ctx, False)
+    ad = await member_posts(ctx, SPAM_TEXT, "off")
+    try:
+        await check_untouched(ctx, ad, "反垃圾已关闭")
+    finally:
+        await restore_unmuted(ctx)
+
+
+async def exempt_scenario(ctx: ScenarioContext) -> None:
+    """Members with more than 3 messages are exempt, even when posting an ad."""
+    require_antispam(ctx)
+    await set_antispam(ctx, True)
+    try:
+        for i, text in enumerate(HAM_TEXTS):
+            await member_posts(ctx, text, f"ham{i}")
+        ad = await member_posts(ctx, SPAM_TEXT, "exempt")
+        await check_untouched(ctx, ad, "老成员应被豁免")
+    finally:
+        await restore_unmuted(ctx)
+        await set_antispam(ctx, False)
+
+
+async def spam_command_scenario(ctx: ScenarioContext) -> None:
+    """/spam by the owner bans the reported member; members cannot report the owner."""
+    anchor = await post_anchor(ctx, "E2E /spam 举报测试")
+    reply = await ask(ctx, "/spam", reply_to=anchor.id)
+    check(reply.text == "无法举报管理员或群主。", f"举报群主应被拒绝，实际回复 {reply.text!r}")
+    target = await member_says(ctx, "E2E 被举报的消息")
+    try:
+        reply = await admin_command(ctx, "/spam", reply_to=target.id)
+        check("已被封禁（垃圾信息）" in reply.text, f"/spam 回复不符合预期：{reply.text!r}")
+        check_mention(reply, ctx)
+        await check_member_banned(ctx)
+        await wait_deleted(ctx, [target.id], "被举报成员的消息")
+    finally:
+        await restore_member(ctx)
+
+
+async def langfuse_scenario(ctx: ScenarioContext) -> None:
+    """Every classification of this run is visible in Langfuse."""
+    require_antispam(ctx)
+    if ctx.traces is None:
+        raise ScenarioSkipped("未配置 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY，无法查询 Langfuse")
+    if not ctx.classified_markers:
+        raise ScenarioSkipped("本次运行没有需要核对的判定（先运行 m5.spam）")
+    counts = await ctx.traces.wait_for_markers(ctx.classified_markers, since=ctx.started_at)
+    ctx.record("查询 Langfuse generation", counts=counts)
+    missing = [marker for marker, count in counts.items() if not count]
+    check(not missing, f"Langfuse 中没有这些判定的记录：{missing}")
+
+
 SCENARIOS: tuple[Scenario, ...] = (
+    # M5 first: the spam check only applies to members with at most 3 recorded
+    # messages, and every scenario below makes the member post more.
+    Scenario(
+        "m5.spam", "M5", "开启反垃圾后，新成员的明显广告被删除并禁言，发出通知", spam_scenario
+    ),
+    Scenario("m5.disabled", "M5", "关闭反垃圾后，同样的广告不再处理", disabled_scenario),
+    Scenario("m5.exempt", "M5", "发言超过 3 条的老成员发广告被豁免", exempt_scenario),
+    Scenario("m5.langfuse", "M5", "每次判定都能在 Langfuse 中查到", langfuse_scenario),
     Scenario("m2.help", "M2", "/help 返回命令列表", help_scenario),
     Scenario("m2.id", "M2", "/id 返回群 ID 与发送者 ID（行内代码）", id_scenario),
     Scenario("m2.id-reply", "M2", "回复群主消息的 /id 额外显示被回复者 ID", id_reply_scenario),
@@ -417,6 +591,12 @@ SCENARIOS: tuple[Scenario, ...] = (
     # m4.warn / m4.ban ban the member and then unban + re-invite it.
     Scenario("m4.warn", "M4", "/warn 计数，达到上限自动封禁并删除历史消息", warn_scenario),
     Scenario("m4.ban", "M4", "/ban 封禁成员并删除其历史消息", ban_scenario),
+    Scenario(
+        "m5.spam-command",
+        "M5",
+        "成员不能举报群主；群主 /spam 直接封禁并删除历史消息",
+        spam_command_scenario,
+    ),
     # Last: it makes the member leave and rejoin the group.
     Scenario(
         "m2.service-message", "M2", "成员退群、入群的系统消息被 bot 删除", service_message_scenario

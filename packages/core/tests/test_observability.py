@@ -14,6 +14,7 @@ from akkiabot_core.config import ObservabilitySettings
 from akkiabot_core.observability import (
     REGISTRY,
     configure_logging,
+    count_antispam_verdict,
     count_captcha,
     count_command,
     count_moderation_action,
@@ -24,6 +25,7 @@ from akkiabot_core.observability import (
     init_sentry,
     log_context,
     new_trace_id,
+    observe_antispam_llm,
     observe_captcha_duration,
     render_metrics,
     setup_observability,
@@ -258,6 +260,19 @@ def test_captcha_metrics() -> None:
     assert sample("captcha_duration_seconds_count") == count + 2
     assert sample("captcha_duration_seconds_sum") == total + 12.5
     assert sample("captcha_duration_seconds_bucket", le="20.0") >= 1
+
+
+def test_antispam_metrics() -> None:
+    hits = sample("antispam_verdict_total", verdict="spam", action="delete_mute")
+    count_antispam_verdict("spam", "delete_mute")
+    assert sample("antispam_verdict_total", verdict="spam", action="delete_mute") == hits + 1
+
+    calls = sample("antispam_llm_duration_seconds_count")
+    timeouts = sample("antispam_llm_errors_total", error="timeout")
+    observe_antispam_llm(0.4)
+    observe_antispam_llm(15.0, error="timeout")
+    assert sample("antispam_llm_duration_seconds_count") == calls + 2
+    assert sample("antispam_llm_errors_total", error="timeout") == timeouts + 1
 
 
 # ------------------------------------------------------------------- sentry

@@ -342,6 +342,13 @@ class TelethonAccount:
             return False
         return bool(participant.banned_rights.view_messages)
 
+    async def is_restricted(self, chat_id: int, user_id: int) -> bool:
+        participant = await self._participant(chat_id, user_id)
+        if not isinstance(participant, types.ChannelParticipantBanned):
+            return False
+        rights = participant.banned_rights
+        return bool(rights.send_messages) and not rights.view_messages
+
     async def unban(self, chat_id: int, user_id: int) -> None:
         # Empty rights remove the user from the banned list (Bot API ``unbanChatMember``).
         await _guard(

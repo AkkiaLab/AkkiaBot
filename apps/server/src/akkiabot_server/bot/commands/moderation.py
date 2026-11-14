@@ -16,6 +16,7 @@ from akkiabot_server.bot.types import Context
 from akkiabot_server.services.chats import GROUP_TYPES
 from akkiabot_server.services.moderation import (
     Authorization,
+    MemberInfo,
     ModerationApiError,
     RateLimitedError,
     WarnDisabledError,
@@ -45,16 +46,21 @@ WARN_DISABLED = "请先通过 /config 开启警告功能。"
 
 
 @dataclass(frozen=True, slots=True)
-class _Request:
+class Request:
     message: Message
     chat_id: int
     actor: User
     target: User
     target_message: Message
+    actor_info: MemberInfo
+    target_info: MemberInfo
 
 
-async def _prepare(update: Update, context: Context, verb: str, usage: str) -> _Request | str:
-    """Validate a ``/ban`` / ``/warn`` request; on rejection reply and return a result label."""
+async def resolve(update: Update, context: Context, verb: str, usage: str) -> Request | str:
+    """Validate a reply-style moderation command and look up both members.
+
+    On rejection reply and return a result label (permissions are not checked).
+    """
     message, chat, actor = update.effective_message, update.effective_chat, update.effective_user
     if message is None or chat is None or actor is None:
         return "ignored"
@@ -89,7 +95,16 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> _
         await message.reply_text(LOOKUP_FAILED)
         return "failed"
 
-    match authorize(actor_info, target_info):
+    return Request(message, chat.id, actor, target, target_message, actor_info, target_info)
+
+
+async def _prepare(update: Update, context: Context, verb: str, usage: str) -> Request | str:
+    """Validate a ``/ban`` / ``/warn`` request; on rejection reply and return a result label."""
+    request = await resolve(update, context, verb, usage)
+    if isinstance(request, str):
+        return request
+    message = request.message
+    match authorize(request.actor_info, request.target_info):
         case Authorization.ACTOR_FORBIDDEN:
             await message.reply_text(
                 f"你没有权限{verb}成员：仅群主或具有封禁成员权限的管理员可用。"
@@ -99,7 +114,7 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> _
             await message.reply_text(f"无法{verb}管理员或群主。")
             return "protected"
         case Authorization.ALLOWED:
-            return _Request(message, chat.id, actor, target, target_message)
+            return request
 
 
 def mention(user: User) -> str:
@@ -111,6 +126,11 @@ async def ban_command(update: Update, context: Context) -> str | None:
     request = await _prepare(update, context, "封禁", BAN_USAGE)
     if isinstance(request, str):
         return request
+    return await execute_ban(request, context)
+
+
+async def execute_ban(request: Request, context: Context, *, note: str = "") -> str | None:
+    """Ban an authorized request's target and report the result in the chat."""
     try:
         result = await get_deps(context).moderation.ban(
             PtbModerationApi(context.bot),
@@ -123,7 +143,7 @@ async def ban_command(update: Update, context: Context) -> str | None:
         logger.warning("ban failed", exc_info=True)
         await request.message.reply_text("封禁失败，请确认机器人具有封禁成员权限。")
         return "failed"
-    text = mention(request.target) + _e(f" 已被封禁，删除了 {result.purge.deleted} 条消息。")
+    text = mention(request.target) + _e(f" 已被封禁{note}，删除了 {result.purge.deleted} 条消息。")
     if result.purge.failed:
         text += _e(f"\n另有 {result.purge.failed} 条消息删除失败。")
     await request.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
