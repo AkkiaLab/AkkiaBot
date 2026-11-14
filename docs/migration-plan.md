@@ -77,7 +77,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M1 · core 基础设施：配置、日志、数据库、缓存、可观测性基线　`M`
 
 - **范围**
-  - `akkiabot_core.config`：基于 pydantic-settings 的分组配置（telegram、db、redis、llm、turnstile、webapp、cors、observability），必填项缺失时在启动阶段报错，日志中对密钥脱敏。
+  - `akkiabot_core.config`：基于 pydantic-settings 的分组配置（telegram、db、redis、llm、turnstile、webapp、cors、observability），必填项缺失时在启动阶段报错；密钥以 `SecretStr`、隐藏密码的 URL 等安全形式展示。日志层不做自动脱敏（2026-11-14 成员确认，避免误伤业务与异常信息），由调用方在记录日志前改写已知密钥。
   - `akkiabot_core.observability`：
     - 结构化 JSON 日志（基于 contextvars 自动带上 `chat_id`、`user_id`、`update_id`、`trace_id`）；
     - Sentry 初始化（DSN、环境、采样率均来自配置）；

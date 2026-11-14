@@ -103,13 +103,6 @@ def test_secrets_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     for secret in (TOKEN, "s3cr3t-pw", "sk-llm-key", "ts-secret", "pub@o1"):
         assert secret not in rendered
     assert s.redacted()["db"]["url"] == "postgresql+asyncpg://akkiabot:***@db:5432/akkiabot"
-    assert set(s.secret_values()) == {
-        TOKEN,
-        "s3cr3t-pw",
-        "sk-llm-key",
-        "ts-secret",
-        "https://pub@o1.ingest.sentry.io/1",
-    }
 
 
 @pytest.mark.usefixtures("required_env")

@@ -7,8 +7,8 @@ raise :class:`pydantic.ValidationError` at load time, so the process fails at
 startup instead of on first use.
 
 Secrets are :class:`pydantic.SecretStr` (or URLs whose password is hidden) so
-they never show up in ``repr`` / logs; use :meth:`Settings.redacted` when a
-configuration summary needs to be logged.
+they never show up in ``repr``. The logging layer does not redact anything, so
+callers must log :meth:`Settings.redacted` / ``safe_url`` instead of raw values.
 """
 
 from __future__ import annotations
@@ -71,11 +71,6 @@ class DatabaseSettings(_Group):
         if url.get_driver_name() not in {"asyncpg", "aiosqlite"}:
             raise ValueError("请使用异步驱动：postgresql+asyncpg:// 或 sqlite+aiosqlite://")
         return value
-
-    @property
-    def password(self) -> str | None:
-        password = make_url(self.url).password
-        return str(password) if password else None
 
     @property
     def safe_url(self) -> str:
@@ -146,14 +141,6 @@ class Settings(BaseSettings):
     cors: CorsSettings = Field(default_factory=CorsSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
-    def secret_values(self) -> list[str]:
-        """Every configured secret in plain text, for log redaction."""
-        secrets: list[str] = []
-        _collect_secrets(self, secrets)
-        if self.db.password:
-            secrets.append(self.db.password)
-        return secrets
-
     def redacted(self) -> dict[str, Any]:
         """A JSON-safe dump with secrets masked, suitable for logging."""
         data = self.model_dump(mode="json")
@@ -183,17 +170,6 @@ def load_database_settings() -> DatabaseSettings:
 
 def load_observability_settings() -> ObservabilitySettings:
     return _ObservabilityOnly().observability
-
-
-def _collect_secrets(model: BaseModel, out: list[str]) -> None:
-    for name in type(model).model_fields:
-        value = getattr(model, name)
-        if isinstance(value, SecretStr):
-            plain = value.get_secret_value()
-            if plain:
-                out.append(plain)
-        elif isinstance(value, BaseModel):
-            _collect_secrets(value, out)
 
 
 __all__ = [

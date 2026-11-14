@@ -38,7 +38,7 @@ def _migrate(revision: str) -> int:
         configure_logging(obs.log_level, fmt=obs.log_format)
         logger.error("invalid database configuration: %s", exc)
         return 2
-    configure_logging(obs.log_level, fmt=obs.log_format, secrets=[db.password or ""])
+    configure_logging(obs.log_level, fmt=obs.log_format)
     logger.info("running migrations", extra={"db_url": db.safe_url, "revision": revision})
     upgrade(db.url, revision)
     logger.info("migrations complete", extra={"revision": revision})

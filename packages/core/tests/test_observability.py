@@ -24,9 +24,6 @@ from akkiabot_core.observability import (
     setup_observability,
     track_handler,
 )
-from akkiabot_core.observability.logging import Redactor
-
-BOT_TOKEN = "7123456789:AAHk3j4k5l6m7n8o9p0q1r2s3t4u5v6w7x8"
 
 
 @pytest.fixture
@@ -34,7 +31,7 @@ def log_stream() -> Iterator[io.StringIO]:
     root = logging.getLogger()
     level = root.level
     stream = io.StringIO()
-    handler = configure_logging("DEBUG", secrets=["db-password-xyz"], stream=stream)
+    handler = configure_logging("DEBUG", stream=stream)
     yield stream
     for h in [h for h in root.handlers if h.get_name() == handler.get_name()]:
         root.removeHandler(h)
@@ -116,47 +113,24 @@ def test_exception_logged(log_stream: io.StringIO) -> None:
     assert "RuntimeError: boom" in rec["exc_info"]
 
 
-def test_secrets_redacted(log_stream: io.StringIO) -> None:
+RAW = 'p"a\\ss\nw\u00f6rd 7123456789:AAHk3j4k5l6m7n8o9p0q1r2s3t4u5v6w7x8'
+
+
+def test_content_is_logged_verbatim(log_stream: io.StringIO) -> None:
+    """The logging layer never rewrites content; redaction is the caller's job."""
     log = logging.getLogger("t")
-    log.info("POST https://api.telegram.org/bot%s/getUpdates", BOT_TOKEN)
-    log.info("connect", extra={"dsn": "postgresql://u:db-password-xyz@h/db"})
-    out = log_stream.getvalue()
-    assert BOT_TOKEN not in out
-    assert "db-password-xyz" not in out
-    assert "https://api.telegram.org/bot***/getUpdates" in out
-
-
-TRICKY_SECRET = 'p"a\\ss\nw\u00f6rd'
-
-
-def test_secrets_with_json_special_chars_redacted() -> None:
-    stream = io.StringIO()
-    handler = configure_logging("INFO", secrets=[TRICKY_SECRET], stream=stream)
-    log = logging.getLogger("t")
+    log.info("value %s", RAW)
+    log.info("extra", extra={"cfg": {"db": [RAW]}, "obj": RuntimeError(RAW)})
     try:
-        log.info("password is %s", TRICKY_SECRET)
-        log.info("extra", extra={"cfg": {"db": [f"x{TRICKY_SECRET}y"]}, TRICKY_SECRET: 1})
-        log.info("obj", extra={"obj": RuntimeError(TRICKY_SECRET)})
-        try:
-            raise ValueError(TRICKY_SECRET)
-        except ValueError:
-            log.exception("failed")
-    finally:
-        logging.getLogger().removeHandler(handler)
+        raise ValueError(RAW)
+    except ValueError:
+        log.exception("failed")
 
-    raw = stream.getvalue()
-    decoded = [json.loads(line) for line in raw.splitlines()]
-    assert TRICKY_SECRET not in json.dumps(decoded, ensure_ascii=False)
-    assert TRICKY_SECRET not in raw
-    assert decoded[0]["message"] == "password is ***"
-    assert decoded[1]["cfg"] == {"db": ["x***y"]}
-    assert decoded[1]["***"] == 1
-    assert decoded[2]["obj"] == "***"
-    assert "ValueError: ***" in decoded[3]["exc_info"]
-
-
-def test_redactor_ignores_tiny_secrets() -> None:
-    assert Redactor(["ab", ""])("abc") == "abc"
+    message, extra, exc = records(log_stream)
+    assert message["message"] == f"value {RAW}"
+    assert extra["cfg"] == {"db": [RAW]}
+    assert extra["obj"] == RAW
+    assert f"ValueError: {RAW}" in exc["exc_info"]
 
 
 def test_console_format(log_stream: io.StringIO) -> None:
@@ -164,11 +138,11 @@ def test_console_format(log_stream: io.StringIO) -> None:
     handler = configure_logging("INFO", fmt="console", stream=stream)
     try:
         with log_context(chat_id=5):
-            logging.getLogger("t").info("hi %s", BOT_TOKEN)
+            logging.getLogger("t").info("hi %s", "there")
     finally:
         logging.getLogger().removeHandler(handler)
     line = stream.getvalue()
-    assert "hi ***" in line
+    assert "hi there" in line
     assert "[chat_id=5]" in line
 
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from akkiabot_core.config import ObservabilitySettings
 from akkiabot_core.observability.context import get_log_context, log_context, new_trace_id
 from akkiabot_core.observability.logging import configure_logging
@@ -20,11 +18,10 @@ from akkiabot_core.observability.sentry import init_sentry
 def setup_observability(
     settings: ObservabilitySettings,
     *,
-    secrets: Iterable[str] = (),
     release: str | None = None,
 ) -> None:
     """Configure logging and (optionally) Sentry at process startup."""
-    configure_logging(settings.log_level, fmt=settings.log_format, secrets=secrets)
+    configure_logging(settings.log_level, fmt=settings.log_format)
     init_sentry(settings, release=release)
 
 
