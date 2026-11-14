@@ -119,7 +119,12 @@ def _user(entity: Any) -> UserInfo:
 
 
 def _service_message_id(updates: Any) -> int | None:
-    for update in getattr(updates, "updates", None) or ():
+    # Newer layers wrap the result, e.g. ChatInviteJoinResultOk(updates=Updates(updates=[...])):
+    # unwrap ``.updates`` until it is the list of individual updates.
+    inner = getattr(updates, "updates", None)
+    while inner is not None and not isinstance(inner, list | tuple):
+        inner = getattr(inner, "updates", None)
+    for update in inner or ():
         message = getattr(update, "message", None)
         if isinstance(message, types.MessageService):
             return int(message.id)
