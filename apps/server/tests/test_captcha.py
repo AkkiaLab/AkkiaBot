@@ -20,6 +20,7 @@ import httpx
 import pytest
 import respx
 from sqlalchemy import update
+from telegram.ext import JobQueue
 
 from akkiabot_core.config import Settings
 from akkiabot_core.db import (
@@ -31,7 +32,7 @@ from akkiabot_core.db import (
     session_scope,
 )
 from akkiabot_core.db.types import utcnow
-from akkiabot_core.observability import configure_logging
+from akkiabot_core.observability import configure_logging, get_log_context
 from akkiabot_core.telegram import sign_init_data
 from akkiabot_server.api import create_app
 from akkiabot_server.bot.captcha import (
@@ -947,3 +948,38 @@ async def test_timeout_and_rejection_logs_carry_chat_id(
     assert rejected["reason"] == "wrong_user"
     timed_out = lines["captcha timed out; member stays muted"]
     assert (timed_out["chat_id"], timed_out["user_id"]) == (CHAT, NEWBIE)
+
+
+async def test_early_rejection_log_is_tagged_with_the_group(
+    flow: Flow, client: httpx.AsyncClient, turnstile: respx.Route, json_logs: io.StringIO
+) -> None:
+    """Turnstile fails before the challenge is loaded; the log line still gets its group."""
+    await flow.join()
+    challenge = await flow.pending()
+    turnstile.mock(return_value=httpx.Response(200, json={"success": False}))
+    response = await client.post(VERIFY, json=body(challenge.id))
+    assert response.json()["error"] == "turnstile_failed"
+
+    rejected = _captcha_lines(json_logs)["captcha verification rejected"]
+    assert (rejected["chat_id"], rejected["user_id"]) == (CHAT, NEWBIE)
+    assert rejected["reason"] == "turnstile_failed"
+    # Unknown challenge: nothing to tag, still logged and rejected.
+    response = await client.post(VERIFY, json=body(uuid.uuid4()))
+    assert response.status_code == 400
+    assert "chat_id" not in _captcha_lines(json_logs)["captcha verification rejected"]
+
+
+async def test_timeout_job_is_scheduled_outside_the_update_context(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """APScheduler keeps the scheduling context for its later runs and their logs."""
+    seen: list[dict[str, Any]] = []
+    original = JobQueue.run_once
+
+    def spy(self: JobQueue[Any], *args: Any, **kwargs: Any) -> Any:
+        seen.append(dict(get_log_context()))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(JobQueue, "run_once", spy)
+    await flow.join()
+    assert seen == [{}]
