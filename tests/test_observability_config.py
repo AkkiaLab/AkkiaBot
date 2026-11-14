@@ -17,7 +17,9 @@ from scripts import grafana_sync
 from scripts.grafana_sync import (
     DataSource,
     SyncError,
+    env_missing_rules,
     load_dashboards,
+    load_env_missing,
     load_rule_group,
     parse_duration,
     pick_datasource,
@@ -304,9 +306,11 @@ def test_sync_uploads_dashboards_and_rules(capsys: pytest.CaptureFixture[str]) -
     assert variables["prometheus"]["current"]["value"] == "grafanacloud-prom"
     assert variables["loki"]["current"]["value"] == "grafanacloud-logs"
     _, _, rules = fake.requests[4]
-    assert len(rules["rules"]) == 4
+    uids = [r["uid"] for r in rules["rules"]]
+    assert len(uids) == 5
+    assert uids[-1] == "akkiabot-env-missing-staging"  # default expected env
     out = capsys.readouterr().out
-    assert "4 rules" in out
+    assert "5 rules" in out
     assert "fake-grafana-token" not in out
 
 
@@ -361,3 +365,44 @@ def test_readyz_probe_has_the_job_the_queries_use() -> None:
     probes = [e for e in exprs if "probe_success" in e]
     assert probes
     assert all('job="akkiabot-readyz"' in e for e in probes)
+
+
+# ------------------------------------------------- per-environment absence
+
+
+def test_env_missing_rule_per_expected_environment() -> None:
+    template = load_env_missing()
+    assert template["environments"] == ["staging"]
+    rules = env_missing_rules(template, ["staging", "production"])
+    assert [r["uid"] for r in rules] == [
+        "akkiabot-env-missing-staging",
+        "akkiabot-env-missing-production",
+    ]
+    for rule, env in zip(rules, ["staging", "production"], strict=True):
+        (expr,) = [q["model"]["expr"] for q in rule["data"] if q["datasourceUid"] == "prometheus"]
+        assert expr == f'absent(probe_success{{job="akkiabot-readyz", env="{env}"}})'
+        assert "__ENV__" not in json.dumps(rule, ensure_ascii=False)
+        assert env in rule["title"]
+        assert rule["noDataState"] == "OK"  # present = absent() returns nothing
+    with pytest.raises(SyncError):
+        env_missing_rules(template, ['staging"} or vector(1) #'])
+
+
+def test_env_missing_template_is_kept_out_of_provisioning() -> None:
+    """lgtm only loads akkiabot.yaml; the template must not leak an __ENV__ rule there."""
+    dev = yaml.safe_load((DEPLOY / "compose.dev.yaml").read_text(encoding="utf-8"))["services"]
+    assert not any("env-missing" in v for v in dev["lgtm"]["volumes"])
+    assert "$" not in (OBSERVABILITY / "alerting" / "env-missing.yaml").read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_sync_env_option_overrides_expected_envs() -> None:
+    fake = FakeGrafana()
+    argv = ["sync", "--env", "staging", "--env", "production"]
+    assert grafana_sync.main(argv, transport=httpx.MockTransport(fake)) == 0
+    _, _, rules = fake.requests[-1]
+    assert [r["uid"] for r in rules["rules"]][-2:] == [
+        "akkiabot-env-missing-staging",
+        "akkiabot-env-missing-production",
+    ]
+    assert all(r["ruleGroup"] == "akkiabot" for r in rules["rules"])

@@ -1,0 +1,46 @@
+# "Environment stopped reporting", one rule per expected environment.
+#
+# Why separate rules: environments share one Grafana stack. When only
+# staging's Alloy (or host) goes away, the `/readyz 失败` query still returns
+# production's series, so its noDataState never applies and staging merely
+# becomes a MissingSeries that resolves silently. absent() on the exact env
+# label returns a series exactly when that env is gone.
+#
+# Not a Grafana provisioning file: scripts/grafana_sync.py expands `rule` once
+# per entry of `environments` (placeholder __ENV__) and appends the result to
+# the `akkiabot` group. Add `production` here when the production stack starts
+# reporting (M10); `--env` on the command line overrides the list.
+environments: [staging]
+rule:
+  uid: akkiabot-env-missing-__ENV__
+  title: 环境停止上报（__ENV__）
+  condition: C
+  data:
+    - refId: A
+      relativeTimeRange: { from: 600, to: 0 }
+      datasourceUid: prometheus
+      model:
+        refId: A
+        # Series go missing 5 minutes (Prometheus lookback) after the last sample.
+        expr: absent(probe_success{job="akkiabot-readyz", env="__ENV__"})
+        instant: true
+    - refId: B
+      datasourceUid: __expr__
+      model: { refId: B, type: reduce, expression: A, reducer: last }
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions: [{ evaluator: { type: gt, params: [0] } }]
+  # Reporting normally = absent() returns nothing.
+  noDataState: OK
+  execErrState: Error
+  for: 2m
+  labels: { severity: critical, service: akkiabot }
+  annotations:
+    summary: __ENV__ 环境超过 5 分钟没有上报 /readyz 探测数据
+    description: >-
+      Grafana Cloud 中没有 env=__ENV__ 的 probe_success：该环境的 Alloy 停止、主机宕机或无法访问
+      Grafana Cloud。在服务器上检查 docker compose ps 与 docker compose logs alloy。

@@ -27,6 +27,7 @@ flowchart LR
 | `config.alloy` | Alloy 配置。生产、预发布与本地开发共用，环境差异全部来自环境变量。 |
 | `dashboards/akkiabot.json` | dashboard（uid `akkiabot-overview`），JSON 是唯一来源。 |
 | `alerting/akkiabot.yaml` | 告警规则组 `akkiabot`，Grafana 文件预置格式。 |
+| `alerting/env-missing.yaml` | “环境停止上报”规则模板和预期环境列表（`environments`），由同步脚本按环境展开，追加到同一个规则组。 |
 | `dev/dashboards.yaml` | 本地 `grafana/otel-lgtm` 的 dashboard provider。 |
 | `grafana-sync.env.tpl` | `scripts/grafana_sync.py` 的 1Password 引用（`staging-grafana`）。 |
 
@@ -90,7 +91,7 @@ op run --env-file deploy/observability/grafana-sync.env.tpl -- just grafana-sync
 ```
 
 - `discover` 打印 stack 的 Prometheus 和 Loki 数据源（uid、Alloy 推送地址、实例 ID），不包含任何密钥。
-- `sync` 会创建文件夹 `AkkiaBot`（uid `akkiabot`），覆盖上传 dashboard，并把 dashboard 的数据源变量预选为本 stack 的 `grafanacloud-*-prom`、`grafanacloud-*-logs`；然后整体替换告警规则组 `akkiabot`，同时把规则里的数据源 uid `prometheus` 换成本 stack 的 Prometheus uid。
+- `sync` 会把 `env-missing.yaml` 按预期环境展开，与 `akkiabot.yaml` 一起作为规则组上传；`sync` 会创建文件夹 `AkkiaBot`（uid `akkiabot`），覆盖上传 dashboard，并把 dashboard 的数据源变量预选为本 stack 的 `grafanacloud-*-prom`、`grafanacloud-*-logs`；然后整体替换告警规则组 `akkiabot`，同时把规则里的数据源 uid `prometheus` 换成本 stack 的 Prometheus uid。
 - 数据源无法自动识别时，用 `--prometheus-uid`、`--loki-uid` 指定。
 
 在 dashboard 里编辑后，想保存回仓库：在 Grafana 中选择 Export → Export as JSON，**不要**勾选 “Export for sharing externally”，覆盖 `dashboards/akkiabot.json`，再执行 `pnpm exec biome format --write deploy/observability/dashboards`。`tests/test_observability_config.py` 会检查面板引用的指标都确实存在、查询都带有 `env="$env"`。
@@ -118,9 +119,12 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | 规则 | 条件 | 持续 | 无数据时 |
 | --- | --- | --- | --- |
 | bot 停止接收 update | `time() - telegram_poll_last_success_timestamp_seconds > 300` | 2 分钟 | OK（webhook 模式、app 停止时由 `/readyz` 告警覆盖） |
-| `/readyz` 失败 | `min(probe_success{job="akkiabot-readyz"}) < 1` | 2 分钟 | **告警**（Alloy 或主机宕机） |
+| `/readyz` 失败 | `min(probe_success{job="akkiabot-readyz"}) < 1` | 2 分钟 | **告警**（所有环境都没有数据时） |
+| 环境停止上报（每个预期环境一条） | `absent(probe_success{job="akkiabot-readyz", env="<env>"})` | 2 分钟（加上 5 分钟回溯，约 7 分钟触发） | OK（正常上报时 absent 没有结果） |
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
 | LLM 错误或超时持续出现 | 15 分钟内 `antispam_llm_errors_total` 增加 ≥ 3 | 5 分钟 | OK |
+
+为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中，目前只有 `staging`；生产栈开始上报后（M10）加上 `production` 并重新执行 `sync`。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
 
 通知走 Grafana Cloud 默认的 notification policy 和 contact point（stack 所有者的邮箱）。需要发到其他渠道（例如 Telegram）时，在 Grafana 中新增 contact point，并修改 notification policy；这部分目前不纳入版本管理。
 

@@ -70,7 +70,9 @@ groups:
               type: threshold
               expression: B
               conditions: [{ evaluator: { type: lt, params: [1] } }]
-        # No probe results at all means Alloy (or the whole host) is down.
+        # No probe results at all: every Alloy is down. One environment going
+        # silent while others report is a MissingSeries, not NoData; that case
+        # is covered per environment by env-missing.yaml (absent()).
         noDataState: Alerting
         execErrState: Error
         for: 2m

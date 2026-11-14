@@ -41,6 +41,9 @@ ROOT = Path(__file__).resolve().parents[1]
 OBSERVABILITY = ROOT / "deploy" / "observability"
 DASHBOARDS = OBSERVABILITY / "dashboards"
 ALERT_RULES = OBSERVABILITY / "alerting" / "akkiabot.yaml"
+ENV_MISSING = OBSERVABILITY / "alerting" / "env-missing.yaml"
+ENV_PLACEHOLDER = "__ENV__"
+_ENV_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 FOLDER_UID = "akkiabot"
 FOLDER_TITLE = "AkkiaBot"
@@ -115,6 +118,21 @@ def load_dashboards(directory: Path = DASHBOARDS) -> list[dict[str, Any]]:
 def load_rule_group(path: Path = ALERT_RULES) -> dict[str, Any]:
     (group,) = yaml.safe_load(path.read_text(encoding="utf-8"))["groups"]
     return group
+
+
+def load_env_missing(path: Path = ENV_MISSING) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def env_missing_rules(template: dict[str, Any], envs: Sequence[str]) -> list[dict[str, Any]]:
+    """One "environment stopped reporting" rule per expected environment."""
+    rules = []
+    for env in envs:
+        if not _ENV_NAME.match(env):
+            raise SyncError(f"环境名不合法：{env!r}")
+        text = json.dumps(template["rule"], ensure_ascii=False).replace(ENV_PLACEHOLDER, env)
+        rules.append(json.loads(text))
+    return rules
 
 
 def pin_datasources(dashboard: dict[str, Any], uids: dict[str, DataSource]) -> dict[str, Any]:
@@ -219,7 +237,11 @@ def discover(grafana: Grafana) -> dict[str, dict[str, str]]:
 
 
 def sync(
-    grafana: Grafana, *, prometheus_uid: str | None = None, loki_uid: str | None = None
+    grafana: Grafana,
+    *,
+    prometheus_uid: str | None = None,
+    loki_uid: str | None = None,
+    envs: Sequence[str] | None = None,
 ) -> list[str]:
     sources = grafana.datasources()
     picked = {
@@ -231,9 +253,16 @@ def sync(
     for dashboard in load_dashboards():
         url = grafana.put_dashboard(pin_datasources(dashboard, picked))
         report.append(f"dashboard {dashboard['uid']}: {url}")
-    payload = rule_group_payload(load_rule_group(), picked["prometheus"].uid)
+    template = load_env_missing()
+    expected = list(envs) if envs else list(template["environments"])
+    group = load_rule_group()
+    group["rules"] = [*group["rules"], *env_missing_rules(template, expected)]
+    payload = rule_group_payload(group, picked["prometheus"].uid)
     grafana.put_rule_group(payload)
-    report.append(f"alert rule group {payload['title']}: {len(payload['rules'])} rules")
+    report.append(
+        f"alert rule group {payload['title']}: {len(payload['rules'])} rules "
+        f"(expected envs: {', '.join(expected)})"
+    )
     return report
 
 
@@ -261,6 +290,12 @@ def main(argv: Sequence[str] | None = None, transport: httpx.BaseTransport | Non
     sync_cmd = sub.add_parser("sync", help="上传 dashboard 与告警规则")
     sync_cmd.add_argument("--prometheus-uid")
     sync_cmd.add_argument("--loki-uid")
+    sync_cmd.add_argument(
+        "--env",
+        action="append",
+        dest="envs",
+        help="必须持续上报的环境（可重复），默认取 alerting/env-missing.yaml 的 environments",
+    )
     args = parser.parse_args(argv)
     try:
         with client_from_env(transport) as client:
@@ -269,7 +304,10 @@ def main(argv: Sequence[str] | None = None, transport: httpx.BaseTransport | Non
                 print(json.dumps(discover(grafana), ensure_ascii=False, indent=2))
             else:
                 for line in sync(
-                    grafana, prometheus_uid=args.prometheus_uid, loki_uid=args.loki_uid
+                    grafana,
+                    prometheus_uid=args.prometheus_uid,
+                    loki_uid=args.loki_uid,
+                    envs=args.envs,
                 ):
                     print(line)
     except (SyncError, httpx.HTTPError) as exc:
