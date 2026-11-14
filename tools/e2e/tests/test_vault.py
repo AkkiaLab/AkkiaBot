@@ -26,6 +26,9 @@ class FakeOp:
         self.calls: list[tuple[list[str], bytes | None]] = []
         self.fail: str | None = None
         self.corrupt_reads = False
+        self.stale_reads = 0
+        """Number of upcoming reads that still return the previous value."""
+        self.previous: dict[tuple[str, str], str] = {}
 
     def __call__(self, argv: Sequence[str], stdin: bytes | None) -> tuple[int, bytes, bytes]:
         argv = list(argv)
@@ -40,6 +43,9 @@ class FakeOp:
             if field is None:
                 return 1, b"", b"[ERROR] no such field"
             value = "corrupted" if self.corrupt_reads else field.get("value", "")
+            if self.stale_reads > 0:
+                self.stale_reads -= 1
+                value = self.previous.get((title, label), "")
             return 0, value.encode() + b"\n", b""
         if verb == "get":
             item = self.items.get(argv[3])
@@ -47,6 +53,9 @@ class FakeOp:
                 return 1, b"", b'[ERROR] "x" isn\'t an item in the "AkkiaBot-Staging" vault.'
             return 0, json.dumps(item).encode(), b""
         data = json.loads(stdin or b"{}")
+        old = self.items.get(data.get("title", ""), {})
+        for f in old.get("fields", []):
+            self.previous[(old["title"], f["label"])] = f.get("value", "")
         if verb == "create":
             data["id"] = f"id-{data['title']}"
         self.items[data["title"]] = data
@@ -91,8 +100,25 @@ def test_write_errors_are_redacted_and_readback_is_checked() -> None:
     assert ADMIN_SESSION not in str(info.value)
 
     op.fail, op.corrupt_reads = None, True
+    waits: list[float] = []
     with pytest.raises(ConfigError, match="不一致"):
-        Vault(run=op).set_fields("telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)})
+        Vault(run=op, sleep=waits.append).set_fields(
+            "telegram-e2e", {"admin_session": FieldValue(ADMIN_SESSION)}
+        )
+    assert len(waits) == 4  # gave up after 5 reads
+
+
+def test_readback_tolerates_eventual_consistency() -> None:
+    # Regression: a read right after the edit returned the old (empty) value and
+    # the fresh member login was reported as a failed write.
+    op = FakeOp({"telegram-e2e": [{"id": "s", "label": "member_session", "value": ""}]})
+    op.stale_reads = 2
+    waits: list[float] = []
+    Vault(run=op, sleep=waits.append).set_fields(
+        "telegram-e2e", {"member_session": FieldValue(ADMIN_SESSION)}
+    )
+    assert waits == [1.0, 2.0]
+    assert labels(op, "telegram-e2e")["member_session"] == ("CONCEALED", ADMIN_SESSION)
 
 
 def test_add_ids_merges_and_drops_placeholder() -> None:
