@@ -148,25 +148,28 @@ flowchart LR
 
 | 功能 | 来源 | 结论 | 说明 |
 | --- | --- | --- | --- |
-| 入群验证（Turnstile + Mini App） | core / telegram / fe | **保留，重写** | 以 telegram 版为蓝本；补上 auth_date 过期检查、payload 与 chat 绑定、超时处理、验证消息自动清理 |
+| 入群验证（Turnstile + Mini App） | core / telegram / fe | **保留，重写** | 以 telegram 版为蓝本；补上 auth_date 过期检查、payload 与 chat 绑定、验证消息自动清理；**超时 5 分钟，超时后维持禁言**（已确认） |
 | LLM 反垃圾 | core + llm / telegram | **保留，重写** | 进程内调用；使用结构化输出代替正则取数字；保留"发言超过 N 条豁免"规则；记录判定结果 |
 | `/spam` 举报 | core | **保留，移植** | 管理员举报直接封禁；成员举报交给 LLM 判定，不是垃圾则通知管理员 |
 | `/warn` 警告 | core | **保留，移植** | 上限可配置 |
 | `/ban` + 清理历史消息 | core / telegram | **保留** | 以 telegram 版为蓝本 |
-| `/config` 群配置 | core（inline 按钮）/ telegram（Mini App，未完成） | **保留**；第一阶段用 inline 按钮 | Mini App 配置面板作为后续可选任务（见开放问题） |
+| `/config` 群配置 | core（inline 按钮）/ telegram（Mini App，未完成） | **保留**；第一阶段用 inline 按钮（已确认） | Mini App 配置面板作为后续优化任务 |
 | `/id`、`/help`、`/start` 分发 | 两边都有 | **保留** | |
-| `/ip` whois | core（多 provider 回退）/ telegram（仅 ip-api） | **保留**；采用 provider 链设计 | 离线 mmdb / IP2Location 是否保留待定 |
+| `/ip` whois | core（多 provider 回退）/ telegram（仅 ip-api） | **保留**；采用 provider 链设计 | 只用在线 API（ipinfo → ip-api），不使用离线库（已确认） |
 | 删除系统消息 | 两边都有 | **保留** | 改为可按群配置 |
-| 消息记录（用于封禁时批量删除） | 两边都有 | **保留 ID**；默认不存正文 | 存正文涉及隐私，见开放问题；增加保留期清理定时任务 |
-| 对外 HTTP 反垃圾 API（token map 鉴权） | llm / Toolbox / telegram | **暂不迁移** | 目前唯一调用方是 core 自己；如有外部调用方再加 |
-| Sentry / Langfuse | core / llm | **保留为可选** | 只通过配置开启，源码中不含任何地址或密钥 |
+| 消息记录（用于封禁时批量删除） | 两边都有 | **保留 ID**；默认不存正文，只在命中反垃圾时保存正文用于审计（已确认） | 增加保留期清理定时任务 |
+| 对外 HTTP 反垃圾 API（token map 鉴权） | llm / Toolbox / telegram | **丢弃** | 已确认没有第三方调用方，反垃圾改为进程内调用 |
+| Sentry / Langfuse | core / llm | **保留**（已确认） | 地址和密钥只通过配置注入，源码中不含任何值 |
+| Grafana 可观测性（日志、指标、埋点） | 无（新增） | **新增**（已确认） | 见 §4 可观测性与 §5.5 |
 | `mock_join`、OnWebApp 回显、加群申请回复、knowledge_base 空壳、`bot_config` 表 | core / llm / telegram | **丢弃** | 调试代码、空实现，或没有被使用 |
 | Toolbox-py、botlab-llm 独立服务 | — | **丢弃** | 合并进主服务 |
 | dynamic_config submodule | telegram | **丢弃** | 改用 pydantic-settings |
 
 ## 4. 推荐技术栈
 
-**一句话**：Python 3.13 单体后端（python-telegram-bot + FastAPI + SQLAlchemy 2 async + PostgreSQL），用 uv workspace 管理；前端是 Vite + React 的 Telegram Mini App，用 pnpm 管理；用 ruff / pyright / pytest / Biome / Vitest 和 GitHub Actions 保证质量，以单个 Docker 镜像加 docker compose 部署。
+**一句话**：Python 3.13 单体后端（python-telegram-bot + FastAPI + SQLAlchemy 2 async + PostgreSQL），用 uv workspace 管理；前端是 Vite + React 的 Telegram Mini App（纯静态），用 pnpm 管理并部署到 Cloudflare Pages；用 ruff / pyright / pytest / Biome / Vitest 和 GitHub Actions 保证质量；后端以 Docker 镜像加 docker compose 部署；可观测性由 Sentry（错误）、Langfuse（LLM）和 Grafana（日志、指标）三部分组成。
+
+> 2026-11-14 成员已确认：后端用 Python、生产数据库用 PostgreSQL、前端部署到 Cloudflare Pages、对外域名使用 `bot.akkia.moe`、接入 Sentry + Langfuse + Grafana。
 
 | 领域 | 选择 | 理由 | 主要备选与取舍 |
 | --- | --- | --- | --- |
@@ -174,7 +177,7 @@ flowchart LR
 | Telegram 框架 | **python-telegram-bot 22** | 已有代码基于它；官方 API 覆盖及时；自带 JobQueue（可用于定时清理、captcha 超时）；支持 webhook 和长轮询 | **aiogram 3**：Router / 中间件 / 依赖注入更现代，但需要全部重写，而且团队对它没有积累。如果后续中间件需求变复杂，可以再评估 |
 | HTTP API | **FastAPI** | 与 PTB 同在一个 asyncio 事件循环；可以自动生成 OpenAPI，前端据此生成类型 | Litestar：差别不大，生态更小 |
 | ORM / 迁移 | **SQLAlchemy 2.0（async）+ Alembic** | 修复同步 Session 阻塞事件循环的问题；所有 Telegram ID 统一用 `BigInteger` | SQLModel：对 async 和复杂类型的支持仍然别扭，旧代码里已经因此踩坑 |
-| 数据库 | **PostgreSQL 17**（生产）/ SQLite（本地开发、单测） | JSONB 适合存群配置；支持并发写；docker compose 一键拉起 | MySQL：旧 core 用过，但没有必须保留的理由；纯 SQLite：单实例也够用，但不利于以后扩展（见开放问题） |
+| 数据库 | **PostgreSQL 17**（生产，已确认）/ SQLite（本地开发、单测） | JSONB 适合存群配置；支持并发写；docker compose 一键拉起 | MySQL：旧 core 用过，但没有必须保留的理由；纯 SQLite：单实例也够用，但不利于以后扩展 |
 | 缓存 / 临时状态 | **Redis 7**（可选），接口抽象 + 内存实现作为后备 | start payload、captcha 状态需要 TTL；本地开发和测试不依赖 Redis | 只用数据库表加过期字段：可以少一个组件，但 TTL 清理要自己实现 |
 | 配置 | **pydantic-settings**（环境变量 + `.env`） | 带类型校验，启动时一次性失败；替代私有 submodule 和"写回配置文件"的做法 | YAML 文件：容器化部署时不如环境变量方便 |
 | LLM | **openai SDK（OpenAI 兼容端点）** + 可选 **Langfuse** | 豆包、OpenAI、DeepSeek 等都兼容这套接口；使用 JSON / 结构化输出 | LiteLLM：多一层依赖，但目前只调用一个模型，用不上 |
@@ -189,8 +192,8 @@ flowchart LR
 | 任务入口 | **just**（`justfile`） | `just lint` / `just test` / `just dev` 统一调度 Python 与前端两侧命令 | Makefile：可以用，但跨平台和变量处理差一些 |
 | Git hooks | **pre-commit**（ruff、biome、gitleaks、基础检查） | 延续现有习惯，并增加密钥扫描 | lefthook |
 | CI | **GitHub Actions**：按路径触发 lint、type、test；在 main 上构建镜像并推送 GHCR；Renovate 自动升级依赖 | 延续现有 GHCR 流程，修复旧 workflow 已失效的问题 | — |
-| 部署 | **单个 Docker 镜像**（后端 + 已构建的前端静态文件）+ **docker compose**（app、postgres、redis、cloudflared） | 和现有部署方式一致；只需维护一个镜像；不需要 CORS | 前端单独部署到 Cloudflare Pages：CDN 更快，但多一个部署目标和跨域配置（见开放问题） |
-| 可观测性 | 标准库 logging（JSON 格式可选），Sentry、Langfuse 都可以通过配置开启 | 默认不需要任何外部服务 | OpenTelemetry：目前用不上 |
+| 部署 | **后端**：Docker 镜像 + **docker compose**（app、postgres、redis、cloudflared、alloy），通过 cloudflared tunnel 暴露为 `api.bot.akkia.moe`；**前端**：构建产物部署到 **Cloudflare Pages**，自定义域名 `bot.akkia.moe`（已确认） | 后端沿用现有部署方式；前端走 CDN 边缘缓存，加载最快。Mini App 是纯静态 SPA，所有数据都通过调用后端 API 获取，满足 Pages 只托管静态文件的前提 | 前端随后端镜像托管：同源、不需要 CORS，但每次加载都要回源到后端服务器，速度更慢 |
+| 可观测性 | **Sentry**（异常与性能）、**Langfuse**（LLM 调用、提示词、耗时、token 用量）、**Grafana**：日志 → Loki，指标 → Prometheus 格式的 `/metrics`，由 **Grafana Alloy** 统一采集并推送（已确认） | 三者各管一块，互不重叠；Alloy 一个 agent 同时采集容器日志和指标，Grafana Cloud 或自建 LGTM 都能对接 | 全量 OpenTelemetry（traces → Tempo）：后续需要分布式追踪时再加，目前是单进程，收益不大 |
 
 ## 5. Monorepo 结构
 
@@ -225,9 +228,10 @@ AkkiaBot/
 │   ├── antispam/                # akkiabot_antispam：LLM 分类器、提示词、结果模型
 │   └── whois/                   # akkiabot_whois：IP 查询 provider 链 + 缓存
 ├── deploy/
-│   ├── Dockerfile               # 多阶段构建：构建 webapp → 安装 uv 依赖 → 运行镜像
-│   ├── compose.yaml             # 生产：app + postgres + redis + cloudflared
-│   └── compose.dev.yaml         # 本地：postgres + redis
+│   ├── Dockerfile               # 后端镜像：多阶段构建，安装 uv 依赖 → 运行镜像（不含前端）
+│   ├── compose.yaml             # 生产：app + postgres + redis + cloudflared + alloy
+│   ├── compose.dev.yaml         # 本地：postgres + redis（可选 grafana/otel-lgtm 一体化观测栈）
+│   └── observability/           # Alloy 采集配置、Grafana dashboard JSON、告警规则
 ├── docs/
 ├── .github/workflows/           # ci.yml、release.yml
 ├── pyproject.toml               # uv workspace 根配置 + ruff / pyright / pytest 配置
@@ -300,5 +304,31 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 
 - **一个进程**：`main.py` 构建 PTB `Application` 和 FastAPI app，在同一个事件循环中运行 PTB（默认长轮询，可配置为 webhook）和 uvicorn；FastAPI lifespan 负责初始化和关闭数据库、缓存、HTTP 客户端。
 - **数据库迁移**：通过独立命令 `akkiabot migrate`（容器启动前执行）完成，不在应用进程内用 subprocess 调用 alembic。
-- **静态前端**：Docker 镜像中的 `/app/webapp` 由 FastAPI 以 `StaticFiles` 挂载到 `/webapp/`，API 位于 `/api/v1/`。两者同源，不需要 CORS。
+- **域名与前端**：
+  - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。`main` 分支自动发布到生产环境，PR 生成预览地址。
+  - `api.bot.akkia.moe` → cloudflared tunnel → 后端容器，提供 `/api/v1/...`。
+  - 前端在构建时通过 `VITE_API_BASE_URL` 注入 API 地址；后端的 CORS 只放行 `https://bot.akkia.moe`（以及配置里列出的预览域名）。
+  - Mini App 的鉴权依赖请求中携带的 Telegram initData，而不是 Cookie，所以跨域不涉及凭据共享，配置很简单。
+  - 备选：也可以用 Cloudflare Worker 把 `bot.akkia.moe/api/*` 转发给 tunnel，做到同源，但多一层需要维护，目前不需要。
 - **健康检查**：`/healthz`（存活）与 `/readyz`（数据库和缓存连通）。
+
+### 5.5 可观测性
+
+| 信号 | 实现 | 去向 |
+| --- | --- | --- |
+| 异常、慢请求 | `sentry-sdk`（FastAPI 集成 + logging 集成），PTB handler 的异常统一上报 | Sentry |
+| LLM 调用 | `langfuse` 包装的 OpenAI 客户端：记录提示词版本、输入输出、耗时、token 用量和判定结果 | Langfuse |
+| 日志 | 结构化 JSON 日志输出到 stdout，字段包含 `chat_id`、`user_id`、`update_id`、`handler`、`trace_id` 等；Alloy 采集 Docker 日志并推送 | Grafana Loki |
+| 指标 / 埋点 | `prometheus-client` 暴露 `/metrics`（只在内网可访问，不经 tunnel 暴露）；Alloy 抓取后推送 | Grafana（Prometheus / Mimir） |
+
+首批业务指标（命名前缀 `akkiabot_`）：
+
+- `updates_total{type}`、`handler_duration_seconds{handler}`、`handler_errors_total{handler}`
+- `command_total{command,result}`
+- `captcha_total{result=passed|timeout|failed}`、`captcha_duration_seconds`
+- `antispam_verdict_total{verdict,action}`、`antispam_llm_duration_seconds`、`antispam_llm_errors_total`
+- `moderation_actions_total{action=ban|warn|mute|delete}`
+- `telegram_api_errors_total{method}`、`whois_lookup_total{provider,result}`
+- 运行时指标：HTTP 请求（FastAPI 中间件）、数据库连接池、事件循环延迟
+
+埋点统一通过 `akkiabot_core.observability` 提供的 helper（例如 `track_handler` 装饰器）记录，业务代码不直接操作 prometheus 对象。所有可观测性组件都在配置里设开关；关闭时代码路径不变，只是不上报。
