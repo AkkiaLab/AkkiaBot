@@ -569,19 +569,19 @@ echo "exit=$?"
 
 - 版本：后端镜像与前端都是 `5f5227aeccef23384e18752569b71fcdd82f1b16`（`staging-acceptance=success`，差异验收基线 `aeebf8c`）；前端经 `webapp-promote.yml` 发布到 `bot.akkia.moe`。
 - 新环境在停旧服务前全部就绪：postgres、redis、migrate、alloy 已运行，生产配置加载检查通过，并用旧库副本对生产库做过一次 dry-run。
-- 停机：09:30:22 UTC 停止旧版 core（`ovh-hil-01`，`/root/docker_data/botlab`，镜像按 digest 固定，回滚时直接 `docker compose start core`）→ 停服副本（旧机上没有 `sqlite3`，用 §9.3 的 Python 写法；原库哈希前后一致）→ dry-run 9 项一致 → 正式导入（统计摘要见受控的导入报告，不写入仓库）→ 09:31:46 UTC 新 bot 开始拉取更新。停机约 1 分 24 秒。
+- 切换顺序：停止旧版 core（`ovh-hil-01`，`/root/docker_data/botlab`，镜像按 digest 固定，回滚时直接 `docker compose start core`）→ 停服副本（旧机上没有 `sqlite3`，用 §9.3 的 Python 写法，并核对原库哈希前后一致）→ dry-run，一致性校验全部通过后 → 正式导入 → 启动新服务，确认新 bot 开始拉取更新。实际时间点、停机时长和导入统计属于生产记录，保存在 1Password `AkkiaBot/prod-cutover-evidence-20261115` 和生产机上的导入报告中，不写入仓库。
 - 旧机上 llm、cloudflared 等其他服务未动；旧库与停服副本保留在旧机，未修改。
 - Grafana 告警的预期环境已加入 `production`（`alerting/env-missing.yaml`）。
 
-**证据索引**（§9.7；只记录哈希、digest 和位置，旧库内容、群标题、用户 id 不出现在仓库或 issue 中）：
+**证据索引**（§9.7；只记录哈希、digest 和位置，旧库内容、群标题、用户 id 不出现在仓库或 issue 中；带时间戳的实际文件名见 1Password `AkkiaBot/prod-cutover-evidence-20261115`）：
 
 | 项目 | 值 | 位置 |
 | --- | --- | --- |
 | 旧库原文件（停服后，未修改） | sha256 `789e3ce416ee7a5dfa3f31cd9086c256a49af9526ed19c90b5471264b7ed1cd9` | `ovh-hil-01:/root/docker_data/botlab/botlab_core/data/sqlite.db` |
-| 停服副本（正式导入所用） | sha256 `952669b197af9ea4acf98bfd5dd9533b5d8fcb12c13ce4e43e31478a24f04237` | `ovh-hil-01:~akkia/akkiabot-legacy-copy/sqlite-cutover-20261115T093026Z.db`（目录 700）；`greencloud-tyo-01:~/akkiabot/production/legacy-in/` 同名文件（目录 711，文件 444） |
-| 切换前演练副本 | sha256 `1c25d68046647d0211ca7eae7b275b1c98b73a2faadf801273767dcc4d63c997` | 同上两处，`sqlite-20261115T081813Z.db` |
+| 停服副本（正式导入所用） | sha256 `952669b197af9ea4acf98bfd5dd9533b5d8fcb12c13ce4e43e31478a24f04237` | `ovh-hil-01:~akkia/akkiabot-legacy-copy/sqlite-cutover-<时间戳>.db`（目录 700）；`greencloud-tyo-01:~/akkiabot/production/legacy-in/` 同名文件（目录 711，文件 444） |
+| 切换前演练副本 | sha256 `1c25d68046647d0211ca7eae7b275b1c98b73a2faadf801273767dcc4d63c997` | 同上两处，`sqlite-<时间戳>.db` |
 | 旧版 core 镜像 | `ghcr.io/akkialab/botlab-core@sha256:c4d2587e1b4c87129880f032f91bf0c9245a1dcd7f73d45ffd275f6f6cf21dae`（本地镜像仍在，容器为 Exited） | `ovh-hil-01:/root/docker_data/botlab/docker-compose.yaml` |
 | 导入报告（含 captcha 禁言名单） | dry-run 与正式导入各一份 Markdown，权限 600 | `greencloud-tyo-01:~/akkiabot/production/legacy-in/report-cutover-{dry-run,import}.md` |
-| 导入前生产库备份 | `backups/akkiabot-20261115T093124Z.dump` | `greencloud-tyo-01:~/akkiabot/production/backups/` |
+| 导入前生产库备份 | `backups/akkiabot-<时间戳>.dump`（切换当天导入前的那一份） | `greencloud-tyo-01:~/akkiabot/production/backups/` |
 
-`ovh-hil-01` 上另有一份 `sqlite-cutover-20261115T092951Z.db`，哈希与正式副本相同：第一次执行停止命令时命令没有生效，所以那份副本是在停服前制作的，期间旧库没有写入。删除它需要另行确认，暂时保留。
+`ovh-hil-01` 上另有一份更早时间戳的 `sqlite-cutover-*.db`，哈希与正式副本相同：第一次执行停止命令时命令没有生效，所以那份副本是在停服前制作的，期间旧库没有写入。删除它需要另行确认，暂时保留。
