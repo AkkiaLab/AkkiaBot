@@ -77,6 +77,21 @@ class Vault:
         code, out, _ = self._run(["op", "read", f"op://{self.name}/{item}/{field}"], None)
         return out.decode("utf-8").rstrip("\n") if code == 0 else None
 
+    def read_strict(self, item: str, field: str) -> str | None:
+        """Like :meth:`read`, but a failed lookup raises instead of looking like a missing field.
+
+        ``None`` only when ``op`` itself reports that the item does not exist or the item
+        has no such field; any other failure (network, service, auth) raises
+        :class:`ConfigError`. Use this before a read-modify-write.
+        """
+        data = self._get_item(item)
+        if data is None:
+            return None
+        matches = [f for f in data.get("fields", []) if f.get("label") == field]
+        if len(matches) > 1:
+            raise ConfigError(f"条目 {self.name}/{item} 中有多个名为 {field} 的字段，请先合并")
+        return str(matches[0].get("value") or "") if matches else None
+
     def _get_item(self, item: str) -> dict[str, Any] | None:
         argv = ["op", "item", "get", item, f"--vault={self.name}", "--format=json", "--reveal"]
         code, out, err = self._run(argv, None)
@@ -121,17 +136,31 @@ class Vault:
     def _verify(self, item: str, label: str, expected: str) -> None:
         # A read right after an edit has returned the previous value at least once
         # (seen live on 2026-11-14; not known to hold for every case), so retry briefly.
-        accepted = {expected} if expected else {"", None}
         for attempt in range(self._readback_attempts):
-            if self.read(item, label) in accepted:
+            if self._read_back_matches(item, label, expected):
                 return
             if attempt + 1 < self._readback_attempts:
                 self._sleep(1.0 * (attempt + 1))
         raise ConfigError(f"回读 {self.name}/{item}/{label} 的值与写入不一致")
 
+    def _read_back_matches(self, item: str, label: str, expected: str) -> bool:
+        value = self.read(item, label)
+        if expected or value is not None:
+            return value == expected
+        # An emptied field may read back as missing; but `op read` also returns
+        # nothing on a failed call, so confirm with the item itself.
+        try:
+            return not self.read_strict(item, label)
+        except ConfigError:
+            return False
+
     def read_ids(self, item: str, field: str) -> list[int]:
-        """A comma-separated id list field (``0`` placeholders dropped); ``[]`` when missing."""
-        current = self.read(item, field) or ""
+        """A comma-separated id list field (``0`` placeholders dropped); ``[]`` when missing.
+
+        Raises :class:`ConfigError` when the field cannot be read: callers write the
+        list back, and an unreadable list must never be taken for an empty one.
+        """
+        current = self.read_strict(item, field) or ""
         return sorted({int(p) for p in current.replace(" ", "").split(",") if p not in {"", "0"}})
 
     def _write_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
