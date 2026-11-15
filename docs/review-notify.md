@@ -44,19 +44,21 @@ autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
 4. **实现者**：原任务负责人是智能体且不是 Reviewer 时唤醒它；负责人是成员、为空或为 Reviewer 时只留记录评论，不唤醒。
 5. **分步状态与失败恢复**（每条评审独立推进，任何一步失败都可从断点续做）：
    - metadata `github_review_<review id>` 只记录进度，**不作为跳过的闸门**：值为 `done:…` 才表示通知已完成并结束；不存在或为 `commented:<评论 id>` 时，从头按下列幂等步骤重做。
-   - 记录评论：先按首行标记 `[review-notify] PR #<N> review <review id>` 查找已有评论，没有才发；发完等 5 秒再查，标记相同的评论保留创建时间最早（同时间取 id 最小）的一条，**自己多发的那条删除**。然后写 `commented:<评论 id>`。
+   - 记录评论：先按首行标记 `[review-notify] PR #<N> review <review id>` 查找已有评论，没有才发；发完等 5 秒再查，分派智能体发的、标记相同的评论保留创建时间最早（同时间取 id 最小）的一条，**其余全部删除（不论是哪次运行发的）**。然后写 `commented:<评论 id>`。
    - 唤醒：见下一条“并发收敛”。确认存在一条有效唤醒（或按状态规则无须唤醒）后才写 `done:<评论 id>:<唤醒 id 或 none>`。
    - 任一步失败或运行中断：已发的评论 / 已建的唤醒会被下一次处理按标记找到并复用，不会漏通知也不会重复。
 6. **并发收敛**（平台没有原子的“已存在则跳过”：实测两次并发 `wakeup create` 会生成两条规则）：
-   - 查找同一 issue 上启用中、`kind=at`、`fire_count=0`、目标为同一实现者、指令以 `[review-notify]` 开头的待触发唤醒；没有才新建（延迟 2 分钟）。
-   - 新建后等 5 秒重新列出，所有候选中只保留创建时间最早（同时间取 id 最小）的一条，**自己新建的那条若不是最早就删除**。每个并发者只删自己的规则，所有人看到的“最早一条”相同，最终只剩一条；删除会撤回该规则尚未开始的运行。
+   - 本机制的资源范围：由分派智能体（Mika）创建、启用中、`kind=at`、`fire_count=0`、目标为同一实现者、指令以 `[review-notify]` 开头的待触发唤醒。这些规则只由本机制创建，任何一次分派运行都可以清理。
+   - 没有候选才新建（延迟 2 分钟）；新建后等 5 秒重新列出，只保留创建时间最早（同时间取 id 最小）的一条，**其余候选全部删除，不论是哪次运行创建的**。删除会撤回该规则尚未开始的运行。
+   - 收敛不依赖创建者存活：全局最早的那条规则，任何看到它的运行都会保留，没有人会删它；比它晚的规则，只要后来有任何运行看到，就会被删除。所以某个创建者在建完规则后中断，它的遗留规则会被下一次分派运行（同 issue 的新评审、该评审的补偿重试、补偿扫描）删除。
+   - 实现者兜底：唤醒指令要求实现者在开始处理前，删除本 issue 上其余指向自己的待触发 `[review-notify]` 规则（正在触发的那条 `fire_count>0`，不在其中）。这些规则对应的评审在本次运行开始前已经提交，会在本次运行中一并处理。即使中断遗留的规则在所有分派运行结束后才出现，也会在实现者开始处理前被清掉（同时触发的边界见第 7 条）。
    - 同一 review id 的多次投递、几乎同时到达的不同评审（如 Copilot 与人类相继提交）都收敛到这一条唤醒，实现者只运行一次。
    - 一条唤醒触发后（`fire_count>0`），之后到达的评审会新建下一条唤醒，实现者会再运行一次：已开始的运行不保证看到之后的新意见，这是有意的“新意见至少送达一次”。
 7. **重投与恢复入口**：
    - 同一 `X-GitHub-Delivery` 重投由 Multica 平台去重，只记录一次运行；因此投递一旦被接收而分派运行失败，GitHub 重投不能补救。
    - 同一 issue 后续任何评审的分派运行，会顺带检查该 issue 上未到 `done:` 的 `github_review_*` 并按上面的步骤补齐。
    - **补偿扫描**：手动执行 `multica autopilot trigger <autopilot id>`（无 GitHub 载荷）时，分派智能体扫描 `AkkiaLab/AkkiaBot` 所有 open PR 上最近 24 小时提交的评审，对每条按相同的判定和步骤处理；已 `done:` 的跳过，未完成的续做。发现分派运行 failed / skipped（`multica autopilot runs <autopilot id>`）或有人报告漏通知时，由 Engineer 或 Leader 执行。超过 24 小时的遗漏，在原 issue 上直接 @ 实现者。
-   - 残余边界：5 秒的等待用于覆盖并发写入的提交延迟，未能证明在平台极端延迟下仍成立；若出现两条唤醒，实现者至多多运行一次，不会漏通知。
+   - 残余边界：实现者兜底清理之前，若遗留规则恰好与有效规则在同一时刻触发（两者创建间隔不超过分派运行的数秒），实现者可能各启动一次。平台会把排队中的唤醒并入同一运行，但无法保证一定合并；即使不合并，第二次运行也会发现已无未处理意见，简短说明后结束，不会漏通知。记录评论在中断时可能多出一条，下一次处理同一评审时会删除。
 8. **不会形成循环**：实现者处理后在线程里的回复属于 `AkkiaS7` 纯回复评审，被跳过；分派智能体本身不在 GitHub 上写任何内容。
 
 ## 成本
@@ -105,20 +107,21 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 - MARK = 首行文本 “[review-notify] PR #N review RID”。
 - 查找：$M issue comment list <ISSUE id> --roots-only --summary --since <T 减 1 分钟，RFC3339> --output json，取 content 以 MARK 开头的评论。
 - 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、处理方式（已唤醒 / 原任务已关闭未唤醒 / 负责人不是实现智能体未唤醒，按 P5 的判断填写）。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
-- 收敛：等待 5 秒后按同样方式重新查找；以 MARK 开头的评论中按 (created_at, id) 最小者为 CID。若自己发的评论不是 CID：$M issue comment delete <自己的评论 id>。不要删除别人的评论。
+- 收敛：等待 5 秒后按同样方式重新查找；只看 author_type = agent 且 author_id = 1178379b-5f95-4519-9310-7b902d4cd59d（分派智能体）、content 以 MARK 开头的评论，按 (created_at, id) 最小者为 CID，其余这类评论全部 $M issue comment delete <评论 id>（不论是哪次运行发的；不删其他作者的评论）。
 - $M issue metadata set <ISSUE id> --key github_review_RID --value commented:CID --type string --output json
 
 ### P5. 唤醒实现者（先查后建、建后收敛）
 - ISSUE.status 为 done 或 cancelled：不唤醒、不改状态，W = none。
 - assignee_type ≠ agent，或 assignee_id = 77ea0846-9b13-4d08-ab12-a884e536a484（Reviewer）：不唤醒，W = none。
-- 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET 且 instruction 以 “[review-notify]” 开头的规则。
+- 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 1178379b-5f95-4519-9310-7b902d4cd59d（分派智能体）且 instruction 以 “[review-notify]” 开头的规则。
 - 没有候选：在工作目录写指令文件，内容：
-    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。请按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
-  然后 $M issue wakeup create <ISSUE id> --agent-id TARGET --kind at --after 2m --instruction-file <文件> --output json，记下自己建的规则 id。
-- 收敛：等待 5 秒后重新列出候选；按 (created_at, id) 最小者为 W。若自己建的规则不是 W：$M issue wakeup delete <ISSUE id> <自己的规则 id> --output json。不要删除别人的规则。
-- 若此时没有任何候选（例如刚好已触发），且自己没有新建过：重做一次本步骤。
+    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
+  然后 $M issue wakeup create <ISSUE id> --agent-id TARGET --kind at --after 2m --instruction-file <文件> --output json，
+- 收敛（有候选或刚新建后都执行）：等待 5 秒后重新列出候选；按 (created_at, id) 最小者为 W，其余候选全部 $M issue wakeup delete <ISSUE id> <规则 id> --output json（不论是哪次运行创建的；不删不在候选范围内的规则）。
+- 若此时没有任何候选（例如刚好已触发），且本次没有新建过：重做一次本步骤。
 
 ### P6. 完成与顺带补齐
+- 若 P3 判定已 done 且需要唤醒：只执行一次 P5 的“收敛”（不新建），清理可能的中断遗留。
 - 未到 done 时：$M issue metadata set <ISSUE id> --key github_review_RID --value done:CID:W --type string --output json
 - 然后 $M issue metadata list <ISSUE id> --output json：其他 github_review_<id> 的值不以 done: 开头的，对该评审从 P1 开始补齐：PR 编号取自其 commented: 记录评论首行，评审内容用 gh api repos/AkkiaLab/AkkiaBot/pulls/<编号>/reviews/<id> 取得；该 PR 已关闭时只写 done:<评论 id>:none。
 
@@ -128,7 +131,7 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 
 ## 并发与恢复验证（2026-11-15，BOT-35）
 
-在 BOT-35 上用真实 Multica CLI 按 P3–P6 的同一套步骤模拟（唤醒延迟改为 12 小时、目标为 Engineer，测完全部删除；记录评论改发在一个评论线程内，因为评论触发的运行不能发顶层评论，webhook 运行不受此限）：
+在 BOT-35 上用真实 Multica CLI 按 P3–P6 的同一套步骤模拟（复审补充的中断场景按“其余候选全部删除”的版本重跑；唤醒延迟改为 12 小时、目标为 Engineer，测完全部删除；记录评论改发在一个评论线程内，因为评论触发的运行不能发顶层评论，webhook 运行不受此限）：
 
 | 场景 | 结果 |
 | --- | --- |
@@ -139,6 +142,9 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 | 已 `done:` 的评审再次送达 | 直接结束，无写入 |
 | 发评论后中断（停在 `commented:`） | 重试复用原评论，补建唤醒后写 `done:` |
 | 建唤醒后、写 `done:` 前中断 | 重试复用原评论与原唤醒，无新增 |
+| 三路并发，一路建完唤醒后、复查前中断，另一路发完评论后中断（复审补充） | 存活运行删掉中断者的唤醒；两次补偿重试复用中断者的评论；最终唤醒 1 条、每条评审评论 1 条 |
+| A 完成后才出现中断者遗留的唤醒（A 看不到），再来一次分派运行 | 新运行删除遗留规则，保留最早的一条 |
+| 中断遗留后没有任何后续分派 | 实现者开始前的清理删除其余待触发规则 |
 
 真实 webhook 运行中的失败恢复、补偿扫描和端到端通知，需在 GitHub hook 接入后验证，结果记在 BOT-35。
 
