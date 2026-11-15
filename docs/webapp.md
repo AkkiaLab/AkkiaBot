@@ -43,7 +43,7 @@ staging 与 prod 的发布入口分离（负责人于 2026-11-14 确认的分层
 flowchart LR
     PR[PR] -->|webapp-deploy.yml| P["预览：分支名.akkiabot-webapp.pages.dev"]
     M[master 推送] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
-    S --> A["staging 发版验收<br/>just e2e-staging --record-status SHA"]
+    S --> A["staging 发版验收<br/>just e2e-staging --record-status SHA<br/>（--baseline BASE --scenarios …）"]
     A -->|commit status staging-acceptance=success| G["webapp-promote.yml（输入 sha，需审批）"]
     G --> Prod["bot.akkia.moe"]
 ```
@@ -58,7 +58,7 @@ flowchart LR
 
 **版本锁定。** `VITE_API_BASE_URL`、`VITE_TURNSTILE_SITE_KEY` 在 `vite build` 时写进产物，所以同一个 commit 要按环境各构建一次。共用的构建步骤在 `.github/actions/webapp-build`：安装锁定依赖 → 用该环境的变量构建 → 写入 `dist/version.json`（`{"sha", "environment"}`）→ 检查不含开发 mock。提升到生产时：
 
-1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入：验收开始前（已取得验收锁）和结束后，各核对一次 `staging.akkiabot-webapp.pages.dev/version.json` 是否为该 sha，期间被新的 master 推送替换就不会写 `success`（见 `docs/e2e-acceptance.md` §6.2）。
+1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入，`success` 表示全量通过，或相对一个已通过的祖先 commit（基线）的差异场景全部实际通过（`docs/e2e-acceptance.md` §6.2）：验收开始前（已取得验收锁）和结束后，各核对一次 `staging.akkiabot-webapp.pages.dev/version.json` 是否为该 sha，期间被新的 master 推送替换就不会写 `success`（见 `docs/e2e-acceptance.md` §6.2）。
 2. `deploy` 任务检出这个 sha（构建 action 也来自该 commit），并确认 `HEAD` 等于它；然后只换成生产环境变量重新构建。因此代码与 staging 验收的完全相同，差别只在环境配置。
 3. 上传后对部署地址做冒烟：`/`、`/captcha?challenge=…` 返回 200，`/version.json` 的 sha 等于输入值。
 
@@ -100,6 +100,6 @@ Cloudflare 侧（已用 staging token 通过 API 完成）：
 分层验收（`AGENTS.md`）：
 
 - **PR**：只验证受影响部分。单元测试和构建检查由 CI 执行；PR 预览地址能打开，直接访问 `<预览地址>/captcha?challenge=<任意 uuid>` 返回页面（不是 404），在浏览器中提示“请在 Telegram 中…打开”。
-- **staging 发版**：`just e2e-staging --record-status <sha>` 全量自动化验收，其中 `m7.captcha` 覆盖“入群被禁言 → 群内提示 → 私聊深链 → 打开 Mini App（Telegram 签发的真实 initData）→ 页面 → 验证接口与 CORS → 未通过 Turnstile 时保持禁言”。真实 Turnstile 挑战需要真人在浏览器中完成，工具不求解，staging 也不改用测试 key；报告中以“未自动化”列出，不计入通过。
+- **staging 发版**：`just e2e-staging --record-status <sha>` 自动化验收，默认只验收差异（`--baseline`、`--scenarios`，见 `docs/e2e-acceptance.md` §6.2）；改到入群验证链路时选中 `m7.captcha`，它覆盖“入群被禁言 → 群内提示 → 私聊深链 → 打开 Mini App（Telegram 签发的真实 initData）→ 页面 → 验证接口与 CORS → 未通过 Turnstile 时保持禁言”。真实 Turnstile 挑战需要真人在浏览器中完成，工具不求解，staging 也不改用测试 key；报告中以“未自动化”列出，不计入通过。
 - **本地官方测试 key**：`just e2e-turnstile-test-keys` 用当前检出构建两份 Mini App（固定通过 / 固定失败的 site key），在无头 Chromium 中加载真实 widget，配合本机被测 bot 的固定失败 / 固定通过 secret key，覆盖 widget 失败、Siteverify 拒绝与验证通过三条路径（`docs/e2e-acceptance.md` §6.4）。它是独立的一类证据，不替代上面的 staging 真实 widget 验收。
 - **prod**：只提升通过 staging 验收的 sha，`webapp-promote.yml` 自带冒烟检查；不重复全量验收。

@@ -133,7 +133,7 @@ def test_cli_fresh_group_flag(
         seen.update(kwargs)
         return Report(run_id=kwargs["run_id"], status="passed", started_at="-")
 
-    async def fake_guarded_run(sha, url, web, run) -> Report:
+    async def fake_guarded_run(sha, url, web, run, baseline=None) -> Report:
         return await run()
 
     async def fake_check(token, username, http) -> None:

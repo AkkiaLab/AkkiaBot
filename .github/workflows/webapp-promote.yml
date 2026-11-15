@@ -3,7 +3,9 @@ name: Webapp promote to production
 # The only way a build reaches production (bot.akkia.moe). Promotes one exact
 # master commit that already passed the staging acceptance (docs/webapp.md):
 #   1. `verify`: the sha is on master and carries the commit status
-#      `staging-acceptance` = success (written by `just e2e-staging --record-status`);
+#      `staging-acceptance` = success (written by `just e2e-staging --record-status`:
+#      a full run, or a diff run against an already accepted ancestor, see
+#      docs/e2e-acceptance.md §6.2);
 #   2. `deploy` (environment `webapp-production`, required reviewers): checks out
 #      that sha, builds it with the production VITE_* values only, uploads it as
 #      the Pages production deployment and smoke-tests it.
