@@ -139,7 +139,11 @@ async def test_widget_failure_siteverify_rejection_then_pass(
     assert origins == [FAIL_ORIGIN, lab.pass_origin, lab.pass_origin]
     # The scenario's join is the owner adding the member: no rate-limited link join
     # (the other add is the group preparation of the fake world).
-    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 2}
+    assert report.joins == {
+        "member_join_by_link": 0,
+        "member_join_request": 0,
+        "owner_added_member": 2,
+    }
     # Reported as its own class of evidence, separate from real-challenge evidence.
     assert report.test_keys == [TEST_KEYS_NOTE, "fake test keys"]
     assert report.not_automated == []

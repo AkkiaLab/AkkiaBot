@@ -18,7 +18,7 @@ from datetime import datetime
 
 from akkiabot_e2e.errors import E2EError, FloodWait, InviteFailed
 from akkiabot_e2e.redaction import Secret
-from akkiabot_e2e.scenarios import HttpResult
+from akkiabot_e2e.scenarios import JOIN_REQUEST_TEXT, HttpResult
 from akkiabot_e2e.transport import Account, Button, ChatRef, Entity, Msg, Role, UserInfo
 
 ADMIN = UserInfo(1001, "群主测试", "e2e_admin")
@@ -66,6 +66,8 @@ class FakeChat:
     banned: set[int] = field(default_factory=set)
     restricted: set[int] = field(default_factory=set)
     """Muted members (cannot send messages)."""
+    join_requests: set[int] = field(default_factory=set)
+    """Users whose request to join (approval link) is pending."""
     message_counts: dict[int, int] = field(default_factory=dict)
     next_id: int = 1
     about: str = ""
@@ -130,6 +132,11 @@ class FakeBot:
     """Answer /start with a URL button instead of a web_app button."""
     captcha_no_mention: bool = False
     """Prompt without linking the newcomer."""
+    # -- join request knobs --
+    join_request_silent: bool = False
+    """Ignore join requests (no private notice)."""
+    join_request_approves: bool = False
+    """Approve join requests on its own (behaviour nobody asked for)."""
     # -- state --
     settings: dict[int, dict[str, bool]] = field(default_factory=dict, init=False)
     warns: dict[tuple[int, int], int] = field(default_factory=dict, init=False)
@@ -180,6 +187,18 @@ class FakeBot:
             entities=mention,
             buttons=(Button("👉点击此处开始入群验证👈", url=link),),
         )
+
+    def on_join_request(self, world: FakeTelegram, chat: FakeChat, user_id: int) -> None:
+        """Tell the applicant, in private, to wait for an admin (legacy behaviour)."""
+        # Telegram sends chat_join_request only to admins with "invite users".
+        if "invite_users" not in chat.rights.get(self.user.id, frozenset()):
+            return
+        if self.join_request_approves:
+            chat.join_requests.discard(user_id)
+            chat.members[user_id] = "member"
+        if self.join_request_silent:
+            return
+        world.post(world.private_chat(self.user.id, user_id), self.user.id, JOIN_REQUEST_TEXT)
 
     def challenge_of(self, challenge_id: str) -> tuple[int, int] | None:
         for chat_id, user_id, challenge in self.challenges.values():
@@ -464,6 +483,18 @@ class FakeTelegram:
     def account(self, user: UserInfo) -> FakeAccount:
         return FakeAccount(self, user)
 
+    def private_chat(self, peer_id: int, user_id: int) -> FakeChat:
+        """The private chat with ``peer_id`` (a bot) as ``user_id`` sees it.
+
+        Like the rest of the fake, there is one such chat per bot, shared by
+        every account.
+        """
+        if peer_id not in self.chats:
+            chat = FakeChat(peer_id, self.users[peer_id].first_name, user_id)
+            chat.members.update({user_id: "member", peer_id: "member"})
+            self.chats[peer_id] = chat
+        return self.chats[peer_id]
+
 
 class FakeAccount:
     def __init__(self, world: FakeTelegram, user: UserInfo) -> None:
@@ -481,10 +512,7 @@ class FakeAccount:
         bot = self.world.bot
         is_bot_chat = bot is not None and chat_id == bot.user.id
         if chat_id not in self.world.chats and (chat_id in self.world.private_bots or is_bot_chat):
-            peer = self.world.users[chat_id]
-            chat = FakeChat(chat_id, peer.first_name, self.user.id)
-            chat.members.update({self.user.id: "member", chat_id: "member"})
-            self.world.chats[chat_id] = chat
+            return self.world.private_chat(chat_id, self.user.id)
         return self.world.chats[chat_id]
 
     async def me(self) -> UserInfo:
@@ -581,6 +609,24 @@ class FakeAccount:
         self._op("export_invite_link")
         return f"https://t.me/+fake{-chat_id}"
 
+    async def export_request_link(self, chat_id: int) -> str:
+        self._op("export_request_link")
+        return f"https://t.me/+fakerequest{-chat_id}"
+
+    async def request_join(self, link: str) -> None:
+        self._op("request_join")
+        chat = self._chat(-int(link.rsplit("fakerequest", 1)[1]))
+        if self.user.id in chat.members:
+            raise E2EError("USER_ALREADY_PARTICIPANT")
+        chat.join_requests.add(self.user.id)
+        bot = self.world.bot
+        if bot is not None and bot.user.id in chat.members:
+            bot.on_join_request(self.world, chat, self.user.id)
+
+    async def decline_join_request(self, chat_id: int, user_id: int) -> None:
+        self._op("decline_join_request")
+        self._chat(chat_id).join_requests.discard(user_id)
+
     async def join_by_link(self, link: str) -> int | None:
         self._op("join_by_link")
         chat = self._chat(-int(link.rsplit("fake", 1)[1]))
@@ -634,8 +680,9 @@ class FakeAccount:
 
     async def history(self, chat_id: int, *, min_id: int, limit: int = 50) -> list[Msg]:
         self._op("history")
+        # Like Telethon: the newest ``limit`` messages above ``min_id``, oldest first.
         msgs = sorted(m for m in self._chat(chat_id).messages if m > min_id)
-        return [self._chat(chat_id).messages[i] for i in msgs[:limit]]
+        return [self._chat(chat_id).messages[i] for i in msgs[-limit:]]
 
     async def get_message(self, chat_id: int, message_id: int) -> Msg | None:
         self._op("get_message")

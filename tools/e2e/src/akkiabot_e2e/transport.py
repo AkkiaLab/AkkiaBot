@@ -15,8 +15,10 @@ from typing import Literal, Protocol
 Role = Literal["creator", "admin", "member"]
 
 #: Admin rights the bot needs in the test group. ``delete_messages`` is used by
-#: M2 (service messages); ``ban_users`` by M4 (/ban, /warn) and M5 (/spam).
-BOT_ADMIN_RIGHTS: frozenset[str] = frozenset({"delete_messages", "ban_users"})
+#: M2 (service messages); ``ban_users`` by M4 (/ban, /warn) and M5 (/spam);
+#: ``invite_users`` by m2.join-request (Telegram only sends ``chat_join_request``
+#: to admins with this right).
+BOT_ADMIN_RIGHTS: frozenset[str] = frozenset({"delete_messages", "ban_users", "invite_users"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +122,22 @@ class Account(Protocol):
         ...
 
     async def export_invite_link(self, chat_id: int) -> str: ...
+
+    async def export_request_link(self, chat_id: int) -> str:
+        """An invite link that needs admin approval (``request_needed``)."""
+        ...
+
+    async def request_join(self, link: str) -> None:
+        """Ask to join through an approval link; the account does *not* join.
+
+        Raises :class:`~akkiabot_e2e.errors.E2EError` if Telegram lets the
+        account in directly (the link did not require approval).
+        """
+        ...
+
+    async def decline_join_request(self, chat_id: int, user_id: int) -> None:
+        """Decline ``user_id``'s pending request; no-op if there is none any more."""
+        ...
 
     async def join_by_link(self, link: str) -> int | None:
         """Join; returns the id of the resulting service message, if Telegram reports one."""

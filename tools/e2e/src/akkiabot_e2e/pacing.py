@@ -194,6 +194,20 @@ class PacedAccount:
             self._label("export_invite_link"), lambda: self.inner.export_invite_link(chat_id)
         )
 
+    async def export_request_link(self, chat_id: int) -> str:
+        return await self.pacer.call(
+            self._label("export_request_link"), lambda: self.inner.export_request_link(chat_id)
+        )
+
+    async def request_join(self, link: str) -> None:
+        await self.pacer.call(self._label("request_join"), lambda: self.inner.request_join(link))
+
+    async def decline_join_request(self, chat_id: int, user_id: int) -> None:
+        await self.pacer.call(
+            self._label("decline_join_request"),
+            lambda: self.inner.decline_join_request(chat_id, user_id),
+        )
+
     async def join_by_link(self, link: str) -> int | None:
         return await self.pacer.call(
             self._label("join_by_link"), lambda: self.inner.join_by_link(link)
