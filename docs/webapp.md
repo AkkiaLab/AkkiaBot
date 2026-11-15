@@ -100,5 +100,6 @@ Cloudflare 侧（已用 staging token 通过 API 完成）：
 分层验收（`AGENTS.md`）：
 
 - **PR**：只验证受影响部分。单元测试和构建检查由 CI 执行；PR 预览地址能打开，直接访问 `<预览地址>/captcha?challenge=<任意 uuid>` 返回页面（不是 404），在浏览器中提示“请在 Telegram 中…打开”。
-- **staging 发版**：`just e2e-staging --record-status <sha>` 全量自动化验收，其中 `m7.captcha` 覆盖“入群被禁言 → 群内提示 → 私聊深链 → 打开 Mini App（Telegram 签发的真实 initData）→ 页面 → 验证接口与 CORS → 未通过 Turnstile 时保持禁言”。真实 Turnstile 挑战需要真人在浏览器中完成，工具不求解，也不使用测试 key；报告中以“未自动化”列出，不计入通过。
+- **staging 发版**：`just e2e-staging --record-status <sha>` 全量自动化验收，其中 `m7.captcha` 覆盖“入群被禁言 → 群内提示 → 私聊深链 → 打开 Mini App（Telegram 签发的真实 initData）→ 页面 → 验证接口与 CORS → 未通过 Turnstile 时保持禁言”。真实 Turnstile 挑战需要真人在浏览器中完成，工具不求解，staging 也不改用测试 key；报告中以“未自动化”列出，不计入通过。
+- **本地官方测试 key**：`just e2e-turnstile-test-keys` 用当前检出构建两份 Mini App（固定通过 / 固定失败的 site key），在无头 Chromium 中加载真实 widget，配合本机被测 bot 的固定失败 / 固定通过 secret key，覆盖 widget 失败、Siteverify 拒绝与验证通过三条路径（`docs/e2e-acceptance.md` §6.4）。它是独立的一类证据，不替代上面的 staging 真实 widget 验收。
 - **prod**：只提升通过 staging 验收的 sha，`webapp-promote.yml` 自带冒烟检查；不重复全量验收。
