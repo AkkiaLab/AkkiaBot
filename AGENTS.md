@@ -12,6 +12,11 @@
 - 安全告警不能只凭来源记录判定为构造值，还要用服务方无副作用的只读接口实际验证（如 Telegram `getMe`），来源证据与验证结果分开记录；凭据只在进程内读取，不进命令参数、日志、含值 URL 或报告。网络失败、限流或本地格式拒绝记为"未验证"；若意外有效，停止调用并请负责人吊销/轮换。
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
 
+## 部署与运行环境
+
+- staging、production 一律用仓库 `deploy/compose.yaml` 完整 docker compose 部署，不在服务器上直接运行二进制或 `uv run`（负责人于 BOT-16 要求，2026-11-15）。
+- 开发和测试用到的 PostgreSQL、Redis 等环境服务也由 docker compose 提供（`deploy/compose.dev.yaml`、`just services`）；只有我们自己的代码为了方便调试和迭代，允许在本机直接运行。
+
 ## 真实 Telegram 验收
 
 - 一律使用 Telegram 测试环境（MTProto 测试 DC、Bot API `/test/` 端点、测试环境 BotFather），无法使用时报错阻塞，不回退生产；产品侧开关为 `TELEGRAM_TEST_ENVIRONMENT`。
