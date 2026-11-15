@@ -212,11 +212,29 @@ class PlaywrightMiniApp:
             await self._playwright.stop()
 
     async def visit(self, url: str) -> MiniAppVisit:
+        """Open ``url`` (Telegram's launch URL, carrying signed initData).
+
+        Browser errors (Playwright puts the full URL in navigation errors) are
+        replaced by their type only and raised outside the ``except`` block, so
+        neither the message nor the exception chain (``__cause__`` /
+        ``__context__``) can carry the launch URL into logs or reports.
+        """
         if self._browser is None:
             raise E2EError("浏览器尚未启动")
+        try:
+            return await self._visit(self._browser, url)
+        except E2EError:
+            raise
+        except Exception as exc:
+            error_type = type(exc).__name__
+        raise E2EError(
+            f"无头浏览器打开 Mini App 失败（{error_type}）；原始错误含启动地址（initData），未保留"
+        )
+
+    async def _visit(self, browser: Browser, url: str) -> MiniAppVisit:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        context = await self._browser.new_context()
+        context = await browser.new_context()
         await context.add_init_script(_CLIENT_BRIDGE)
         try:
             page = await context.new_page()

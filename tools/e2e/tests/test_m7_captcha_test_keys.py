@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Literal
@@ -10,6 +11,7 @@ import pytest
 
 from akkiabot_e2e import cli
 from akkiabot_e2e.config import E2EConfig
+from akkiabot_e2e.errors import E2EError
 from akkiabot_e2e.pacing import Pacer
 from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.report import Report
@@ -31,6 +33,7 @@ from akkiabot_e2e.testing import (
     FakeTraces,
     live_env,
 )
+from akkiabot_e2e.turnstile_lab import PlaywrightMiniApp
 
 FAIL_ORIGIN = "http://127.0.0.1:2"
 
@@ -212,3 +215,63 @@ def test_cli_rejects_test_keys_scenario_without_serve(capsys: pytest.CaptureFixt
 def test_cli_lists_local_scenario(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["list"], env={}) == 0
     assert TEST_KEYS_SCENARIO in capsys.readouterr().out
+
+
+# mock: stand-in for the signed initData in Telegram's launch URL; never a real value.
+MOCK_INIT_DATA_MARKER = "mock-init-data-marker"
+
+
+class _NavigationFails:
+    """Playwright objects whose navigation error quotes the full URL, like the real one."""
+
+    async def new_context(self) -> _NavigationFails:
+        return self
+
+    async def add_init_script(self, script: str) -> None:
+        return None
+
+    async def new_page(self) -> _NavigationFails:
+        return self
+
+    def on(self, event: str, handler: object) -> None:
+        return None
+
+    async def goto(self, url: str) -> None:
+        raise RuntimeError(f"Page.goto: net::ERR_CONNECTION_REFUSED at {url}")
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_browser_errors_never_leak_the_launch_url(
+    world: FakeTelegram, config: E2EConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    browser = PlaywrightMiniApp()
+    browser._browser = _NavigationFails()  # type: ignore[assignment]  # pyright: ignore[reportAttributeAccessIssue]
+
+    class LeakyLab(FakeLab):
+        async def visit(self, url: str) -> MiniAppVisit:
+            marked = url.replace("tgWebAppData=", f"tgWebAppData={MOCK_INIT_DATA_MARKER}", 1)
+            return await browser.visit(marked)
+
+    # The browser boundary alone: no detail, no exception chain.
+    with pytest.raises(E2EError) as raised:
+        await browser.visit(f"http://127.0.0.1:9/captcha#tgWebAppData={MOCK_INIT_DATA_MARKER}")
+    assert MOCK_INIT_DATA_MARKER not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "RuntimeError" in str(raised.value)
+
+    # Through the runner: logs (with tracebacks) and both report formats.
+    caplog.set_level(logging.DEBUG)
+    report = await run_test_keys(world, config, LeakyLab(world))
+    status, _ = _result(report)
+    assert status in {"failed", "error"}
+    logged = "\n".join(
+        r.getMessage() + (logging.Formatter().formatException(r.exc_info) if r.exc_info else "")
+        for r in caplog.records
+    )
+    for text in (report.to_json(Redactor()), report.to_markdown(Redactor()), logged):
+        assert MOCK_INIT_DATA_MARKER not in text
+        assert "tgWebAppData" not in text
+    assert_cleaned_up(world)
