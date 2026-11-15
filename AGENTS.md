@@ -26,7 +26,7 @@
     - PR 描述列出“已验证的场景”和“未验证、留给 staging”的部分。报告中未选中的场景记为跳过，不计为通过。
     - 选择规则见 `docs/e2e-acceptance.md` §6“PR 级验收的场景选择”，入群限流见 §7。两次验收之间不再要求固定间隔（负责人于 BOT-16 取消“全量至少间隔约 1 小时”）；失败后先查清原因再重跑，不盲目连续重试，FloodWait、`PEER_FLOOD` 如实报错。
   - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行**差异**自动化验收（负责人于 BOT-16 决定）：`just e2e-staging --record-status <master sha> --baseline <上一个通过 staging-acceptance 的 sha> --scenarios <场景>`，只跑基线以来产品改动明确涉及的场景，选择规则与 PR 级相同；没改加群流程就不跑入群相关场景，无法判断时默认跳过并如实列出。选中的场景全部实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本、基线、场景和结果。需要时仍可不带 `--scenarios`/`--baseline` 执行全量。细则见 `docs/e2e-acceptance.md` §6.2。
-  - **prod 发布**：只提升已通过 staging 验收的 sha（前端用 `webapp-promote.yml`）。只做环境配置检查、健康检查和必要冒烟，不重复全量验收。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
+  - **prod 发布**：只提升已通过 staging 验收的 sha（前端用 `webapp-promote.yml`）。只做环境配置检查、健康检查和非 Telegram 的必要冒烟（例如 `/readyz`、`webapp-promote.yml` 的页面检查），不重复全量验收。生产侧受 Telegram 平台限制，不执行 Telegram 相关的主动冒烟，也不请求生产验证账号；相关能力通过自然流量的日志、指标、链路和告警观测，分别记录已覆盖和未观测的能力，未观测不算通过，也不因缺少测试账号阻塞收尾（负责人于 BOT-4 决定，2026-11-15）。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
 - 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。本地 `just e2e-turnstile-test-keys`（`m7.captcha-test-keys`）用 Cloudflare 官方测试 key 跑通通过/拒绝链路，报告单独标为“官方测试 key”，属于另一类证据，不能替代 staging 真实 widget 的证据（`docs/e2e-acceptance.md` §6.4）。
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。
