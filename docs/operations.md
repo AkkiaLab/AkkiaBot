@@ -329,7 +329,7 @@ compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANS
 | `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
 | `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot` vault 的 `staging-bot`、`staging-services` 条目 |
 | 域名 | `bot-api-staging.akkia.moe` |
-| 镜像 | 固定为本次 staging 发版的 master sha（§8.1），全量验收通过后，生产使用同一个 sha |
+| 镜像 | 固定为本次 staging 发版的 master sha（§8.1），staging 验收通过后，生产使用同一个 sha |
 
 1Password `AkkiaBot` vault 中预发布专用的配置分两个条目：`staging-bot`（bot）与 `staging-cloudflare`（tunnel，以及 dev/staging 共用的 Cloudflare API token）：
 
@@ -402,7 +402,7 @@ curl -fsS https://bot-api-staging.akkia.moe/readyz
 curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 $SHA
 ```
 
-然后在仓库检出中执行 `just e2e-staging --record-status "$SHA"`，跑全量自动化验收并写入 `staging-acceptance` 状态。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和冒烟，不重复全量验收。
+然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和冒烟，不重复全量验收。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
@@ -417,7 +417,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 全部满足后才能请求确认切换：
 
 - [ ] M3、M5、M7、M9 已完成，旧版的全部命令（包括 `/ip`）都已迁移。
-- [ ] staging 已经用一个确定的 master sha 完成发版全量验收（§8.1，commit status `staging-acceptance` 为 success），生产会使用同一个 sha。
+- [ ] staging 已经用一个确定的 master sha 完成 staging 发版验收（§8.1，差异或全量，commit status `staging-acceptance` 为 success），生产会使用同一个 sha。
 - [ ] 生产目录已按 §4.2 准备好，`app.env` 使用 `prod-*` 条目：正式 bot token、`WEBAPP_URL=https://bot.akkia.moe`、prod Turnstile、`OBSERVABILITY_SENTRY_DSN`；`.env` 填好 `prod-cloudflare` 的 tunnel token 和 `prod-grafana`。按 §4 的说明，只执行 `docker compose up -d --wait postgres redis && docker compose run --rm migrate`，**还没有启动 `app`**。
 - [ ] 前端：`webapp-promote.yml` 已经可以用同一个 sha 提升到 `bot.akkia.moe`（需要负责人审批）。
 - [ ] 确认旧版使用 SQLite：旧部署目录中 `botlab_core/data/config.yaml` 的 `db.driver` 为 `sqlite`。如果是 `mysql`，本脚本不适用，改用 §9.8 的备选方案。

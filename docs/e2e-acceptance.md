@@ -165,8 +165,8 @@ uv run akkiabot-e2e list    # 列出所有场景
 
 - 只执行改动明确涉及的场景，例如改了 `/ban` 的处理逻辑就跑 `m4.ban`。
 - 无法判断是否受影响时，默认跳过。共享配置、handler 注册、依赖升级等，也按不受影响处理，除非确实改到了相关场景的代码。
-- 间接影响由 staging 发版时的全量验收发现（6.2 节），PR 级不为“可能有影响”去补跑。
-- PR 描述中列出“已验证的场景”（附报告）和“未验证、留给 staging 全量”的部分。
+- PR 级不为“可能有影响”去补跑。staging 发版同样只按差异验收（6.2 节），间接影响不会被自动补跑；需要时由发版者执行全量（6.2 节）。
+- PR 描述中列出“已验证的场景”（附报告）和“未验证、留给 staging”的部分。
 - 报告中未选中的场景记为跳过（`skipped`，原因“未选中（本次改动未涉及）”），不计为通过。
 
 PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定测试群（`E2E_CHAT_TITLE`，默认“AkkiaBot E2E 自动验收群”），普通成员常驻群内；`--serve` 与 `--fresh-group` 同用时直接报错退出。`--create-group` 只用于首次配置固定测试群（5.3 节）。在固定群里，只有选中 `m7.captcha` 或 `m2.service-message` 时，成员账号才会通过邀请链接入群（`m7.captcha-test-keys` 由群主拉人触发入群验证，不占用链接入群）；选中 `m2.join-request` 时，成员用需审批的链接提交一次入群申请，申请被拒绝后由群主拉回，不入群。
@@ -263,31 +263,45 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 - 场景状态：
   - `passed` 实际执行并通过；`failed` / `error` 失败；
   - `skipped` 跳过，并注明原因：未选中（本次改动未涉及）、缺少凭据或配置、限流中止、运行中止（例如群主拉人失败）。跳过**不计为通过**。
-  - 报告开头的汇总分开写“实际通过 / 失败 / 跳过（不计为通过）”。准备阶段就失败时，所有场景同样逐项列出：选中的按实际原因（限流中止或运行中止）记为跳过，其余记为未选中；准备阶段已完成的群主拉人也计入入群次数。整次运行判为通过，需要至少一个场景实际通过、没有失败，且跳过的都只是“未选中”；因缺少凭据或限流而跳过的场景会让运行不通过。`--record-status` 更严格：所有场景都必须实际执行并通过（6.2 节）。
+  - 报告开头的汇总分开写“实际通过 / 失败 / 跳过（不计为通过）”。准备阶段就失败时，所有场景同样逐项列出：选中的按实际原因（限流中止或运行中止）记为跳过，其余记为未选中；准备阶段已完成的群主拉人也计入入群次数。整次运行判为通过，需要至少一个场景实际通过、没有失败，且跳过的都只是“未选中”；因缺少凭据或限流而跳过的场景会让运行不通过。`--record-status` 更严格：全量时所有场景、差异验收时所有选中的场景都必须实际执行并通过（6.2 节）。
 - 入群与限流明细：
   - 报告写明本轮成员通过链接入群的次数和群主拉人的次数（`report.json` 的 `joins`）；
   - 每次 FloodWait 都单独记录时间（UTC）、账号角色、方法、要求等待的秒数、第几次重试，以及是等待后重试还是超过上限中止（`report.json` 的 `flood_waits`，`report.md` 中为表格）。
 - 报告：`~/.local/state/akkiabot-e2e/runs/<时间>-<随机串>/report.md` 和 `report.json`（目录权限 700，文件权限 600）。同一目录下还有被测 bot 的 `server.log` 和 SQLite 数据库。`report.md` 可以直接贴到对应 issue，作为验收记录。
 - 终端输出经过 `op run` 的掩码处理：从 1Password 引用的值（包括群 id、user id）在终端里显示为 `<concealed by 1Password>`；报告文件中保留了这些标识，便于核对。
 
-### 6.2 staging 发版验收（全量）
+### 6.2 staging 发版验收（差异）
 
-按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。全量验收在 staging 发版时，针对**已部署的 staging 栈**执行：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
+按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异（负责人于 BOT-16 决定，BOT-34 实现）：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
 
 1. 选定要发版的 master commit `SHA`（完整 40 位）。
 2. 前端：每次 master 推送都会把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`。也可以在 master 上手动运行 `webapp-deploy.yml`。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
 3. 后端：按 `docs/operations.md` §8.1，把预发布栈升级到同一个 `SHA` 的镜像。
-4. 运行：
+4. 确定差异场景：
+   - **基线** `BASE`：master 上最近一个 `staging-acceptance=success` 的 commit（完整 40 位），且是 `SHA` 的祖先；
+   - 查看 `git log BASE..SHA` 和 `git diff BASE SHA` 中的**产品改动**，按 §6“PR 级验收的场景选择”的同一规则，只选改动明确涉及的场景；也可以直接汇总这段区间内各 PR 描述中“已验证的场景”；
+   - 没有改加群流程（群主拉人、链接入群、入群申请、入群验证）时，不选 `m7.captcha`、`m2.service-message`、`m2.join-request` 等入群相关场景；
+   - 无法判断影响时默认跳过，并在发版记录中如实列出跳过的场景和原因；
+   - 至少要有一个场景实际通过才能写 `success`。区间内没有任何场景明确涉及时（例如只改文档、CI），选 `m2.help` 作为最小冒烟（确认部署的 bot 能响应）。
+5. 运行：
 
    ```bash
-   just e2e-staging --record-status SHA
+   just e2e-staging --record-status SHA --baseline BASE --scenarios m2.join-request   # 差异验收
+   just e2e-staging --record-status SHA                                               # 全量验收（不加 --scenarios / --baseline）
    ```
 
-   `just e2e-staging` 每次都带 `--fresh-group`（`--record-status` 也会自动启用）：本次运行新建一个标题为“AkkiaBot Staging 发版验收群 <运行标识>”的专用测试群，按 6.1 节的可恢复流程写入白名单，不复用旧群，再由群主把成员拉入新群。原因见下方“持久化被测 bot 的数据准备”。一轮全量中，成员账号通过链接入群只有 `m7.captcha`、`m2.service-message` 两次，另有 `m2.join-request` 的一次入群申请（不入群）。
+   `--record-status` 带 `--scenarios` 时必须同时给出 `--baseline`，反之亦然。工具在连接 Telegram 之前，先用 `gh` 核对基线最新的 `staging-acceptance` 是 `success`，且 `SHA` 相对基线为 `ahead`（基线是祖先、两者不同）；不满足就直接退出。这样通过验收的版本连成一条链：每个 `success` 都表示“相对上一个通过的版本，改动涉及的场景都已在 staging 实际通过”。全量验收仍可随时执行（例如首次发版、依赖大版本升级等发版者判断需要的情况），不需要基线。
 
-   staging 别名会被每次 master 推送覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行全部场景（含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`：只有全部场景实际执行并通过（任何跳过都不算）、且开始和结束时都是 `SHA`，才写 `success`，否则写 `failure`。`--record-status` 不能与 `--scenarios`、`--serve` 同时使用。
-5. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、后端镜像和结果。报告中的“未自动化”项要原样保留。
-6. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查。
+   `just e2e-staging` 每次都带 `--fresh-group`（`--record-status` 也会自动启用，差异验收同样如此）：本次运行新建一个标题为“AkkiaBot Staging 发版验收群 <运行标识>”的专用测试群，按 6.1 节的可恢复流程写入白名单，不复用旧群，再由群主把成员拉入新群。判断依据是“是否需要新成员状态”：staging bot 的数据库长期保留，按群累计的成员发言数、各项开关和警告次数会影响 `m5.*`（新成员才会被检查）、`m4.warn`（计数）、`m4.config`（开关初始状态）等多数场景，逐个判断哪些场景不依赖群状态容易出错；而新建群只由群主拉人，不占用成员账号的链接入群额度，所以保持默认开启。原因见下方“持久化被测 bot 的数据准备”。成员账号的链接入群只发生在选中的 `m7.captcha`、`m2.service-message` 中，`m2.join-request` 另有一次入群申请（不入群）；差异验收没有选中它们时，一次链接入群都没有。
+
+   staging 别名会被每次 master 推送覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行选中的场景（全量时为全部场景，含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`，只有满足以下条件才写 `success`，否则写 `failure`：
+   - 全量：全部场景实际执行并通过（任何跳过都不算）；
+   - 差异：选中的场景全部实际执行并通过（因限流、缺少凭据、运行中止而跳过都不算），未选中的场景记为跳过（原因“未选中（本次改动未涉及）”），同样不计为通过；
+   - 两者都要求开始和结束时都是 `SHA`。
+
+   差异验收的报告写明基线 `BASE`、执行的场景和未执行的场景数；status 描述形如“差异验收（基线 2814ea1）：1/1 个选中场景通过（运行 …）；15 个未涉及差异、未执行；场景 m2.join-request”（超过 GitHub 的 140 字上限时截断场景列表，完整列表见报告）。`--record-status` 不能与 `--serve` 同时使用。
+6. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、基线、后端镜像、结果，以及按规则跳过的场景和原因。报告中的“未自动化”项要原样保留。
+7. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查；`success` 可能来自全量或差异验收，差异验收的含义见第 5 步。
 
 写 commit status 需要本机 `gh` 已登录，且对仓库有写权限。
 
@@ -345,7 +359,7 @@ just e2e-prune-groups --apply    # 真正删除
 just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
 ```
 
-- 只能与 `--serve` 一起使用，只能按场景名选中：默认全量、`--scenarios m7` 和 staging 发版验收（`just e2e-staging`、`--record-status`）都不包含它，因此不影响 `staging-acceptance` 的“全部场景实际执行”要求。
+- 只能与 `--serve` 一起使用，只能按场景名选中：默认全量、`--scenarios m7` 和 staging 发版验收（`just e2e-staging`、`--record-status`）都不包含它（差异验收带 `--scenarios` 选中它时直接报错），因此不影响 `staging-acceptance` 的“选中场景全部实际执行”要求。
 - 工具用当前检出的 `apps/webapp` 构建两份 Mini App（`vite build`，构建环境只含 `PATH`、`HOME` 等和两个 `VITE_*` 变量，不含运行密钥）：固定通过的 site key `1x00000000000000000000AA`（作为 bot 的 `WEBAPP_URL`）和固定失败的 `2x00000000000000000000AB`，分别在 `127.0.0.1` 的随机端口上提供；`CORS_ALLOW_ORIGINS` 包含这两个来源。Telegram 测试环境允许 Mini App 使用不带 TLS 的 HTTP 地址。
 - 被测 bot 先用固定失败的 secret key `2x0000000000000000000000000000000AA` 启动。成员由群主拉回群（触发入群验证，不使用邀请链接），在私聊中 `/start`，工具以成员账号取得 Telegram 签发的启动地址（真实 initData），然后在无头 Chromium 中按 Telegram 客户端的方式打开（补上客户端附加的 `tgWebAppThemeParams`，注入记录事件的 `TelegramWebviewProxy`）：
   1. 固定失败的 site key：widget 报错，页面显示“人机验证组件加载失败”，**没有**调用验证接口，成员保持禁言；
@@ -368,7 +382,7 @@ just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
   - 超过上限时，停止本次验收，剩余场景标记为跳过（原因“限流中止”）；
   - 两次发送之间至少间隔 `E2E_SEND_INTERVAL`（默认 2 秒）；
   - 每次 FloodWait 的账号、方法、秒数和重试次数都写入报告（6 节“结果”），用于判断是哪类操作触发了限流。
-- **入群限流与运行间隔**：Telegram 按成员账号统计短时间内的入群次数（BOT-27：1 小时内 4 次全量运行后，每次链接入群需等待约 170 秒）。所以成员恢复和新群准备都改由群主拉人，只有 `m7.captcha`、`m2.service-message` 通过链接入群（`m2.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证，按同样的间隔要求对待）；PR 级只跑明确涉及的场景，通常不产生链接入群。两次全量验收之间仍至少间隔约 1 小时；失败后先冷却再重跑，不要连续重试。群主拉人同样可能被限流（`PEER_FLOOD`），此时如实报错停止，不回退为链接入群。
+- **入群限流**：Telegram 按成员账号统计短时间内的入群次数（BOT-27：1 小时内 4 次全量运行后，每次链接入群需等待约 170 秒）。所以成员恢复和新群准备都改由群主拉人，只有 `m7.captcha`、`m2.service-message` 通过链接入群（`m2.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证）；PR 级和 staging 差异验收都只跑明确涉及的场景，通常不产生链接入群。入群次数减少后，两次验收之间不再要求固定间隔（负责人于 BOT-16 决定，取消此前“两次全量验收至少间隔约 1 小时”）。失败后先查清原因再重跑，不盲目连续重试；遇到 FloodWait 超过上限或群主拉人被限流（`PEER_FLOOD`）时如实报错停止，不回退为链接入群。
 - **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；不清理历史消息。删除群只有 `prune-groups --apply` 一个入口，范围见 6.3 节。
 
 ## 8. Sentry

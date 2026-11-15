@@ -488,3 +488,12 @@ def test_cli_diff_record_failure(tmp_path, monkeypatch: pytest.MonkeyPatch) -> N
     code, seen = _diff_cli(tmp_path, monkeypatch, "failed")
     assert code == cli.EXIT_FAILED
     assert seen["status"][0] == "failure"
+
+
+def test_diff_record_never_selects_local_only_scenarios(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv = ["run", "--record-status", SHA, "--baseline", SHA_B]
+    code = cli.main([*argv, "--scenarios", "m7.captcha-test-keys"], env=live_env())
+    assert code == cli.EXIT_USAGE
+    assert "只能与 --serve 一起使用" in capsys.readouterr().err
