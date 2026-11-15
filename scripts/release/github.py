@@ -34,6 +34,23 @@ FIX_LABEL = "release:fix"
 REVIEWER_LOGIN = "akkiabot-reviewer[bot]"
 
 
+def actor_identity(author: dict[str, Any] | None) -> str:
+    """GraphQL author → the REST/display identity used throughout (``REVIEWER_LOGIN``).
+
+    GraphQL reports an App as ``{"__typename": "Bot", "login": "akkiabot-reviewer"}``
+    while REST and the UI show ``akkiabot-reviewer[bot]``. Only a ``Bot`` gets the
+    suffix, so a *user* who registered the name ``akkiabot-reviewer`` can never
+    pass for the Reviewer App. Deleted accounts (``None``) become ``""``.
+    """
+    if not author:
+        return ""
+    login = author.get("login") or ""
+    if author.get("__typename") == "Bot":
+        return f"{login}[bot]" if login else ""
+    # GitHub user logins cannot contain brackets; never let one look like an App.
+    return f"user:{login}" if login.endswith("[bot]") else login
+
+
 @dataclass
 class PullRequest:
     number: int
@@ -273,23 +290,21 @@ class GhCli:
             unresolved=sum(1 for t in pr["threads"] if not t["isResolved"]),
             reviews=[
                 (
-                    (r["author"] or {}).get("login", ""),
+                    actor_identity(r["author"]),
                     r["state"],
                     (r["commit"] or {}).get("oid", ""),
                     r["submittedAt"] or "",
                 )
                 for r in pr["reviews"]
             ],
-            comments=[
-                ((c["author"] or {}).get("login", ""), c["createdAt"]) for c in pr["comments"]
-            ],
+            comments=[(actor_identity(c["author"]), c["createdAt"]) for c in pr["comments"]],
         )
 
     #: One GraphQL query per connection, paged oldest first until ``hasNextPage`` is false.
     REVIEW_CONNECTIONS: ClassVar[dict[str, str]] = {
         "threads": "reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { isResolved } }",
-        "reviews": "reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { login } state submittedAt commit { oid } } }",
-        "comments": "comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { login } createdAt } }",
+        "reviews": "reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login } state submittedAt commit { oid } } }",
+        "comments": "comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login } createdAt } }",
     }
     MAX_REVIEW_PAGES: int = 50
 
@@ -316,7 +331,7 @@ class GhCli:
             query = (
                 "query($owner: String!, $name: String!, $number: Int!, $after: String) {"
                 " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
-                f" author {{ login }} {connection} }} }} }}"
+                f" author {{ __typename login }} {connection} }} }} }}"
             )
             nodes: list[Any] = []
             after: str | None = None
@@ -325,7 +340,7 @@ class GhCli:
                     query, {"owner": owner, "name": name, "number": number, "after": after}
                 )
                 pr = data["repository"]["pullRequest"]
-                result["author"] = (pr["author"] or {}).get("login", "")
+                result["author"] = actor_identity(pr["author"])
                 page = pr[field]
                 nodes.extend(page["nodes"])
                 if not page["pageInfo"]["hasNextPage"]:

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from scripts.release.github import REVIEWER_LOGIN, GhCli, GhError, RunNotTerminatedError
+from scripts.release.github import GhCli, GhError, RunNotTerminatedError
 
 HEAD = "a" * 40
 
@@ -53,7 +53,7 @@ class ScriptedGh(GhCli):
         return {
             "repository": {
                 "pullRequest": {
-                    "author": {"login": "AkkiaS7"},
+                    "author": {"__typename": "User", "login": "AkkiaS7"},
                     field: {
                         "pageInfo": {"hasNextPage": page["hasNext"], "endCursor": str(index + 1)},
                         "nodes": page["nodes"],
@@ -112,9 +112,21 @@ def test_run_never_found_raises() -> None:
         gh.run_and_wait("webapp-deploy.yml", {}, "staging x n", timeout=30)
 
 
-def _review(login: str, state: str, at: str, commit: str = HEAD) -> dict[str, Any]:
+#: The Reviewer App as the real GraphQL API reports it (read from PR #40, 2026-11-15):
+#: type Bot, login WITHOUT the ``[bot]`` suffix that REST and the UI show.
+REVIEWER_GRAPHQL = {"__typename": "Bot", "login": "akkiabot-reviewer"}
+COPILOT_GRAPHQL = {"__typename": "Bot", "login": "copilot-pull-request-reviewer"}
+
+
+def _user(login: str) -> dict[str, str]:
+    return {"__typename": "User", "login": login}
+
+
+def _review(
+    author: dict[str, str] | None, state: str, at: str, commit: str = HEAD
+) -> dict[str, Any]:
     return {
-        "author": {"login": login},
+        "author": author,
         "state": state,
         "submittedAt": at,
         "commit": {"oid": commit},
@@ -122,7 +134,7 @@ def _review(login: str, state: str, at: str, commit: str = HEAD) -> dict[str, An
 
 
 def test_review_gate_reads_every_page() -> None:
-    approval = _review(REVIEWER_LOGIN, "APPROVED", "2026-11-15T10:00:00Z")
+    approval = _review(REVIEWER_GRAPHQL, "APPROVED", "2026-11-15T10:00:00Z")
     graph = {
         # Unresolved thread only on the second page.
         "reviewThreads": [
@@ -132,11 +144,11 @@ def test_review_gate_reads_every_page() -> None:
         # An early Request changes (page 1) still stands after 100+ later reviews.
         "reviews": [
             {
-                "nodes": [_review("Copilot", "CHANGES_REQUESTED", "2026-11-15T09:00:00Z")],
+                "nodes": [_review(COPILOT_GRAPHQL, "CHANGES_REQUESTED", "2026-11-15T09:00:00Z")],
                 "hasNext": True,
             },
             {
-                "nodes": [_review("AkkiaS7", "COMMENTED", "2026-11-15T09:30:00Z")] * 100,
+                "nodes": [_review(_user("AkkiaS7"), "COMMENTED", "2026-11-15T09:30:00Z")] * 100,
                 "hasNext": True,
             },
             {"nodes": [approval], "hasNext": False},
@@ -144,7 +156,7 @@ def test_review_gate_reads_every_page() -> None:
     }
     problems = ScriptedGh({}, graph).review_gate(1, HEAD)
     assert any("未解决的评审线程" in p for p in problems)
-    assert any("Request changes：Copilot" in p for p in problems)
+    assert any("Request changes：copilot-pull-request-reviewer[bot]" in p for p in problems)
 
     clean = {"reviews": [{"nodes": [approval], "hasNext": False}]}
     assert ScriptedGh({}, clean).review_gate(1, HEAD) == []
@@ -155,3 +167,54 @@ def test_review_gate_refuses_when_pages_cannot_be_exhausted() -> None:
     gh.MAX_REVIEW_PAGES = 3
     with pytest.raises(GhError, match="未读全"):
         gh.review_gate(1, HEAD)
+
+
+def test_real_graphql_reviewer_shape_is_recognised() -> None:
+    """Regression: GraphQL says Bot/akkiabot-reviewer, not akkiabot-reviewer[bot]."""
+    graph = {
+        "reviews": [
+            {
+                "nodes": [_review(REVIEWER_GRAPHQL, "APPROVED", "2026-11-15T10:00:00Z")],
+                "hasNext": False,
+            }
+        ]
+    }
+    assert ScriptedGh({}, graph).review_gate(1, HEAD) == []
+
+
+@pytest.mark.parametrize(
+    "author",
+    [
+        _user("akkiabot-reviewer"),  # a user squatting the App's name is not the App
+        _user("akkiabot-reviewer[bot]"),
+        {"__typename": "Bot", "login": "some-other-app"},
+        None,  # deleted account
+    ],
+)
+def test_only_the_reviewer_app_counts(author: dict[str, str] | None) -> None:
+    graph = {
+        "reviews": [
+            {"nodes": [_review(author, "APPROVED", "2026-11-15T10:00:00Z")], "hasNext": False}
+        ]
+    }
+    problems = ScriptedGh({}, graph).review_gate(1, HEAD)
+    assert any("准出" in p for p in problems)
+
+
+def test_late_bot_comment_after_reviewer_approval_blocks() -> None:
+    graph = {
+        "reviews": [
+            {
+                "nodes": [_review(REVIEWER_GRAPHQL, "APPROVED", "2026-11-15T10:00:00Z")],
+                "hasNext": False,
+            }
+        ],
+        "comments": [
+            {
+                "nodes": [{"author": COPILOT_GRAPHQL, "createdAt": "2026-11-15T10:05:00Z"}],
+                "hasNext": False,
+            }
+        ],
+    }
+    problems = ScriptedGh({}, graph).review_gate(1, HEAD)
+    assert problems == ["准出之后还有未经 Reviewer 复核的评论：copilot-pull-request-reviewer[bot]"]
