@@ -111,6 +111,14 @@ class Account(Protocol):
 
     async def promote(self, chat_id: int, user_id: int, rights: frozenset[str]) -> None: ...
 
+    async def ensure_contact(self, user: UserInfo) -> bool:
+        """Make ``user`` one of this account's contacts; ``True`` if it was added now.
+
+        The owner can only add the member to a group when both are contacts of
+        each other (default invite privacy; ``USER_NOT_MUTUAL_CONTACT``).
+        """
+        ...
+
     async def export_invite_link(self, chat_id: int) -> str: ...
 
     async def join_by_link(self, link: str) -> int | None:

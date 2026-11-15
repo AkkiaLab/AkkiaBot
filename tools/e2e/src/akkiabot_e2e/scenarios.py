@@ -17,9 +17,10 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from akkiabot_e2e.errors import CheckFailed, ScenarioSkipped
+from akkiabot_e2e.group import owner_add_member
 from akkiabot_e2e.transport import Account, ChatRef, Msg, UserInfo, code_spans
 
-Status = Literal["passed", "failed", "error", "not_run"]
+Status = Literal["passed", "failed", "error", "skipped"]
 
 
 class TraceProbe(Protocol):
@@ -349,14 +350,18 @@ async def wait_deleted(ctx: ScenarioContext, message_ids: list[int], what: str) 
 
 
 async def restore_member(ctx: ScenarioContext) -> None:
-    """Undo a ban of the member account: unban and rejoin through a one-time link."""
+    """Undo a ban of the member account: unban, then the owner adds it back.
+
+    Not through an invite link: Telegram rate-limits an account's joins by link,
+    and only m7.captcha / m2.service-message need a real join. A failed add
+    (``InviteFailed``) stops the run; it never falls back to a link.
+    """
     if await ctx.admin.is_banned(ctx.chat.id, ctx.member_user.id):
         await ctx.admin.unban(ctx.chat.id, ctx.member_user.id)
         ctx.record("群主解除成员封禁")
     if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is None:
-        link = await ctx.admin.export_invite_link(ctx.chat.id)
-        joined = await ctx.member.join_by_link(link)
-        ctx.record("成员重新入群", joined_message_id=joined)
+        await owner_add_member(ctx.admin, ctx.chat.id, ctx.member_user.id)
+        ctx.record("群主把成员拉回群")
 
 
 async def check_member_banned(ctx: ScenarioContext) -> None:
@@ -591,7 +596,7 @@ async def langfuse_scenario(ctx: ScenarioContext) -> None:
     if ctx.traces is None:
         raise ScenarioSkipped("未配置 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY，无法查询 Langfuse")
     if not ctx.classified_markers:
-        raise ScenarioSkipped("本次运行没有需要核对的判定（先运行 m5.spam）")
+        raise ScenarioSkipped("本次运行没有需要核对的判定（先运行 m5.spam）", reason="not_selected")
     counts = await ctx.traces.wait_for_markers(ctx.classified_markers, since=ctx.started_at)
     ctx.record("查询 Langfuse generation", counts=counts)
     missing = [marker for marker, count in counts.items() if not count]
@@ -769,7 +774,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         permissions_scenario,
     ),
     Scenario("m4.config", "M4", "/config 深链进入私聊，点击开关切换“警告”", config_scenario),
-    # m4.warn / m4.ban ban the member and then unban + re-invite it.
+    # m4.warn / m4.ban ban the member, then unban it and the owner adds it back.
     Scenario("m4.warn", "M4", "/warn 计数，达到上限自动封禁并删除历史消息", warn_scenario),
     Scenario("m4.ban", "M4", "/ban 封禁成员并删除其历史消息", ban_scenario),
     Scenario(

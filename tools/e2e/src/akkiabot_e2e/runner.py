@@ -6,13 +6,14 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 
 from akkiabot_e2e.config import E2EConfig
 from akkiabot_e2e.errors import (
     CheckFailed,
     E2EError,
+    InviteFailed,
     RateLimitExceeded,
     SafetyError,
     ScenarioSkipped,
@@ -68,17 +69,23 @@ async def run_acceptance(
     registry: GroupRegistry | None = None,
     web: WebProbe | None = None,
     fresh_group: bool = False,
+    catalog: Sequence[Scenario] | None = None,
 ) -> Report:
     """``traces`` overrides the Langfuse probe built from ``config.langfuse`` (tests).
 
     ``fresh_group`` creates a new group for this run (see :func:`fresh_group_title`)
     instead of reusing the allowlisted one; it needs ``registry`` like ``allow_create``.
+
+    ``catalog`` is the full scenario list: scenarios in it that were not
+    selected are reported as skipped (``not_selected``), never as passed.
     """
     if fresh_group:
         config = replace(config, chat_title=fresh_group_title(config.chat_title, run_id))
         allow_create = True
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
     report = Report(run_id=run_id, status="failed", started_at=datetime.now(UTC).isoformat())
+    member_id: int | None = None
+    """Set once the member account's identity is confirmed (counts its joins)."""
     async with AsyncExitStack() as stack:
         try:
             admin = PacedAccount(await connect("admin", config.admin_session), pacer, "admin")
@@ -88,6 +95,7 @@ async def run_acceptance(
 
             admin_user, member_user = await admin.me(), await member.me()
             check_identities(config, admin_user, member_user)
+            member_id = member_user.id
             bot = await admin.resolve_user(config.bot_username)
             if not bot.is_bot:
                 raise SafetyError(f"@{config.bot_username} 不是 bot 账号")
@@ -108,7 +116,14 @@ async def run_acceptance(
             )
         except (E2EError, OSError) as exc:
             report.detail = f"准备阶段失败：{exc}"
-            report.flood_wait_seconds = pacer.waited
+            # Every scenario is still listed: selected ones as not run because
+            # of the actual cause, the others as not selected.
+            if isinstance(exc, RateLimitExceeded):
+                cause = ("rate_limited", "准备阶段因限流中止，未执行")
+            else:
+                cause = ("aborted", "准备阶段失败，运行中止，未执行")
+            _list_unrun(report, scenarios, catalog or scenarios, cause)
+            _record_pacing(report, pacer, member_id)
             report.finish()
             return report
 
@@ -137,26 +152,64 @@ async def run_acceptance(
             stack.push_async_callback(probe.aclose)
             traces = probe
         ctx.traces = traces
-        await _run_scenarios(ctx, scenarios, report)
+        await _run_scenarios(ctx, scenarios, report, catalog or scenarios)
         report.not_automated = list(dict.fromkeys(ctx.not_automated))
         if message_log is not None and ctx.plain_message_ids:
             report.results.append(await _check_message_log(ctx, message_log))
-    report.flood_wait_seconds = pacer.waited
+    _record_pacing(report, pacer, member_id)
     report.finish()
     return report
 
 
-async def _run_scenarios(
-    ctx: ScenarioContext, scenarios: Sequence[Scenario], report: Report
+def _list_unrun(
+    report: Report,
+    scenarios: Sequence[Scenario],
+    catalog: Sequence[Scenario],
+    cause: tuple[str, str],
 ) -> None:
-    aborted: str | None = None
-    for scenario in scenarios:
+    """Report every scenario as skipped when the run stopped before any of them ran."""
+    selected = {s.name for s in scenarios}
+    for scenario in [*scenarios, *(s for s in catalog if s.name not in selected)]:
         result = ScenarioResult(
-            scenario.name, scenario.milestone, scenario.description, status="not_run"
+            scenario.name, scenario.milestone, scenario.description, status="skipped"
+        )
+        if scenario.name in selected:
+            result.skip_reason, result.detail = cause
+        else:
+            result.skip_reason = "not_selected"
+        report.results.append(result)
+
+
+def _record_pacing(report: Report, pacer: Pacer, member_id: int | None) -> None:
+    """Flood waits with their details, and how often the member got into the group."""
+    report.flood_wait_seconds = pacer.waited
+    report.flood_waits = [asdict(event) for event in pacer.flood_waits]
+    report.joins = {
+        "member_join_by_link": pacer.completed["member.join_by_link"],
+        "owner_added_member": (
+            pacer.completed[f"admin.invite:{member_id}"] if member_id is not None else 0
+        ),
+    }
+
+
+async def _run_scenarios(
+    ctx: ScenarioContext,
+    scenarios: Sequence[Scenario],
+    report: Report,
+    catalog: Sequence[Scenario],
+) -> None:
+    selected = {s.name for s in scenarios}
+    aborted: tuple[str, str] | None = None
+    for scenario in [*scenarios, *(s for s in catalog if s.name not in selected)]:
+        result = ScenarioResult(
+            scenario.name, scenario.milestone, scenario.description, status="skipped"
         )
         report.results.append(result)
+        if scenario.name not in selected:
+            result.skip_reason = "not_selected"
+            continue
         if aborted:
-            result.detail = aborted
+            result.skip_reason, result.detail = aborted
             continue
         ctx.evidence = []
         started = time.monotonic()
@@ -164,12 +217,17 @@ async def _run_scenarios(
             await scenario.run(ctx)
             result.status = "passed"
         except ScenarioSkipped as exc:
-            result.status, result.detail = "not_run", str(exc)
+            result.status, result.detail, result.skip_reason = "skipped", str(exc), exc.reason
         except CheckFailed as exc:
             result.status, result.detail = "failed", str(exc)
         except RateLimitExceeded as exc:
             result.status, result.detail = "failed", str(exc)
-            aborted = "因限流中止，未执行"
+            aborted = ("rate_limited", "因限流中止，未执行")
+        except InviteFailed as exc:
+            # The member is not back in the group: later scenarios cannot run, and
+            # joining through a link instead would hide the failure (no fallback).
+            result.status, result.detail = "failed", f"恢复成员失败：{exc}"
+            aborted = ("aborted", "群主拉人失败，运行中止，未执行")
         except Exception as exc:
             logger.exception("scenario %s crashed", scenario.name)
             result.status, result.detail = "error", f"{type(exc).__name__}: {exc}"

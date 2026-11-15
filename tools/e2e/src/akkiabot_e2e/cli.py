@@ -96,13 +96,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--scenarios", action="append", help="里程碑（m2,m3）或场景名，可重复；默认全部"
     )
-    run.add_argument("--create-group", action="store_true", help="没有可用测试群时创建一个")
+    run.add_argument(
+        "--create-group",
+        action="store_true",
+        help="没有可用测试群时创建固定测试群（仅首次配置用；PR 级运行复用它，不再建群）",
+    )
     run.add_argument(
         "--fresh-group",
         action="store_true",
         help=(
             "本次运行新建专用测试群（标题带运行标识），不复用白名单中的旧群；"
-            "用于数据库长期保留的被测 bot（staging），--record-status 时自动启用"
+            "用于数据库长期保留的被测 bot（staging），--record-status 时自动启用；不能与 --serve 同用"
         ),
     )
     run.add_argument(
@@ -340,6 +344,7 @@ async def _run_live(
                     registry=registry,
                     web=web,
                     fresh_group=fresh_group,
+                    catalog=SCENARIOS,
                 )
 
             if args.record_status:
@@ -362,6 +367,7 @@ async def _run_live(
                 message_log=server.logged_message_ids,
                 web=web,
                 fresh_group=fresh_group,
+                catalog=SCENARIOS,
             )
             report.server_log = str(server.log_path)
             return report
@@ -374,6 +380,12 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         print(_skipped_report(missing).to_markdown(redact))
         return EXIT_SKIPPED
     select_scenarios(args.scenarios)  # validate before touching Telegram
+    if args.serve and args.fresh_group:
+        # PR-level runs reuse the fixed test group with the member staying in it;
+        # creating groups is for staging release runs only (docs/e2e-acceptance.md §3.1).
+        raise E2EError(
+            "--serve（PR 级验收）只复用固定测试群，不新建群；--fresh-group 只用于 staging 发版验收"
+        )
     if args.record_status:
         check_sha(args.record_status)
         if args.scenarios or args.serve:

@@ -23,4 +23,6 @@ def world() -> FakeTelegram:
     w.add_user(ADMIN)
     w.add_user(MEMBER)
     w.add_bot(BOT)
+    # Telegram's default: only contacts may add the member to groups.
+    w.contacts_only.add(MEMBER.id)
     return w
