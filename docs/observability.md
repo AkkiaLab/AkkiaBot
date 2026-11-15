@@ -124,7 +124,7 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
 | LLM 错误或超时持续出现 | 15 分钟内 `antispam_llm_errors_total` 增加 ≥ 3 | 5 分钟 | OK |
 
-为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中，目前只有 `staging`；生产栈开始上报后（M10）加上 `production` 并重新执行 `sync`。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
+为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中：`staging` 和 `production`（生产栈于 M10 切换时开始上报，BOT-16）。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
 
 通知走 Grafana Cloud 默认的 notification policy 和 contact point（stack 所有者的邮箱）。需要发到其他渠道（例如 Telegram）时，在 Grafana 中新增 contact point，并修改 notification policy；这部分目前不纳入版本管理。
 

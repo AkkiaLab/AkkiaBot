@@ -10,7 +10,7 @@
 # per entry of `environments` (placeholder __ENV__) and appends the result to
 # the `akkiabot` group. Add `production` here when the production stack starts
 # reporting (M10); `--env` on the command line overrides the list.
-environments: [staging]
+environments: [staging, production]
 rule:
   uid: akkiabot-env-missing-__ENV__
   title: 环境停止上报（__ENV__）

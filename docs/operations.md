@@ -53,6 +53,8 @@ flowchart LR
 └── backups/                    # pg_dump 备份及 backup.log（部署时用 install -d -m 700 创建）
 ```
 
+**当前生产环境**（BOT-16，2026-11-15 切换）：服务器 `greencloud-tyo-01`，经 Cloudflare Access 以 `akkia` 用户登录（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥为 1Password `AkkiaBot/shared-ssh`）。该用户在 docker 组中，但没有免密 sudo，所以生产目录在 `~/akkiabot/production`（即 `/home/akkia/akkiabot/production`），本文中的 `/opt/akkiabot/production` 都按这个路径理解；compose 项目名为 `akkiabot`。预发布环境仍在 `/opt/akkiabot/staging`。
+
 `.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。密钥都在 1Password 的 `AkkiaBot` vault 中：生产用 `prod-*` 条目（如 `prod-cloudflare`、`prod-bot`，由负责人填写），预发布与本地开发共用 `staging-*` 条目。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
 
 ## 3. 配置项
@@ -562,3 +564,11 @@ echo "exit=$?"
 
 - **导出 CSV 后手动导入**：用 `sqlite3 -csv`（或 MySQL 的 `SELECT ... INTO OUTFILE`）导出 `telegram_chats` 的 `id, type, title, enable_captcha, enable_anti_spam, enable_warn, max_warn_count` 和 `telegram_chat_members` 中 `warn_count > 0 OR message_count > 0` 的 `chat_id, user_id, warn_count, message_count`（都加 `WHERE deleted_at IS NULL`），整理成同样表结构的 SQLite 文件后再用本脚本导入；或者直接按 9.3 的映射表在新库中逐条写入。
 - **管理员重新配置**：群数量很少时，切换后请各群管理员重新执行 `/config` 打开需要的开关。警告数无法这样恢复，从 0 开始计数，需要在群里提前说明。
+
+### 9.9 切换记录（2026-11-15）
+
+- 版本：后端镜像与前端都是 `5f5227aeccef23384e18752569b71fcdd82f1b16`（`staging-acceptance=success`，差异验收基线 `aeebf8c`）；前端经 `webapp-promote.yml` 发布到 `bot.akkia.moe`。
+- 新环境在停旧服务前全部就绪：postgres、redis、migrate、alloy 已运行，生产配置加载检查通过，并用旧库副本对生产库做过一次 dry-run。
+- 停机：09:30:22 UTC 停止旧版 core（`ovh-hil-01`，`/root/docker_data/botlab`，镜像按 digest 固定，回滚时直接 `docker compose start core`）→ 停服副本（旧机上没有 `sqlite3`，用 §9.3 的 Python 写法；原库哈希前后一致）→ dry-run 9 项一致 → 正式导入（45 个群、47,796 名成员、4,193 条近期消息 id；最近 48 小时被 captcha 禁言 218 人）→ 09:31:46 UTC 新 bot 开始拉取更新。停机约 1 分 24 秒。
+- 旧机上 llm、cloudflared 等其他服务未动；旧库与停服副本保留在旧机，未修改。
+- Grafana 告警的预期环境已加入 `production`（`alerting/env-missing.yaml`）。
