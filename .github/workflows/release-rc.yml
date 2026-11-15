@@ -1,0 +1,109 @@
+name: Release RC to staging
+
+# Cut (or redeploy) a release candidate and put that exact commit on staging
+# (docs/release.md §4.1): backend image and Mini App from the same sha, then
+# hand over to the staging deploy + diff acceptance on the runtime machine
+# (`just release-staging <tag>`), which holds the staging lock. RC tags are only
+# created here (or by release-window.yml dispatching here), never by a tag push,
+# so one RC means exactly one run. Runs are serialised on the staging environment.
+
+run-name: RC ${{ inputs.tag || inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Cut a new RC from the head of releases/<version> (vX.Y.Z), reused if the head already has one
+        required: false
+        type: string
+      tag:
+        description: Redeploy this existing RC tag (vX.Y.Z-rc.N); must still be the newest and equal the branch head
+        required: false
+        type: string
+
+concurrency:
+  group: staging-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      sha: ${{ steps.check.outputs.sha }}
+      baseline: ${{ steps.check.outputs.baseline }}
+    steps:
+      - uses: AkkiaLab/AkkiaBot/.github/actions/release-setup@master
+        id: setup
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Create or check the RC
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ -n "$VERSION" ]]; then
+            python3 -m scripts.release rc "$VERSION"
+            TAG="$(grep '^tag=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2)"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "::error::give either version or tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          python3 -m scripts.release check-rc "$TAG"
+
+  image:
+    needs: rc
+    uses: ./.github/workflows/release.yml
+    with:
+      sha: ${{ needs.rc.outputs.sha }}
+    permissions:
+      contents: read
+      packages: write
+
+  webapp:
+    needs: rc
+    uses: ./.github/workflows/webapp-deploy.yml
+    with:
+      sha: ${{ needs.rc.outputs.sha }}
+    secrets: inherit
+    permissions:
+      contents: read
+
+  handoff:
+    needs: [rc, image, webapp]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hand over to the staging deploy and acceptance
+        env:
+          TAG: ${{ needs.rc.outputs.tag }}
+          SHA: ${{ needs.rc.outputs.sha }}
+          BASELINE: ${{ needs.rc.outputs.baseline }}
+          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "### $TAG → staging"
+            echo "- sha: \`$SHA\`（镜像与 Mini App 已就绪）"
+            echo "- 差异基线：${BASELINE:-无（全量验收）}"
+            echo "- 运行机执行：\`just release-staging $TAG <场景>\`（部署后端并在同一把锁内验收）"
+          } >> "$GITHUB_STEP_SUMMARY"
+          payload="$(jq -n --arg tag "$TAG" --arg sha "$SHA" --arg baseline "$BASELINE" --arg run "$RUN_URL" \
+            '{kind: "release-rc-ready", tag: $tag, sha: $sha, baseline: $baseline, run: $run}')"
+          if [[ -z "$MULTICA_RELEASE_WEBHOOK_URL" ]]; then
+            echo "::notice::MULTICA_RELEASE_WEBHOOK_URL not configured; start the staging acceptance manually"
+            exit 0
+          fi
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            --data "$payload" "$MULTICA_RELEASE_WEBHOOK_URL")"
+          echo "Multica webhook: HTTP $code"
+          [[ "$code" =~ ^2 ]]

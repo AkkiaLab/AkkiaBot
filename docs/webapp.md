@@ -42,7 +42,7 @@ staging 与 prod 的发布入口分离（负责人于 2026-11-14 确认的分层
 ```mermaid
 flowchart LR
     PR[PR] -->|webapp-deploy.yml| P["预览：分支名.akkiabot-webapp.pages.dev"]
-    M[master 推送] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
+    M[RC tag（release-rc.yml）] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
     S --> A["staging 发版验收<br/>just e2e-staging --record-status SHA<br/>（--baseline BASE --scenarios …）"]
     A -->|commit status staging-acceptance=success| G["webapp-promote.yml（输入 sha，需审批）"]
     G --> Prod["bot.akkia.moe"]
@@ -51,14 +51,14 @@ flowchart LR
 | 入口 | 触发 | GitHub 环境 | 上传目标 | 构建配置 |
 | --- | --- | --- | --- | --- |
 | `webapp-deploy.yml` | PR（前端相关路径） | `webapp-preview` | 分支预览 `<分支>.akkiabot-webapp.pages.dev` | 预发布 API + staging Turnstile |
-| `webapp-deploy.yml` | 每次 master 推送、手动触发 | `webapp-preview` | 固定别名 `staging.akkiabot-webapp.pages.dev`（staging bot 的 `WEBAPP_URL`） | 同上 |
-| `webapp-promote.yml` | 只能手动触发，输入 master 上的完整 sha | `webapp-production`（需审批，只接受 master 上的运行） | Pages 生产部署（`--branch=master`），即 `bot.akkia.moe` | 生产 API + prod Turnstile |
+| `webapp-deploy.yml` | `release-rc.yml` 调用（RC 的 sha）、手动触发（可填 sha）；master 推送不再触发 | `webapp-preview` | 固定别名 `staging.akkiabot-webapp.pages.dev`（staging bot 的 `WEBAPP_URL`） | 同上 |
+| `webapp-promote.yml` | 只能手动触发，输入带正式 tag `vX.Y.Z` 的完整 sha（`just release-deploy production` 在后端成功后自动触发；旧流程的版本可用 master 上的 sha） | `webapp-production`（需审批，只接受 master 上的运行） | Pages 生产部署（`--branch=master`），即 `bot.akkia.moe` | 生产 API + prod Turnstile |
 
 `webapp-deploy.yml` 不会发布生产。PR 分支名为 `staging` 或 `master` 时直接失败，避免覆盖这两个部署目标；没有 `CLOUDFLARE_API_TOKEN` 时（例如来自 fork 的 PR）只构建和检查，跳过上传。
 
 **版本锁定。** `VITE_API_BASE_URL`、`VITE_TURNSTILE_SITE_KEY` 在 `vite build` 时写进产物，所以同一个 commit 要按环境各构建一次。共用的构建步骤在 `.github/actions/webapp-build`：安装锁定依赖 → 用该环境的变量构建 → 写入 `dist/version.json`（`{"sha", "environment"}`）→ 检查不含开发 mock。提升到生产时：
 
-1. `verify` 任务检查输入是 40 位 sha、在 master 上，并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入，`success` 表示全量通过，或相对一个已通过的祖先 commit（基线）的差异场景全部实际通过（`docs/e2e-acceptance.md` §6.2）：验收开始前（已取得验收锁）和结束后，各核对一次 `staging.akkiabot-webapp.pages.dev/version.json` 是否为该 sha，期间被新的 master 推送替换就不会写 `success`（见 `docs/e2e-acceptance.md` §6.2）。
+1. `verify` 任务检查输入是 40 位 sha、带正式 tag `vX.Y.Z`（版本流程之前的版本：在 master 上），并且该 commit 最新的 `staging-acceptance` commit status 是 `success`。这个状态只由 staging 发版验收写入，`success` 表示全量通过，或相对一个已通过的祖先 commit（基线）的差异场景全部实际通过（`docs/e2e-acceptance.md` §6.2）：验收开始前（已取得验收锁）和结束后，各核对一次 `staging.akkiabot-webapp.pages.dev/version.json` 是否为该 sha，期间被替换就不会写 `success`（见 `docs/e2e-acceptance.md` §6.2）。
 2. `deploy` 任务检出这个 sha（构建 action 也来自该 commit），并确认 `HEAD` 等于它；然后只换成生产环境变量重新构建。因此代码与 staging 验收的完全相同，差别只在环境配置。
 3. 上传后对部署地址做冒烟：`/`、`/captcha?challenge=…` 返回 200，`/version.json` 的 sha 等于输入值。
 

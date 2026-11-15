@@ -3,8 +3,10 @@ name: Webapp deploy
 # Publishes apps/webapp to Cloudflare Pages with `wrangler pages deploy`
 # (docs/webapp.md). This workflow never touches production:
 #   - pull requests → per-branch preview (`<branch>.<project>.pages.dev`);
-#   - master pushes and manual runs → the fixed alias `staging.<project>.pages.dev`,
-#     the Mini App of the staging bot.
+#   - release-rc.yml (an RC sha) and manual runs → the fixed alias
+#     `staging.<project>.pages.dev`, the Mini App of the staging bot. Master pushes
+#     no longer publish staging, so master moving on cannot replace the commit
+#     under staging acceptance (docs/release.md §4.1).
 # Both use the `webapp-preview` environment (staging API, staging Turnstile key,
 # dev/staging Cloudflare token). Production only receives builds through
 # webapp-promote.yml, for commits that passed the staging acceptance.
@@ -15,10 +17,12 @@ name: Webapp deploy
 # dev-mock check still run; only the upload is skipped.
 
 on:
-  # Every master commit is published to staging so that the staging Mini App
-  # always matches the commit under staging acceptance (dist/version.json).
-  push:
-    branches: [master]
+  workflow_call:
+    inputs:
+      sha:
+        description: Full commit sha to publish to the staging alias (the RC)
+        required: true
+        type: string
   pull_request:
     paths:
       - apps/webapp/**
@@ -29,10 +33,15 @@ on:
       - .nvmrc
       - .github/workflows/webapp-deploy.yml
   workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit to publish to the staging alias (default the selected ref)
+        required: false
+        type: string
 
 concurrency:
-  group: webapp-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  group: webapp-deploy-${{ inputs.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -49,11 +58,17 @@ jobs:
       url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Commit to publish
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/webapp-build
         with:
           api-base-url: ${{ vars.VITE_API_BASE_URL }}
           turnstile-site-key: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
-          sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          sha: ${{ steps.rev.outputs.sha }}
           environment: ${{ github.event_name == 'pull_request' && 'preview' || 'staging' }}
       - name: Decide whether to upload
         id: gate
@@ -91,7 +106,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Untrusted branch names go through env, never interpolated into the script.
           BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || 'staging' }}
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          COMMIT_SHA: ${{ steps.rev.outputs.sha }}
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
         run: |
           npx --yes "wrangler@${WRANGLER_VERSION}" pages deploy apps/webapp/dist \

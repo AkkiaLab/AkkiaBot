@@ -200,6 +200,8 @@ docker compose logs --tail 50 app                   # JSON 日志，含 "startin
 
 ### 5.1 升级
 
+版本流程下，staging 与生产的升级都由 `deploy/upgrade.sh` 执行（`just release-staging` / `just release-deploy production`，`docs/release.md` §4）：它在同一目录按下面的顺序完成配置检查、迁移门禁、拉镜像、备份、替换文件、启动和健康检查，失败时按是否涉及迁移决定自动回滚或停下交给人。以下是等价的手动步骤，供排障和工具不可用时使用。
+
 ```bash
 cd /opt/akkiabot/production
 grep '^AKKIABOT_TAG=' .env                           # 记下当前（旧）sha，回滚时要用
@@ -389,10 +391,10 @@ staging bot 是否正常响应：用 Telegram 测试环境的账号私聊 stagin
 
 ### 8.1 staging 发版
 
-staging 可以累积多个已合并的任务后再发版。发版时，前后端使用同一个 master commit：
+staging 发版以 RC 为单位（`docs/release.md` §4.1）：`release-rc.yml` 为 RC 的 sha 构建镜像并发布 staging Mini App，然后在本机执行 `just release-staging <RC tag> <场景>`，它持有 staging 环境锁，用该 commit 的 `deploy/upgrade.sh` 升级本目录并执行差异验收。前后端始终是同一个 RC commit，master 的后续推送不会覆盖 staging。手动执行时的等价步骤：
 
 ```bash
-SHA=<master 上的完整 commit sha，release.yml 已推送该镜像>
+SHA=<RC tag 指向的完整 commit sha，release-rc.yml 已推送该镜像>
 cd /opt/akkiabot/staging
 cp -p .env ".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$SHA/" .env
@@ -404,7 +406,7 @@ curl -fsS https://bot-api-staging.akkia.moe/readyz
 curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 $SHA
 ```
 
-然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和非 Telegram 的冒烟，不重复全量验收；Telegram 相关能力只靠自然流量观测（见 §9.4 第 5 步）。
+然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收并经封版打正式 tag 的 `SHA`（`docs/release.md` §4.2–4.3）：负责人审批 `release-production.yml` 后，`just release-deploy production <tag>` 按 §5.1 升级后端，再触发前端的 `webapp-promote.yml`。生产发布前需要负责人确认，发布后只做健康检查和非 Telegram 的冒烟，不重复全量验收；Telegram 相关能力只靠自然流量观测（见 §9.4 第 5 步）。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 

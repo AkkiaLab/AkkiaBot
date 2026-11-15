@@ -1,0 +1,50 @@
+name: Release setup
+description: >
+  Check that the release GitHub App is configured, mint its token and check out
+  master (the reviewed release tooling) with full history, pushing as the App.
+  Pushes made with this token start workflows, unlike GITHUB_TOKEN; the flow
+  does not rely on that and chains its steps explicitly (docs/release.md §7).
+inputs:
+  app-id:
+    description: vars.RELEASE_APP_ID
+    required: true
+  private-key:
+    description: secrets.RELEASE_APP_PRIVATE_KEY
+    required: true
+outputs:
+  token:
+    description: Installation token of the release App (masked)
+    value: ${{ steps.app.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - name: Release App is configured
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        HAS_KEY: ${{ inputs.private-key != '' }}
+      run: |
+        missing=()
+        [[ -n "$APP_ID" ]] || missing+=("variable RELEASE_APP_ID")
+        [[ "$HAS_KEY" == "true" ]] || missing+=("secret RELEASE_APP_PRIVATE_KEY")
+        if (( ${#missing[@]} )); then
+          echo "::error::release App not configured: ${missing[*]} (docs/release.md §7, BOT-40)"
+          exit 1
+        fi
+    - id: app
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+    - uses: actions/checkout@v7
+      with:
+        ref: master
+        fetch-depth: 0
+        token: ${{ steps.app.outputs.token }}
+    - name: Commit identity of the App
+      shell: bash
+      env:
+        SLUG: ${{ steps.app.outputs.app-slug }}
+      run: |
+        git config user.name "${SLUG}[bot]"
+        git config user.email "${SLUG}[bot]@users.noreply.github.com"

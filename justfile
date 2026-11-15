@@ -161,3 +161,17 @@ dev-observability:
 # Upload dashboards and alert rules to Grafana (GRAFANA_URL / GRAFANA_SA_TOKEN; docs/observability.md)
 grafana-sync *args:
     uv run python -m scripts.grafana_sync {{ args }}
+
+# --- Version branches and releases (docs/release.md)
+
+# Release flow CLI: status, create, cascade, rc, check-rc, baseline, seal, window, … (`just release --help`)
+release *args:
+    uv run python -m scripts.release {{ args }}
+
+# Deploy an RC to staging on this machine, then accept it in the same lock (scenarios: comma-separated; empty = full)
+release-staging tag scenarios="":
+    uv run python -m scripts.release deploy staging {{ tag }} --accept {{ if scenarios != "" { "--scenarios " + scenarios } else { "" } }}
+
+# Deploy an owner-approved formal tag (release-production.yml `approve` job) to production
+release-deploy env tag *args:
+    uv run python -m scripts.release deploy {{ env }} {{ tag }} {{ args }}

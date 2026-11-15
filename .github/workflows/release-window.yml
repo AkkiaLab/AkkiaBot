@@ -1,0 +1,65 @@
+name: Release window
+
+# Thursday and Sunday, UTC+8 (docs/release.md §5): 16:xx prepare, 18:xx freeze
+# (下车 + RC to staging), 20:xx release (seal the accepted RC, then production
+# approval). The phase is taken from the clock when the run starts, so a delayed
+# run decides like an on-time one and a repeated run changes nothing. Manual
+# entry (加车 / patch release): dispatch with phase and version.
+
+run-name: 发布窗口 ${{ inputs.phase || 'scheduled' }} ${{ inputs.version }}
+
+on:
+  schedule:
+    - cron: "13 8 * * 0,4" # 16:13 UTC+8 prepare
+    - cron: "3 10 * * 0,4" # 18:03 UTC+8 freeze
+    - cron: "3 12 * * 0,4" # 20:03 UTC+8 release
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: auto (from the clock) / prepare / freeze / release
+        required: false
+        default: auto
+        type: choice
+        options: [auto, prepare, freeze, release]
+      version:
+        description: Release to act on (vX.Y.Z); empty = the current regular release
+        required: false
+        type: string
+
+concurrency:
+  group: release-window
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Any release branch at all?
+        id: boot
+        run: |
+          if git ls-remote --exit-code --heads "https://github.com/$GITHUB_REPOSITORY.git" 'releases/*' >/dev/null; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no releases/* branch yet (flow not bootstrapped, docs/release.md §6); skipping"
+          fi
+      - uses: AkkiaLab/AkkiaBot/.github/actions/release-setup@master
+        if: steps.boot.outputs.active == 'true'
+        id: setup
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Run the window phase
+        if: steps.boot.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PHASE: ${{ inputs.phase }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          args=()
+          [[ -n "$PHASE" && "$PHASE" != auto ]] && args+=(--phase "$PHASE")
+          [[ -n "$VERSION" ]] && args+=(--version "$VERSION")
+          python3 -m scripts.release window "${args[@]}"

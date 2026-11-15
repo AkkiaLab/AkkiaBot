@@ -306,7 +306,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 - **一个进程**：`main.py` 构建 PTB `Application` 和 FastAPI app，在同一个事件循环中运行 PTB（默认长轮询，可配置为 webhook）和 uvicorn；FastAPI lifespan 负责初始化和关闭数据库、缓存、HTTP 客户端。
 - **数据库迁移**：通过独立命令 `akkiabot migrate`（容器启动前执行）完成，不在应用进程内用 subprocess 调用 alembic。
 - **域名与前端**：
-  - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。`master` 分支自动发布到生产环境，PR 生成预览地址。
+  - `bot.akkia.moe` → Cloudflare Pages（Mini App 静态文件）。生产只发布经 staging 验收并打正式 tag 的版本（`docs/release.md`、`docs/webapp.md`），PR 生成预览地址。
   - `bot-api.akkia.moe` → cloudflared tunnel → 后端容器，提供 `/api/v1/...`。
   - 前端在构建时通过 `VITE_API_BASE_URL` 注入 API 地址；后端的 CORS 只放行 `https://bot.akkia.moe`（以及配置里列出的预览域名）。
   - Mini App 的鉴权依赖请求中携带的 Telegram initData，而不是 Cookie，所以跨域不涉及凭据共享，配置很简单。

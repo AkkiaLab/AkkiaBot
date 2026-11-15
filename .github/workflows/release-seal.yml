@@ -1,0 +1,48 @@
+name: Release seal
+
+# Seal releases/<version> and create the formal tag on its accepted RC
+# (docs/release.md §4.2): lock the branch with the `releases 封版` ruleset, read
+# the lock and the head back, then tag. Any failure before the tag leaves no tag;
+# rerunning resumes. Then starts release-production.yml for the tag explicitly
+# (owner approval required there).
+
+run-name: 封版 ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to seal (vX.Y.Z)
+        required: true
+        type: string
+
+concurrency:
+  group: release-seal
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: AkkiaLab/AkkiaBot/.github/actions/release-setup@master
+        id: setup
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Lock, verify, tag
+        id: seal
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: python3 -m scripts.release seal "$VERSION"
+      - name: Start the production pipeline for the tag
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          TAG: ${{ steps.seal.outputs.tag }}
+        run: |
+          gh workflow run release-production.yml --ref master -f tag="$TAG"
+          echo "- 已触发 release-production.yml（$TAG），等待负责人审批 production 环境" >> "$GITHUB_STEP_SUMMARY"
