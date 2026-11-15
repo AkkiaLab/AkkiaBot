@@ -55,7 +55,8 @@ autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
    - 同一 review id 的多次投递、几乎同时到达的不同评审（如 Copilot 与人类相继提交）都收敛到这一条唤醒，实现者只运行一次。
    - 一条唤醒触发后（`fire_count>0`），之后到达的评审会新建下一条唤醒，实现者会再运行一次：已开始的运行不保证看到之后的新意见，这是有意的“新意见至少送达一次”。
 7. **重投与恢复入口**：
-   - 同一 `X-GitHub-Delivery` 重投由 Multica 平台去重，只记录一次运行；因此投递一旦被接收而分派运行失败，GitHub 重投不能补救。
+   - 同一 `X-GitHub-Delivery` 重投由 Multica 平台去重，只记录一次运行；因此投递一旦被接收而分派运行失败，GitHub 重投不能补救。实测：GitHub Redeliver 沿用原 guid，Multica 返回 `duplicate`；autopilot 暂停期间被忽略（`autopilot_paused`）的投递，重投时同样返回 `duplicate`，只能用补偿扫描补回。
+   - 平台对同一 issue 上同一智能体的运行串行执行：被唤醒的实现者运行若遇到该智能体在本 issue 上已有运行，会排队到前一个运行结束后再开始。
    - 同一 issue 后续任何评审的分派运行，会顺带检查该 issue 上未到 `done:` 的 `github_review_*` 并按上面的步骤补齐。
    - **补偿扫描**：手动执行 `multica autopilot trigger <autopilot id>`（无 GitHub 载荷）时，分派智能体扫描 `AkkiaLab/AkkiaBot` 所有 open PR 上最近 24 小时提交的评审，对每条按相同的判定和步骤处理；已 `done:` 的跳过，未完成的续做。发现分派运行 failed / skipped（`multica autopilot runs <autopilot id>`）或有人报告漏通知时，由 Engineer 或 Leader 执行。超过 24 小时的遗漏，在原 issue 上直接 @ 实现者。
    - 残余边界：实现者兜底清理之前，若遗留规则恰好与有效规则在同一时刻触发（两者创建间隔不超过分派运行的数秒），实现者可能各启动一次。平台会把排队中的唤醒并入同一运行，但无法保证一定合并；即使不合并，第二次运行也会发现已无未处理意见，简短说明后结束，不会漏通知。记录评论在中断时可能多出一条，下一次处理同一评审时会删除。
@@ -147,6 +148,12 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 | 中断遗留后没有任何后续分派 | 实现者开始前的清理删除其余待触发规则 |
 
 真实 webhook 运行中的失败恢复、补偿扫描和端到端通知，需在 GitHub hook 接入后验证，结果记在 BOT-35。
+
+## 端到端验收（2026-11-15，BOT-35）
+
+GitHub hook 与 autopilot 启用后，在 PR #37（关联 BOT-35）和临时的未关联草稿 PR #38 上实测：外部意见路由与唤醒、未关联 PR 不路由、重投去重、补偿扫描补回接入前遗漏的评审、Engineer 删除分派智能体创建的唤醒规则。逐项证据（运行 id、delivery、规则 id）记录在 BOT-35。
+
+已知：Copilot 因额度不足无法评审时，也会提交一条带正文的 review，按现行规则会通知实现者，实现者确认无意见后结束。
 
 ## 验收与变更
 
