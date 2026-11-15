@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from akkiabot_e2e.errors import E2EError, FloodWait
+from akkiabot_e2e.errors import E2EError, FloodWait, InviteFailed
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.scenarios import HttpResult
 from akkiabot_e2e.transport import Account, Button, ChatRef, Entity, Msg, Role, UserInfo
@@ -409,6 +409,10 @@ class FakeTelegram:
         self.floods: dict[str, list[float]] = defaultdict(list)
         """Pending flood waits per operation name, raised once each."""
         self.calls: list[str] = []
+        self.invite_errors: dict[int, str] = {}
+        """User id → error code the owner's ``invite`` raises (e.g. ``USER_PRIVACY_RESTRICTED``)."""
+        self.invite_ignored: set[int] = set()
+        """Users ``invite`` silently does not add (Telegram's ``missing_invitees``)."""
         self.private_bots: dict[int, Callable[[str], str]] = {}
         self._next_chat = 1_000_000
 
@@ -525,6 +529,10 @@ class FakeAccount:
 
     async def invite(self, chat_id: int, user_id: int) -> None:
         self._op("invite")
+        if user_id in self.world.invite_errors:
+            raise InviteFailed(self.world.invite_errors[user_id])
+        if user_id in self.world.invite_ignored:
+            return
         self._chat(chat_id).members.setdefault(user_id, "member")
 
     async def promote(self, chat_id: int, user_id: int, rights: frozenset[str]) -> None:

@@ -31,5 +31,21 @@ class CheckFailed(E2EError):  # noqa: N818 - an assertion outcome, not a crash
     """An acceptance assertion did not hold."""
 
 
-class ScenarioSkipped(E2EError):  # noqa: N818 - an outcome, reported as "not run"
-    """A prerequisite of the scenario is missing (e.g. the bot has no LLM)."""
+class ScenarioSkipped(E2EError):  # noqa: N818 - an outcome, reported as "skipped"
+    """A prerequisite of the scenario is missing (e.g. the bot has no LLM).
+
+    ``reason`` is a report skip reason (see ``akkiabot_e2e.report.SKIP_REASONS``):
+    ``missing_credentials`` by default, ``not_selected`` when it depends on a
+    scenario this run did not select.
+    """
+
+    def __init__(self, message: str, *, reason: str = "missing_credentials") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class InviteFailed(E2EError):  # noqa: N818 - reads better in reports
+    """The owner account could not add a user to the group (e.g. ``USER_PRIVACY_RESTRICTED``).
+
+    Never answered by falling back to an invite link: the caller reports it and stops.
+    """

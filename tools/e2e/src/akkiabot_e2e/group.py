@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from akkiabot_e2e.config import CHAT_ABOUT, E2EConfig
-from akkiabot_e2e.errors import E2EError, SafetyError
+from akkiabot_e2e.errors import E2EError, InviteFailed, SafetyError
 from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, Account, ChatRef, UserInfo
 from akkiabot_e2e.vault import E2E_ITEM, FieldValue, Vault
 
@@ -219,6 +219,19 @@ async def select_group(
     return TestGroup(chat, created=True, actions=tuple(actions))
 
 
+async def owner_add_member(admin: Account, chat_id: int, user_id: int) -> None:
+    """The owner account adds ``user_id`` to the group (``channels.inviteToChannel``).
+
+    Used instead of the member joining through an invite link everywhere except
+    the scenarios that verify a real join. Failures (``USER_PRIVACY_RESTRICTED``,
+    ``PEER_FLOOD`` …) raise :class:`InviteFailed`; there is deliberately no
+    fallback to an invite link.
+    """
+    await admin.invite(chat_id, user_id)
+    if await admin.participant_role(chat_id, user_id) is None:
+        raise InviteFailed(f"群主账号拉入用户 {user_id} 后，该用户仍不在测试群中")
+
+
 async def prepare_group(
     admin: Account,
     member: Account,
@@ -258,9 +271,10 @@ async def prepare_group(
         await admin.unban(chat_id, member_user.id)
         actions.append("解除普通成员账号的禁言（上次运行中断时遗留）")
     if await member.find_chat(chat_id) is None:
-        link = await admin.export_invite_link(chat_id)
-        await member.join_by_link(link)
-        actions.append("普通成员账号通过邀请链接入群")
+        # The owner adds the member: joins by link are what Telegram rate-limits
+        # per account, and only m7.captcha / m2.service-message need a real one.
+        await owner_add_member(admin, chat_id, member_user.id)
+        actions.append("群主把普通成员账号拉入群")
     if await admin.participant_role(chat_id, member_user.id) != "member":
         raise SafetyError("普通成员测试账号在测试群中不是普通成员（不应是管理员）")
 

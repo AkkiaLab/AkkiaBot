@@ -238,7 +238,8 @@ async def test_long_flood_wait_stops_remaining_scenarios(
         pacer=Pacer(max_wait=60, send_interval=0, sleep=_no_sleep),
     )
 
-    assert statuses(report) == {"m2.help": "failed", "m2.id": "not_run"}
+    assert statuses(report) == {"m2.help": "failed", "m2.id": "skipped"}
+    assert report.results[1].skip_reason == "rate_limited"
     assert "3600" in report.results[0].detail
     assert report.status == "failed"
 
@@ -499,7 +500,7 @@ async def test_m5_scenarios_pass_and_leave_the_member_free(
 async def test_m5_skipped_without_llm(world: FakeTelegram) -> None:
     env = live_env(LLM_API_KEY="", LLM_MODEL="")
     report = await run(world, load_config(env), scenarios=select_scenarios(["m5.spam", "m2.help"]))
-    assert statuses(report) == {"m5.spam": "not_run", "m2.help": "passed"}
+    assert statuses(report) == {"m5.spam": "skipped", "m2.help": "passed"}
     assert "未配置 LLM" in report.results[0].detail
     assert report.status == "failed"  # M5 was not verified
 
@@ -515,7 +516,7 @@ async def test_m5_langfuse_skipped_without_probe(world: FakeTelegram, config: E2
         poll_interval=0.01,
         registry=FakeRegistry(),
     )
-    assert statuses(report) == {"m5.spam": "passed", "m5.langfuse": "not_run"}
+    assert statuses(report) == {"m5.spam": "passed", "m5.langfuse": "skipped"}
     assert "LANGFUSE" in report.results[1].detail
 
 

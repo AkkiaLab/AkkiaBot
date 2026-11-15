@@ -52,8 +52,25 @@ def test_describe_success_mentions_not_automated_steps() -> None:
 
 
 def test_describe_failure() -> None:
-    state, text = describe(_report("passed", "not_run"))
-    assert (state, text) == ("failure", "1/2 个场景通过（运行 run-1）")
+    state, text = describe(_report("passed", "skipped"))
+    assert (state, text) == ("failure", "1/2 个场景通过（运行 run-1）；1 个跳过（不计为通过）")
+
+
+def test_record_gate_requires_every_scenario_executed() -> None:
+    # A PR-level run passes with unselected scenarios, but can never be recorded
+    # as staging acceptance: skipped never counts as passed.
+    report = Report(run_id="run-1", status="failed", started_at="now")
+    report.release = dict.fromkeys(("target_sha", "webapp_sha_at_start", "webapp_sha_at_end"), SHA)
+    report.results = [
+        ScenarioResult("s0", "M4", "d", status="passed"),
+        ScenarioResult("s1", "M2", "d", status="skipped", skip_reason="not_selected"),
+    ]
+    report.finish()
+    assert report.status == "passed"
+    assert not report.fully_executed()
+    state, text = describe(report, SHA)
+    assert state == "failure"
+    assert "1 个跳过（不计为通过）" in text
 
 
 def test_record_status_posts_through_gh_stdin() -> None:

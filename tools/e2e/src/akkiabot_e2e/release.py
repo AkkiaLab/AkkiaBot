@@ -83,9 +83,14 @@ def describe(report: Report, sha: str | None = None) -> tuple[str, str]:
     """
     total = len(report.results)
     passed = sum(r.status == "passed" for r in report.results)
-    ok = report.status == "passed" and (sha is None or release_consistent(report, sha))
+    skipped = sum(r.status == "skipped" for r in report.results)
+    # A release run must actually execute every scenario: skipped never counts as passed.
+    ok = report.status == "passed" and report.fully_executed()
+    ok = ok and (sha is None or release_consistent(report, sha))
     state = "success" if ok else "failure"
     text = f"{passed}/{total} 个场景通过（运行 {report.run_id}）"
+    if skipped:
+        text += f"；{skipped} 个跳过（不计为通过）"
     if sha is not None and not release_consistent(report, sha):
         text += "；验收期间版本未保持一致"
     if report.not_automated:

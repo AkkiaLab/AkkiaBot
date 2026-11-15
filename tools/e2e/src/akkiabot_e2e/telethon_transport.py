@@ -14,10 +14,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from telethon import TelegramClient, errors, functions, types, utils
+from telethon.errors import rpcerrorlist
 from telethon.sessions import StringSession
 
 from akkiabot_e2e.config import ApiCredentials
-from akkiabot_e2e.errors import E2EError, FloodWait, SafetyError
+from akkiabot_e2e.errors import E2EError, FloodWait, InviteFailed, SafetyError
 from akkiabot_e2e.login import Ask
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.transport import Button, ChatRef, Entity, Msg, Role, UserInfo
@@ -101,6 +102,23 @@ async def _guard[T](awaitable: Awaitable[T]) -> T:
         return await awaitable
     except errors.FloodError as exc:
         raise FloodWait(float(getattr(exc, "seconds", 0) or 60)) from None
+
+
+def _invite_error(user_id: int, exc: errors.RPCError) -> str:
+    # Instances only carry the generic HTTP-ish message (e.g. FORBIDDEN): map the class back.
+    codes = [k for k, v in rpcerrorlist.rpc_errors_dict.items() if v is type(exc)]
+    code = codes[0] if codes else getattr(exc, "message", None) or type(exc).__name__
+    return f"群主账号把用户 {user_id} 拉入测试群失败：{code}"
+
+
+def _check_invited(user_id: int, result: Any) -> None:
+    """Newer layers report privacy refusals in ``missing_invitees`` instead of raising."""
+    missing = [m.user_id for m in getattr(result, "missing_invitees", None) or ()]
+    if user_id in missing:
+        raise InviteFailed(
+            f"群主账号把用户 {user_id} 拉入测试群失败：Telegram 返回 missing_invitees"
+            "（对方隐私设置不允许被拉入群，等同 USER_PRIVACY_RESTRICTED）"
+        )
 
 
 async def _disconnect(client: TelegramClient) -> None:
@@ -289,11 +307,16 @@ class TelethonAccount:
 
     async def invite(self, chat_id: int, user_id: int) -> None:
         user = await self._client.get_input_entity(user_id)
-        await _guard(
-            self._client(
-                functions.channels.InviteToChannelRequest(await self._chat(chat_id), [user])
+        try:
+            result = await _guard(
+                self._client(
+                    functions.channels.InviteToChannelRequest(await self._chat(chat_id), [user])
+                )
             )
-        )
+        except errors.RPCError as exc:
+            # E.g. PEER_FLOOD, USER_PRIVACY_RESTRICTED, USER_CHANNELS_TOO_MUCH.
+            raise InviteFailed(_invite_error(user_id, exc)) from None
+        _check_invited(user_id, result)
 
     async def promote(self, chat_id: int, user_id: int, rights: frozenset[str]) -> None:
         admin_rights = types.ChatAdminRights(**dict.fromkeys(rights, True))
