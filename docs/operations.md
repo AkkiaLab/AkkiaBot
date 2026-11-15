@@ -421,7 +421,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 - [ ] 生产目录已按 §4.2 准备好，`app.env` 使用 `prod-*` 条目：正式 bot token、`WEBAPP_URL=https://bot.akkia.moe`、prod Turnstile、`OBSERVABILITY_SENTRY_DSN`；`.env` 填好 `prod-cloudflare` 的 tunnel token 和 `prod-grafana`。按 §4 的说明，只执行 `docker compose up -d --wait postgres redis && docker compose run --rm migrate`，**还没有启动 `app`**。
 - [ ] 前端：`webapp-promote.yml` 已经可以用同一个 sha 提升到 `bot.akkia.moe`（需要负责人审批）。
 - [ ] 确认旧版使用 SQLite：旧部署目录中 `botlab_core/data/config.yaml` 的 `db.driver` 为 `sqlite`。如果是 `mysql`，本脚本不适用，改用 §9.8 的备选方案。
-- [ ] 已用旧库只读副本完成一次 dry-run（§9.3），统计“一致”，报告中的注意事项和 captcha 禁言名单都已看过。
+- [ ] 已用旧库只读副本完成一次 dry-run（§9.3），统计“一致”，报告中的注意事项和最近被 captcha 禁言的名单都已看过。
 - [ ] 记下旧版镜像的 digest，回滚时使用：在旧部署目录执行 `docker compose images core`，或 `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/akkialab/botlab-core:latest`。
 
 ### 9.2 版本锁定
@@ -440,21 +440,28 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 | `telegram_chats.enable_anti_spam` | `chat.settings.antispam` | |
 | `telegram_chats.enable_warn` | `chat.settings.warn` | |
 | `telegram_chats.max_warn_count` | `chat.settings.max_warn_count` | 超出新系统允许范围 1–100 时按边界值导入，并在“注意事项”中列出。新旧系统都在达到上限的那次 `/warn` 时封禁，语义相同 |
-| `telegram_chat_members.warn_count`（> 0） | `chat_member.warn_count` | 只导入属于上面这些群的成员；所在群不在导入范围的成员跳过并计数 |
-| `restriction_type = 'CaptchaBAN'` 的成员 | 不写入 | 只在报告中列出，由管理员处理（新系统中没有对应的验证） |
+| `telegram_chat_members.warn_count`（> 0） | `chat_member.warn_count` | 旧库的值为准 |
+| `telegram_chat_members.message_count`（> 0） | `chat_member.message_count` | 新旧两边取较大值。新旧系统都对发言数超过 3 的成员免于反垃圾检查（新系统 `ANTISPAM_EXEMPT_MESSAGE_COUNT` 默认 3），导入后老成员保持豁免 |
+| `telegram_messages`（最近 `--recent-hours` 小时，默认 48） | `message_log`（只有消息 id、发送者和时间，不含正文） | 切换后立即 `/ban`、`/warn` 封禁或反垃圾封禁时，仍能清理该成员切换前的近期消息（Telegram 只允许 bot 删除 48 小时内的消息，旧版也只删 23 小时内的） |
+| `restriction_type = 'CaptchaBAN'` 的成员 | 不写入 | 在 Telegram 中保持禁言，与切换前相同（负责人于 BOT-16 决定）。报告按群汇总人数，只逐个列出最近 `--recent-hours` 小时内被禁言的成员，完整名单在 JSON 报告中 |
+| `AdminBAN` / `AdminSPAM` 等其他限制记录 | 不写入 | 封禁本身由 Telegram 保存，不受切换影响。不导入记录，是为了避免管理员早已在客户端解封、但旧库仍记为封禁的成员重新入群时被跳过入群验证 |
 
-已经存在的 `chat` 只更新上面四项，`delete_service_messages` 等旧版没有的配置保持不变；新建的 `chat` 使用旧库中的 `type` 和标题。所有写入在同一个事务里完成，重复执行结果相同（第二次执行时全部为“不变”）。
+成员数据（警告数、发言数、近期消息）除了上面这些群，还包括旧库中**没有群记录的群**：旧版只有在群里执行过 `/config` 才会保存群记录，其他群的所有开关都为关。这些群（负数 chat id）只导入成员数据，不创建 `chat` 配置；新系统对没有配置的群同样按全关运行，行为一致。私聊（正数 chat id）不导入。
+
+“最近”从旧库的**最后活动时间**（最新一条消息或成员记录的更新时间）往前算，不使用当前时间，所以用停服后的副本导入时，窗口正好覆盖停服前的 48 小时。
+
+已经存在的 `chat` 只更新上面四项，`delete_service_messages` 等旧版没有的配置保持不变；新建的 `chat` 使用旧库中的 `type` 和标题。成员和消息批量写入。所有写入在同一个事务里完成，重复执行结果相同（第二次执行时全部为“不变”）。以真实旧库副本（4.8 万名成员、4 千多条近期消息）对 PostgreSQL 17 正式导入约 2 秒。
 
 报告是 Markdown 格式，输出到 stdout（日志写到 stderr），内容包括：
 
-- **源数据统计**：直接用 SQL 对旧库计数（群、各开关开启数、有警告的成员数、警告数合计、captcha 禁言人数）。
+- **源数据统计**：直接用 SQL 对旧库计数（群、各开关开启数、有警告的成员数、警告数合计、有发言数的成员数、发言数合计、captcha 禁言人数）。
 - **一致性校验**：逐项比较源数据统计与导入计划。任何一项不一致时，脚本不写入任何数据，并以退出码 1 结束。
-- **变更汇总**、**群配置差异**、**警告数差异**：新建 / 更新 / 不变，以及原值和新值。
-- **captcha 禁言中的成员**、**注意事项**。
+- **变更汇总**、**群配置差异**、**警告数差异**：新建 / 更新 / 不变，以及原值和新值；发言数只给汇总（含导入后免于反垃圾检查的人数），逐人明细在 JSON 中。
+- **captcha 禁言中的成员**（按群汇总，加最近 `--recent-hours` 小时的名单）、**注意事项**。
 
 `--report FILE` 会把同样的内容另外写成 JSON。`FILE` 必须是一个不存在的新文件（所在目录要已存在），也不能是符号链接；在读取旧库之前就会检查，不满足时退出码为 2，不会读写任何数据，避免误把报告写到旧库副本上。退出码：`0` 成功；`1` 一致性校验失败，未写入；`2` 文件、库结构或配置错误。
 
-**制作只读副本**（在旧服务器上执行）。正式切换时，在 9.4 第 1 步停止旧服务之后再复制；切换前的演练可以在服务运行时用 SQLite 在线备份复制：
+**制作只读副本**（在旧服务器上执行）。正式切换时，在 9.4 第 1 步停止旧服务之后再复制；切换前的演练可以在服务运行时用 SQLite 在线备份复制。旧服务器（`ovh-hil-01`，部署目录 `/root/docker_data/botlab`，需要 sudo）上没有 `sqlite3` 命令，用后面的 Python 写法；有 `sqlite3` 时也可以用下面的命令：
 
 ```bash
 cd <旧部署目录>                                     # 含 docker-compose.yml 和 botlab_core/data/
@@ -464,6 +471,28 @@ sqlite3 botlab_core/data/sqlite.db ".backup legacy-copy/sqlite-$STAMP.db"     # 
 sqlite3 legacy-copy/sqlite-$STAMP.db "PRAGMA journal_mode=DELETE; PRAGMA integrity_check;"  # 只改副本；应输出 delete、ok
 chmod 444 legacy-copy/sqlite-$STAMP.db
 sha256sum botlab_core/data/sqlite.db legacy-copy/sqlite-$STAMP.db   # 记录下来；旧服务停止期间，原库的哈希不应变化
+```
+
+没有 `sqlite3` 命令时，用系统自带的 Python 完成同样的事。原库以只读方式打开，副本写到登录用户的家目录：
+
+```bash
+sudo python3 -I - <<'PY'
+import hashlib, os, sqlite3, time
+src_path = "/root/docker_data/botlab/botlab_core/data/sqlite.db"
+out_dir = os.path.expanduser("~akkia/akkiabot-legacy-copy")
+dst_path = f"{out_dir}/sqlite-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
+os.makedirs(out_dir, mode=0o700, exist_ok=True)
+src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+dst = sqlite3.connect(dst_path)
+src.backup(dst)
+src.close()
+print(dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0], dst.execute("PRAGMA integrity_check").fetchone()[0])  # delete ok
+dst.close()
+os.chmod(dst_path, 0o444)
+for path in (out_dir, dst_path):
+    os.chown(path, 1001, 1001)                       # akkia
+print(dst_path, hashlib.sha256(open(dst_path, "rb").read()).hexdigest())
+PY
 ```
 
 副本中有群标题和用户 id，按生产数据处理：不要上传到 issue 或公开位置。把副本复制到生产服务器的 `/opt/akkiabot/production/legacy/`（目录权限 755，文件 444；容器以 uid 10001 运行，需要能读到）。
@@ -497,7 +526,7 @@ echo "exit=$?"
    echo "exit=$?"                                     # 必须为 0
    ```
 
-   把报告中“captcha 禁言中的成员”交给各群管理员处理：新 bot 没有解除禁言的命令，由管理员在 Telegram 客户端中确认：是真人就在群成员权限中解除限制，否则移出。
+   历史上未完成验证的成员保持禁言，不需要处理。只把报告中“最近 48 小时内被禁言的成员”交给对应群的管理员：他们可能正在验证中途，旧的验证按钮已经失效。新 bot 没有解除禁言的命令，由管理员在 Telegram 客户端中确认：是真人就在群成员权限中解除限制，否则移出。
 3. **启动新服务**：`docker compose up -d --wait`，然后按 §4.3 验证（`/readyz`、tunnel、日志中的 `bot started`）。Grafana 告警规则的预期环境加入 `production`（`docs/observability.md` §5）。
 4. **切换 Mini App 地址**：执行 `webapp-promote.yml`（同一个 sha，需要负责人审批），确认 `https://bot.akkia.moe/version.json`。如果旧 bot 在 BotFather 中设置过菜单按钮或 Mini App 地址（`/mybots` → Bot Settings → Menu Button / Configure Mini App），改为 `https://bot.akkia.moe`。新的入群验证按钮使用 `app.env` 的 `WEBAPP_URL`，不再使用旧前端的地址。
 5. **冒烟验证**（用正式 bot，在负责人指定的群里）：
@@ -531,5 +560,5 @@ echo "exit=$?"
 
 如果脚本在实际数据上不适用（例如旧版使用 MySQL，或旧库结构与预期不一致，脚本以退出码 2 报告缺少的列）：
 
-- **导出 CSV 后手动导入**：用 `sqlite3 -csv`（或 MySQL 的 `SELECT ... INTO OUTFILE`）导出 `telegram_chats` 的 `id, type, title, enable_captcha, enable_anti_spam, enable_warn, max_warn_count` 和 `telegram_chat_members` 中 `warn_count > 0` 的 `chat_id, user_id, warn_count`（都加 `WHERE deleted_at IS NULL`），整理成同样表结构的 SQLite 文件后再用本脚本导入；或者直接按 9.3 的映射表在新库中逐条写入。
+- **导出 CSV 后手动导入**：用 `sqlite3 -csv`（或 MySQL 的 `SELECT ... INTO OUTFILE`）导出 `telegram_chats` 的 `id, type, title, enable_captcha, enable_anti_spam, enable_warn, max_warn_count` 和 `telegram_chat_members` 中 `warn_count > 0 OR message_count > 0` 的 `chat_id, user_id, warn_count, message_count`（都加 `WHERE deleted_at IS NULL`），整理成同样表结构的 SQLite 文件后再用本脚本导入；或者直接按 9.3 的映射表在新库中逐条写入。
 - **管理员重新配置**：群数量很少时，切换后请各群管理员重新执行 `/config` 打开需要的开关。警告数无法这样恢复，从 0 开始计数，需要在群里提前说明。
