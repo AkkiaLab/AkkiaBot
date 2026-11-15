@@ -391,7 +391,7 @@ staging bot 是否正常响应：用 Telegram 测试环境的账号私聊 stagin
 
 ### 8.1 staging 发版
 
-staging 发版以 RC 为单位（`docs/release.md` §4.1）：`release-rc.yml` 为 RC 的 sha 构建镜像并发布 staging Mini App，然后在本机执行 `just release-staging <RC tag> <场景>`，它持有 staging 环境锁，用该 commit 的 `deploy/upgrade.sh` 升级本目录并执行差异验收。前后端始终是同一个 RC commit，master 的后续推送不会覆盖 staging。手动执行时的等价步骤：
+staging 发版以 RC 为单位（`docs/release.md` §4.1）：`release-rc.yml` 为 RC 的 sha 构建镜像，然后在本机执行 `just release-staging <RC tag> <场景>`：它取得 staging 租约，依次发布同 sha 的 Mini App、用该 commit 的 `deploy/upgrade.sh` 升级本目录、检查公网健康与前端版本，并执行差异验收，结束后才释放租约。手动部署前须先取得租约（`just release lease acquire <sha>`）。前后端始终是同一个 RC commit，master 的后续推送不会覆盖 staging。手动执行时的等价步骤：
 
 ```bash
 SHA=<RC tag 指向的完整 commit sha，release-rc.yml 已推送该镜像>

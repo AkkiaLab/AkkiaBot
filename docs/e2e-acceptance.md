@@ -277,7 +277,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 版本流程（`docs/release.md` §4.1）下，第 1–3 步和第 5 步由 `just release-staging <RC tag> <场景>` 在同一把 staging 锁内完成；以下是它执行的内容和手动执行时的步骤。
 
 1. 被验收的 `SHA` 是当前有效 RC tag `vX.Y.Z-rc.N` 指向的 commit（完整 40 位），由 `release-rc.yml` 创建。
-2. 前端：`release-rc.yml` 把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`（master 推送不再发布 staging）。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
+2. 前端：`just release-staging` 在持有 staging 租约时触发 `webapp-deploy.yml`，把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`；租约持续到验收结束，其他 RC 或手动运行在此期间不能覆盖前端（master 推送不再发布 staging）。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
 3. 后端：`just release-staging` 用该 commit 的 `deploy/upgrade.sh` 把预发布栈升级到同一个 `SHA` 的镜像（`docs/operations.md` §8.1）。
 4. 确定差异场景：
    - **基线** `BASE`：`SHA` 的祖先中最近一个 `staging-acceptance=success` 的 commit（完整 40 位，`just release baseline SHA`）。只认祖先：补丁版本的 RC 不会以较新常规版本的验收为基线，反之亦然；

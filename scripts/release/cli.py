@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,22 +202,58 @@ def cmd_deploy(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
             template=target.template,
         )
     with deploy.environment_lock(target.name):
-        command: list[str] = []
         if target.name == "staging":
-            candidate = rc.check_rc(git.state(), args.tag, gh.sealed_branches())
-            command = deploy.staging_acceptance_command(git, gh, candidate.sha, args.scenarios)
+            staged = deploy.release_staging(
+                git,
+                gh,
+                target,
+                args.tag,
+                scenarios=args.scenarios,
+                accept=args.accept,
+                allow_migration=args.allow_migration,
+            )
+            _summary([f"### staging {args.tag}", *(f"- {line}" for line in staged.lines)])
+            return staged.code
         result = deploy.deploy(git, gh, target, args.tag, allow_migration=args.allow_migration)
         _summary([f"### {target.name} 部署 {args.tag}", *(f"- {line}" for line in result.lines)])
         if result.code != 0:
+            _summary(["- 已停止：未触发前端提升"])
             return result.code
-        if target.name == "production":
-            gh.dispatch("webapp-promote.yml", {"sha": result.sha})
-            _summary(["- 已触发 webapp-promote.yml（前端需负责人审批 webapp-production）"])
-            return 0
-        _summary([f"- staging 验收命令：`{' '.join(command)}`"])
-        if args.accept:
-            # Same lock: no other RC can replace the stack while it is accepted.
-            return subprocess.run(command, check=False).returncode  # noqa: S603
+        gh.dispatch("webapp-promote.yml", {"sha": result.sha})
+        _summary(["- 已触发 webapp-promote.yml（前端需负责人审批 webapp-production）"])
+        return 0
+
+
+def cmd_lease(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
+    from scripts.release import lease
+
+    if args.action in {"check", "acquire"} and not args.sha:
+        raise ReleaseError(f"lease {args.action} 需要完整的 commit sha")
+    if args.action == "show":
+        current = lease.read_lease(git)
+        _summary([f"staging 租约：{current}" if current else "staging 没有租约"])
+    elif args.action == "check":
+        held = lease.check(git, args.sha)
+        _summary([f"staging 租约有效：{held.label}（{held.sha}）到 {held.expires.isoformat()}"])
+    elif args.action == "acquire":
+        held = lease.acquire(git, args.sha, args.label or args.sha[:12])
+        _summary(
+            [
+                f"已取得 staging 租约 {held.commit}（{args.sha}），用完执行 `just release lease release`"
+            ]
+        )
+    else:
+        current = lease.read_lease(git)
+        if current is None:
+            _summary(["staging 没有租约"])
+        elif args.sha and current.sha != args.sha:
+            raise ReleaseError(
+                f"租约属于 {current.label}（{current.sha[:12]}），不是 {args.sha[:12]}，未释放"
+            )
+        elif not lease.release(git, current):
+            raise ReleaseError("释放失败：租约刚被更新")
+        else:
+            _summary([f"已释放 {current.label} 的 staging 租约"])
     return 0
 
 
@@ -264,6 +299,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", help="手动加车 / 小版本：指定版本")
     p.add_argument("--now")
     p.add_argument("--dry-run", action="store_true")
+    p = add("lease", cmd_lease, "staging 租约：show / check <sha> / acquire <sha> / release [sha]")
+    p.add_argument("action", choices=["show", "check", "acquire", "release"])
+    p.add_argument("sha", nargs="?", default="")
+    p.add_argument("--label")
     p = add("deploy", cmd_deploy, "在运行机上部署 RC（staging）或正式 tag（production）")
     p.add_argument("env", choices=sorted(deploy.TARGETS))
     p.add_argument("tag")

@@ -42,7 +42,7 @@ staging 与 prod 的发布入口分离（负责人于 2026-11-14 确认的分层
 ```mermaid
 flowchart LR
     PR[PR] -->|webapp-deploy.yml| P["预览：分支名.akkiabot-webapp.pages.dev"]
-    M[RC tag（release-rc.yml）] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
+    M[RC（just release-staging，持 staging 租约）] -->|webapp-deploy.yml| S["staging.akkiabot-webapp.pages.dev"]
     S --> A["staging 发版验收<br/>just e2e-staging --record-status SHA<br/>（--baseline BASE --scenarios …）"]
     A -->|commit status staging-acceptance=success| G["webapp-promote.yml（输入 sha，需审批）"]
     G --> Prod["bot.akkia.moe"]
@@ -51,7 +51,7 @@ flowchart LR
 | 入口 | 触发 | GitHub 环境 | 上传目标 | 构建配置 |
 | --- | --- | --- | --- | --- |
 | `webapp-deploy.yml` | PR（前端相关路径） | `webapp-preview` | 分支预览 `<分支>.akkiabot-webapp.pages.dev` | 预发布 API + staging Turnstile |
-| `webapp-deploy.yml` | `release-rc.yml` 调用（RC 的 sha）、手动触发（可填 sha）；master 推送不再触发 | `webapp-preview` | 固定别名 `staging.akkiabot-webapp.pages.dev`（staging bot 的 `WEBAPP_URL`） | 同上 |
+| `webapp-deploy.yml` | 手动触发（必填 sha）：`just release-staging` 在持有 staging 租约时触发，人工触发须先取得该 sha 的租约（`docs/release.md` §4.1）；上传前校验租约，不匹配则拒绝；master 推送不再触发 | `webapp-preview` | 固定别名 `staging.akkiabot-webapp.pages.dev`（staging bot 的 `WEBAPP_URL`） | 同上 |
 | `webapp-promote.yml` | 只能手动触发，输入带正式 tag `vX.Y.Z` 的完整 sha（`just release-deploy production` 在后端成功后自动触发；旧流程的版本可用 master 上的 sha） | `webapp-production`（需审批，只接受 master 上的运行） | Pages 生产部署（`--branch=master`），即 `bot.akkia.moe` | 生产 API + prod Turnstile |
 
 `webapp-deploy.yml` 不会发布生产。PR 分支名为 `staging` 或 `master` 时直接失败，避免覆盖这两个部署目标；没有 `CLOUDFLARE_API_TOKEN` 时（例如来自 fork 的 PR）只构建和检查，跳过上传。

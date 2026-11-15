@@ -5,7 +5,7 @@ import pytest
 from scripts.release.branches import create_release
 from scripts.release.cascade import Hop, land_forward_pr, plan, run_cascade
 from scripts.release.git import Git
-from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, PullRequest
+from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, REVIEWER_LOGIN, PullRequest
 from scripts.release.versions import ReleaseError, Version
 from tests.release.conftest import FakeGitHub, Repo
 
@@ -163,12 +163,43 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     with pytest.raises(ReleaseError, match="标签"):
         land_forward_pr(repo.git, gh, 7)
     pr.labels.add(FORWARD_LABEL)
-    with pytest.raises(ReleaseError, match="批准"):
+    with pytest.raises(ReleaseError, match="准出"):
+        land_forward_pr(repo.git, gh, 7)  # nobody approved
+    # Some other account approving is not the Reviewer's release.
+    gh.reviews[7] = [("someone", "APPROVED", head, "2026-11-15T10:00:00Z")]
+    with pytest.raises(ReleaseError, match="准出"):
         land_forward_pr(repo.git, gh, 7)
-    gh.approved.add(7)
+    # Reviewer approved an older head: not enough.
+    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", "0" * 40, "2026-11-15T10:01:00Z"))
+    with pytest.raises(ReleaseError, match="准出"):
+        land_forward_pr(repo.git, gh, 7)
+    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:02:00Z"))
+    # Approved, but a review thread is still open.
+    gh.unresolved[7] = 1
+    with pytest.raises(ReleaseError, match="未解决的评审线程"):
+        land_forward_pr(repo.git, gh, 7)
+    gh.unresolved[7] = 0
+    # Approved, but Copilot commented afterwards and nobody re-reviewed.
+    gh.pr_comments[7] = [("Copilot", "2026-11-15T10:05:00Z"), ("AkkiaS7", "2026-11-15T10:06:00Z")]
+    with pytest.raises(ReleaseError, match="Copilot"):
+        land_forward_pr(repo.git, gh, 7)
+    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:07:00Z"))
+    # Someone still requests changes.
+    gh.reviews[7].append(("someone", "CHANGES_REQUESTED", head, "2026-11-15T10:08:00Z"))
+    with pytest.raises(ReleaseError, match="Request changes"):
+        land_forward_pr(repo.git, gh, 7)
+    gh.reviews[7].append(("someone", "APPROVED", head, "2026-11-15T10:09:00Z"))
     with pytest.raises(ReleaseError, match="ci-ok"):
         land_forward_pr(repo.git, gh, 7)
     gh.green.add(head)
+    # Head pushed while the gates were evaluated: nothing lands.
+    before = repo.sha("refs/heads/releases/v1.1.0")
+    gh.head_changes[7] = "f" * 40
+    with pytest.raises(ReleaseError, match="发生变化"):
+        land_forward_pr(repo.git, gh, 7)
+    assert repo.sha("refs/heads/releases/v1.1.0") == before
+    del gh.head_changes[7]
+    pr.head_sha = head
 
     assert land_forward_pr(repo.git, gh, 7) == head
     assert repo.sha("refs/heads/releases/v1.1.0") == head  # fast-forward, merge kept

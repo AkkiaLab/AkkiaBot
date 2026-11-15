@@ -4,14 +4,17 @@ The host side is ``deploy/upgrade.sh`` taken from the commit being deployed
 (so the procedure is reviewed with the release); this module adds the gates
 that need GitHub and git:
 
-* staging: the RC is current (``rc.check_rc``); the staging environment is
-  held with a machine-local lock for the deploy and the acceptance run that
-  follows, so two RCs never interleave on the shared stack and test sessions;
+* staging (``release_staging``): the RC is current (``rc.check_rc``); a
+  machine-local lock plus the repository-wide staging lease (``lease.py``) are
+  held from the Mini App upload through the backend deploy to the end of the
+  acceptance, so two RCs or a manual frontend run never interleave;
 * production: the formal tag passes ``seal.verify_formal`` and the ``approve``
   job of ``release-production.yml`` for that commit succeeded, i.e. the owner
   approved the ``production`` environment. Without it nothing runs.
 
-After the backend, both report the public health check; production then
+After the backend, the public ``/readyz`` (and on staging the Mini App
+``version.json``) must confirm the deployed sha; a failure there is a failed
+deploy (exit 9 / 10) and stops everything that would follow. Production then
 dispatches ``webapp-promote.yml`` for the same sha (the Mini App keeps its own
 ``webapp-production`` approval).
 """
@@ -85,7 +88,11 @@ UPGRADE_RESULTS = {
     7: "切换后失败，已自动回滚到旧版本（无迁移）",
     8: "切换后失败且自动回滚也失败：需要人工处理",
     75: "另一次升级正在进行",
+    9: "后端已切换到新版本，但公网 /readyz 检查失败：后续步骤已停止；查因后重试同一版本或按 §4.4 回滚",
+    10: "后端已切换到新版本，但 staging Mini App version.json 缺失或不是该 sha：已停止，不进入验收",
 }
+PUBLIC_HEALTH_FAILED = 9
+WEBAPP_VERSION_MISMATCH = 10
 
 
 Runner = Callable[[list[str], str | None, dict[str, str] | None], subprocess.CompletedProcess[str]]
@@ -231,17 +238,88 @@ def deploy(
     ]
     meaning = UPGRADE_RESULTS.get(proc.returncode, f"未知退出码 {proc.returncode}")
     lines.append(f"upgrade.sh 结果：{meaning}")
-    if proc.returncode == 0:
-        lines.append(
-            f"公网健康检查 {target.health_url}：{'通过' if http_ok(target.health_url) else '失败'}"
-        )
-        if target.webapp_version_url:
+    code = proc.returncode
+    if code == 0:
+        healthy = http_ok(target.health_url)
+        lines.append(f"公网健康检查 {target.health_url}：{'通过' if healthy else '失败'}")
+        if not healthy:
+            code = PUBLIC_HEALTH_FAILED
+        elif target.webapp_version_url:
             version = fetch_json(target.webapp_version_url) or {}
+            seen = version.get("sha")
             lines.append(
-                f"Mini App version.json：{version.get('sha', '无法读取')}"
-                f"（{'一致' if version.get('sha') == sha else '不一致：先确认 RC 流水线已部署前端'}）"
+                f"Mini App version.json：{seen or '无法读取'}（{'一致' if seen == sha else '不一致'}）"
             )
-    return DeployResult(sha, old, proc.returncode, lines)
+            if seen != sha:
+                code = WEBAPP_VERSION_MISMATCH
+        if code != 0:
+            lines.append(f"结果：{UPGRADE_RESULTS[code]}")
+    return DeployResult(sha, old, code, lines)
+
+
+WEBAPP_WORKFLOW = "webapp-deploy.yml"
+
+
+def webapp_title(sha: str, nonce: str) -> str:
+    """``run-name`` of a leased staging run of webapp-deploy.yml."""
+    return f"staging {sha} {nonce}"
+
+
+@dataclass
+class StagingResult:
+    code: int
+    lines: list[str]
+
+
+def release_staging(
+    git: Git,
+    gh: GitHub,
+    target: Target,
+    tag: str,
+    *,
+    scenarios: str | None,
+    accept: bool,
+    allow_migration: bool = False,
+    run: Runner = _run,
+    accept_run: Callable[[list[str]], int] | None = None,
+    log: Callable[[str], None] = print,
+) -> StagingResult:
+    """RC to staging under the lease: Mini App → backend → checks → acceptance → release.
+
+    Every step must succeed before the next one starts; the lease is released
+    at the end (also on failure), never while the RC is still being accepted.
+    """
+    from scripts.release import lease as staging_lease
+
+    candidate = check_rc(git.state(), tag, gh.sealed_branches())
+    command = staging_acceptance_command(git, gh, candidate.sha, scenarios)
+    lines: list[str] = []
+    with staging_lease.held(git, candidate.sha, tag) as held:
+        lines.append(f"已取得 staging 租约（{held.commit[:12]}，到 {held.expires.isoformat()}）")
+        nonce = held.commit[:12]
+        conclusion = gh.run_and_wait(
+            WEBAPP_WORKFLOW,
+            {"sha": candidate.sha, "nonce": nonce},
+            webapp_title(candidate.sha, nonce),
+        )
+        lines.append(f"staging Mini App（{WEBAPP_WORKFLOW}）：{conclusion}")
+        if conclusion != "success":
+            lines.append("前端未部署成功：后端未改动，已停止；查因后重跑 `just release-staging`")
+            return StagingResult(1, lines)
+        result = deploy(git, gh, target, tag, allow_migration=allow_migration, run=run, log=log)
+        lines += result.lines
+        if result.code != 0:
+            return StagingResult(result.code, lines)
+        lines.append(f"验收命令：`{' '.join(command)}`")
+        if not accept:
+            lines.append(
+                "未带 --accept：租约随本命令结束释放，验收须重新运行 `just release-staging … --accept`"
+            )
+            return StagingResult(0, lines)
+        runner = accept_run or (lambda argv: subprocess.run(argv, check=False).returncode)  # noqa: S603
+        code = runner(command)
+        lines.append(f"验收命令退出码：{code}")
+        return StagingResult(code, lines)
 
 
 def staging_acceptance_command(git: Git, gh: GitHub, sha: str, scenarios: str | None) -> list[str]:

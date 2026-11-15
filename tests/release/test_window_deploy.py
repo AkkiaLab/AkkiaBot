@@ -118,8 +118,8 @@ def test_staging_deploy_passes_gates_to_upgrade(
 ) -> None:
     monkeypatch.setattr(deploy, "template_environment", lambda: {"PATH": "/usr/bin"})
     monkeypatch.setattr(deploy, "http_ok", lambda url: True)
-    monkeypatch.setattr(deploy, "fetch_json", lambda url: None)
     old, sha = _release_commit(repo, gh, migration=True)
+    monkeypatch.setattr(deploy, "fetch_json", lambda url: {"sha": sha})
     runner = RecordingRunner(old)
     result = deploy.deploy(
         repo.git, gh, deploy.TARGETS["staging"], "v1.0.0-rc.1", run=runner, log=lambda _: None

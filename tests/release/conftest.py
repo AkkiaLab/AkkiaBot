@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from scripts.release.git import Git
-from scripts.release.github import SEALED_RULE_TYPES, Issue, PullRequest
+from scripts.release.github import SEALED_RULE_TYPES, Issue, PullRequest, review_problems
 
 
 def sh(cwd: Path, *args: str) -> str:
@@ -96,7 +96,14 @@ class FakeGitHub:
     comments: list[tuple[int, str]] = field(default_factory=list)
     prs: dict[int, PullRequest] = field(default_factory=dict)
     commit_prs: dict[str, list[PullRequest]] = field(default_factory=dict)
-    approved: set[int] = field(default_factory=set)
+    reviews: dict[int, list[tuple[str, str, str, str]]] = field(default_factory=dict)
+    pr_comments: dict[int, list[tuple[str, str]]] = field(default_factory=dict)
+    unresolved: dict[int, int] = field(default_factory=dict)
+    head_changes: dict[int, str] = field(default_factory=dict)
+    gate_reads: int = 0
+    runs: list[tuple[str, dict[str, str], str]] = field(default_factory=list)
+    run_conclusion: str = "success"
+    on_run: Callable[[dict[str, str]], None] | None = None
     green: set[str] = field(default_factory=set)
     jobs: set[tuple[str, str, str, str]] = field(default_factory=set)
     dispatched: list[tuple[str, dict[str, str]]] = field(default_factory=list)
@@ -147,7 +154,12 @@ class FakeGitHub:
         return [p for p in self.prs.values() if p.state == "open" and base in (None, p.base)]
 
     def get_pr(self, number: int) -> PullRequest:
-        return self.prs[number]
+        pr = self.prs[number]
+        if number in self.head_changes:  # simulate a push to the PR during the checks
+            self.gate_reads += 1
+            if self.gate_reads > 1:
+                pr.head_sha = self.head_changes[number]
+        return pr
 
     def retarget_pr(self, number: int, base: str) -> None:
         self.prs[number].base = base
@@ -155,8 +167,22 @@ class FakeGitHub:
     def comment_pr(self, number: int, body: str) -> None:
         self.comments.append((number, body))
 
-    def pr_approved(self, number: int) -> bool:
-        return number in self.approved
+    def review_gate(self, number: int, head: str) -> list[str]:
+        return review_problems(
+            author=self.prs[number].author,
+            head=head,
+            unresolved=self.unresolved.get(number, 0),
+            reviews=self.reviews.get(number, []),
+            comments=self.pr_comments.get(number, []),
+        )
+
+    def run_and_wait(
+        self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
+    ) -> str:
+        self.runs.append((workflow, inputs, title))
+        if self.on_run:
+            self.on_run(inputs)
+        return self.run_conclusion
 
     def checks_passed(self, sha: str, contexts: tuple[str, ...]) -> bool:
         return sha in self.green

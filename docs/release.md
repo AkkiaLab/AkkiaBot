@@ -68,7 +68,13 @@ flowchart LR
   git push origin HEAD
   ```
 
-  向目标分支提 PR，标题仍按 `BOT-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：批准且 `ci-ok`、`secret-scan` 通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。落地前检查：PR 打开、带标签、目标未封版、包含目标当前 HEAD 和一个处于暂停的来源、有作者以外的批准且没有未处理的 Request changes、必需检查通过。
+  向目标分支提 PR，标题仍按 `BOT-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。发布 App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
+  - PR 打开、带 `release-forward` 标签、目标未封版、包含目标当前 HEAD 和一个处于暂停的来源；
+  - `akkiabot-reviewer[bot]` 的最新评审是对**当前 head** 的 Approve（其他账号的批准不算）；
+  - 任何人的最新评审都不是 Request changes；所有评审线程已解决；
+  - Reviewer 准出之后，除 PR 作者和 Reviewer 外没有新的评论或评审（例如 Copilot 的后续意见）；有的话须处理后由 Reviewer 重新准出；
+  - 当前 head 的 `ci-ok`、`secret-scan`、`release-guard` 通过；
+  - 推送前再读一次 PR，head、base、状态都没有变化。
 - 恢复：来源成为目标祖先后，下一次运行关闭冲突 issue 并继续后续传播。
 
 ## 4. RC、封版与生产
@@ -77,10 +83,17 @@ flowchart LR
 
 1. `release-rc.yml -f version=vX.Y.Z` 在版本分支 HEAD 上创建下一个 RC（HEAD 已有最新 RC 时沿用，不重复创建）；`-f tag=vX.Y.Z-rc.N` 重新部署已有 RC。RC 只在这里（或由发布窗口触发这里）创建，不监听 tag 推送，一个 RC 对应一次运行。
 2. `check-rc`：RC 必须是该版本最新的 RC，且等于分支当前 HEAD；否则判为过期，需要新 RC。
-3. 同一 sha 构建后端镜像（`release.yml`，只打 sha 标签）和 staging Mini App（`webapp-deploy.yml` → `staging.akkiabot-webapp.pages.dev`）。master 推送不再发布 staging，master 继续变化不会覆盖验收环境。
-4. 交接给运行机（staging 栈、1Password 与测试会话都在运行机上）：`just release-staging vX.Y.Z-rc.N <场景>`。它取得本机 staging 环境锁，再次核对 RC 有效，用该 commit 的 `deploy/upgrade.sh` 升级 `/opt/akkiabot/staging`（渲染该 commit 的 `staging/app.env.tpl`），检查公网 `/readyz` 和 Mini App `version.json`，然后**在同一把锁内**执行 `just e2e-staging --record-status <sha> --baseline <基线> --scenarios <场景>`。不带场景时执行全量。
-5. 基线：该 sha 的**祖先**中、`staging-acceptance=success` 且不被其他已验收祖先包含的最近一个（`just release baseline <sha>`）。只认祖先，补丁谱系（从旧 tag 切出）不会拿到较新常规版本的验收结果，反之亦然；不使用“全局最近一次成功”。引导期的首个 RC 以旧流程在 master 上已验收的生产版本为基线（§6）。没有已验收祖先时必须全量验收。
-6. 场景选择、跳过原因、`success` 的含义和 PEER_FLOOD/FloodWait 处理不变（`docs/e2e-acceptance.md` §6、§6.2）。区间内没有明确涉及的场景时仍按现行规则选 `m2.help` 作最小冒烟，并在发版记录中写明。
+3. 同一 sha 构建后端镜像（`release.yml`，只打 sha 标签）。RC 工作流本身不写 staging。
+4. 交接给运行机（staging 栈、1Password 与测试会话都在运行机上）：`just release-staging vX.Y.Z-rc.N <场景>`。以下步骤严格按顺序执行，任一步失败都会停止，不进入后续步骤：
+   1. 取得本机 staging 锁和仓库级 **staging 租约**，并再次核对 RC 有效；
+   2. 触发 `webapp-deploy.yml -f sha=<sha>` 发布 staging Mini App，并等待它成功；
+   3. 用该 commit 的 `deploy/upgrade.sh` 升级 `/opt/akkiabot/staging`（渲染该 commit 的 `staging/app.env.tpl`）；
+   4. 公网 `/readyz` 必须通过，Mini App `version.json` 必须可读且等于该 sha；否则命令以非零退出（9 / 10），不进入验收；
+   5. 执行 `just e2e-staging --record-status <sha> --baseline <基线> --scenarios <场景>`（不带场景时全量）；
+   6. 结束后（包括失败）释放租约。
+5. staging 租约（`scripts/release/lease.py`）：引用 `refs/release/staging-lease` 指向一个租约 commit，它的父提交是被租用的 sha，提交说明记录持有者和到期时间（默认 6 小时）。取得租约用 `--force-with-lease` 原子地“不存在才创建”，过期租约用比较并交换接管；释放同样只删除自己的租约。staging Mini App 的**所有**上传（`webapp-deploy.yml`，手动运行也一样）在上传前用 master 上的工具执行 `lease check <sha>`，只有租约有效且正好属于该 sha 时才上传。因此另一个 RC 或一次手动部署都无法在验收期间替换前端；后端和验收由同一个持有租约的进程执行。手动部署 staging 前端须先取得租约：`just release lease acquire <sha>`，用完后执行 `just release lease release <sha>`。查看当前租约：`just release lease show`。该引用不在 `refs/heads`、`refs/tags` 下，不受分支或 tag 规则约束，也不会触发工作流。
+6. 基线：该 sha 的**祖先**中、`staging-acceptance=success` 且不被其他已验收祖先包含的最近一个（`just release baseline <sha>`）。只认祖先，补丁谱系（从旧 tag 切出）不会拿到较新常规版本的验收结果，反之亦然；不使用“全局最近一次成功”。引导期的首个 RC 以旧流程在 master 上已验收的生产版本为基线（§6）。没有已验收祖先时必须全量验收。
+7. 场景选择、跳过原因、`success` 的含义和 PEER_FLOOD/FloodWait 处理不变（`docs/e2e-acceptance.md` §6、§6.2）。区间内没有明确涉及的场景时仍按现行规则选 `m2.help` 作最小冒烟，并在发版记录中写明。
 
 ### 4.2 封版（`release-seal.yml` / `just release seal vX.Y.Z`）
 
@@ -104,10 +117,10 @@ flowchart LR
   4. 迁移门禁：新旧版本之间 `db/migrations/versions/` 有变化（旧版本未知也视为有变化）时，必须带 `--allow-migration`，即负责人已确认本次迁移；
   5. 先用旧 compose 文件拉取新镜像；
   6. `backup.sh`，保存当前文件快照，替换文件和 `AKKIABOT_TAG`，`docker compose up -d --wait`；
-  7. 回环 `/readyz` 健康检查；之后由工具检查公网 `/readyz`；
+  7. 回环 `/readyz` 健康检查；之后由工具检查公网 `/readyz`，失败时以退出码 9 结束（后端已切换，后续步骤停止，查因后重试同一 tag 或按 §4.4 回滚）；
   8. 切换后失败：无迁移时自动恢复快照并启动旧版本（退出码 7）；有迁移时**不回滚、不恢复数据库**，按 `docs/operations.md` §5.2 由人处理（退出码 6）；回滚也失败时退出码 8。
   9. 每次尝试追加到服务器上的 `releases.log`（权限 600，只在服务器，不进仓库或评论）。
-- 后端成功后触发 `webapp-promote.yml -f sha=<sha>`（接受带正式 tag 的 commit），前端保留 `webapp-production` 的负责人审批。
+- 后端和公网检查都成功后才触发 `webapp-promote.yml -f sha=<sha>`（接受带正式 tag 的 commit），前端保留 `webapp-production` 的负责人审批。
 - 生产只做配置检查、健康检查和非 Telegram 冒烟；Telegram 能力靠自然流量观测（`AGENTS.md`）。正式 tag 不等于生产成功，实际结果以部署记录为准；失败后重试同一个 tag，不改 tag。
 
 ### 4.4 回滚入口
@@ -122,7 +135,8 @@ flowchart LR
 | 上合冲突 | 该方向暂停，issue + 小队任务 | §3.3 解决 PR，落地后自动继续 |
 | 上合推送被拒 | 无变化 | 下次运行重新规划；持续被拒检查规则/App 权限 |
 | RC 过期（分支前进） | 旧 RC 不能部署/封版 | 出新 RC，按影响重新验收 |
-| staging 部署失败 | `upgrade.sh` 退出码说明是否已回滚 | 查因后重跑 `just release-staging` |
+| staging 部署失败 | 前端失败时后端未改动；后端失败看 `upgrade.sh` 退出码；公网或版本检查失败为 9 / 10，不进入验收 | 查因后重跑 `just release-staging`（租约已释放） |
+| staging 租约被占用 | 新的部署被拒绝 | 等待持有者结束；持有者异常退出时等租约过期，或核实后执行 `just release lease release <sha>` |
 | 验收未通过 | `staging-acceptance=failure`，不能封版 | 修复进 release → 新 RC |
 | 封版锁定未生效 / 打 tag 失败 | 无正式 tag | 修复后重跑封版（幂等续做） |
 | 封版竞态 | 已撤销锁定，无正式 tag | 新 RC → 验收 → 封版 |

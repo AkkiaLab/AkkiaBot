@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,9 @@ SEALED_RULE_TYPES = frozenset({"update", "deletion", "non_fast_forward"})
 CONFLICT_LABEL = "release-forward-conflict"
 FORWARD_LABEL = "release-forward"
 FIX_LABEL = "release:fix"
+#: The squad Reviewer's GitHub identity (docs/reviewer-github-app.md): the only
+#: approval that lets the release App land a conflict resolution.
+REVIEWER_LOGIN = "akkiabot-reviewer[bot]"
 
 
 @dataclass
@@ -63,10 +67,13 @@ class GitHub(Protocol):
     def get_pr(self, number: int) -> PullRequest: ...
     def retarget_pr(self, number: int, base: str) -> None: ...
     def comment_pr(self, number: int, body: str) -> None: ...
-    def pr_approved(self, number: int) -> bool: ...
+    def review_gate(self, number: int, head: str) -> list[str]: ...
     def checks_passed(self, sha: str, contexts: tuple[str, ...]) -> bool: ...
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool: ...
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None: ...
+    def run_and_wait(
+        self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
+    ) -> str: ...
     def notify(self, payload: dict[str, Any]) -> str: ...
 
 
@@ -240,23 +247,53 @@ class GhCli:
     def comment_pr(self, number: int, body: str) -> None:
         self.comment_issue(number, body)
 
-    def pr_approved(self, number: int) -> bool:
-        """Approved by someone other than the author *on the current head*, and no
-        outstanding Request changes (newest review per reviewer wins)."""
-        pr = self.get_pr(number)
-        reviews = self._api(self._r(f"pulls/{number}/reviews?per_page=100"), paginate=True) or []
-        latest: dict[str, tuple[str, str]] = {}
-        for review in reviews:  # oldest first
-            login = review["user"]["login"]
-            if login != pr.author and review["state"] in {
-                "APPROVED",
-                "CHANGES_REQUESTED",
-                "DISMISSED",
-            }:
-                latest[login] = (review["state"], review.get("commit_id", ""))
-        states = latest.values()
-        approved_head = any(st == "APPROVED" and sha == pr.head_sha for st, sha in states)
-        return approved_head and all(st != "CHANGES_REQUESTED" for st, _ in states)
+    def review_gate(self, number: int, head: str) -> list[str]:
+        """Problems that forbid landing ``head`` of PR ``number`` (empty = may land).
+
+        The release App bypasses the merge rules, so it re-checks them itself:
+        the Reviewer's newest review approves exactly ``head``; nobody's newest
+        review requests changes; every review thread is resolved; and nobody but
+        the PR author and the Reviewer commented after that approval (feedback
+        that came later must be handled and re-approved first).
+        """
+        query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              author { login }
+              reviewThreads(first: 100) { nodes { isResolved } }
+              reviews(last: 100) {
+                nodes { author { login } state submittedAt commit { oid } }
+              }
+              comments(last: 100) { nodes { author { login } createdAt } }
+            }
+          }
+        }"""
+        owner, name = self.repo.split("/", 1)
+        args = ["gh", "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}"]
+        args += ["-F", f"name={name}", "-F", f"number={number}"]
+        proc = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
+        if proc.returncode != 0:
+            raise GhError(f"读取 PR #{number} 的评审状态失败：{proc.stderr.strip()[:300]}")
+        pr = json.loads(proc.stdout)["data"]["repository"]["pullRequest"]
+        return review_problems(
+            author=(pr["author"] or {}).get("login", ""),
+            head=head,
+            unresolved=sum(1 for t in pr["reviewThreads"]["nodes"] if not t["isResolved"]),
+            reviews=[
+                (
+                    (r["author"] or {}).get("login", ""),
+                    r["state"],
+                    (r["commit"] or {}).get("oid", ""),
+                    r["submittedAt"] or "",
+                )
+                for r in pr["reviews"]["nodes"]
+            ],
+            comments=[
+                ((c["author"] or {}).get("login", ""), c["createdAt"])
+                for c in pr["comments"]["nodes"]
+            ],
+        )
 
     # ------------------------------------------------------------ workflows
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool:
@@ -293,6 +330,31 @@ class GhCli:
             body={"ref": ref, "inputs": inputs},
         )
 
+    def run_and_wait(
+        self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
+    ) -> str:
+        """Dispatch ``workflow`` (its ``run-name`` must equal ``title``), wait, return the conclusion."""
+        self.dispatch(workflow, inputs)
+        deadline = time.monotonic() + timeout
+        run_id = None
+        while time.monotonic() < deadline:
+            time.sleep(10)
+            if run_id is None:
+                runs = self._api(
+                    self._r(
+                        f"actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=30"
+                    )
+                )
+                for run in (runs or {}).get("workflow_runs", []):
+                    if run.get("display_title") == title:
+                        run_id = run["id"]
+                        break
+                continue
+            run = self._api(self._r(f"actions/runs/{run_id}"))
+            if run.get("status") == "completed":
+                return run.get("conclusion") or "unknown"
+        return "timed_out"
+
     # -------------------------------------------------------------- webhook
     def notify(self, payload: dict[str, Any]) -> str:
         """POST to the Multica autopilot webhook. The URL is a secret: never printed."""
@@ -314,3 +376,49 @@ class GhCli:
             return f"通知 Multica 失败（HTTP {exc.code}）"
         except (urllib.error.URLError, TimeoutError) as exc:
             return f"通知 Multica 失败（{type(exc).__name__}）"
+
+
+def review_problems(
+    *,
+    author: str,
+    head: str,
+    unresolved: int,
+    reviews: list[tuple[str, str, str, str]],
+    comments: list[tuple[str, str]],
+) -> list[str]:
+    """Pure part of ``GhCli.review_gate``. ``reviews``: (login, state, commit, time), oldest first;
+    ``comments``: (login, time). Times are ISO 8601 UTC strings (comparable as text)."""
+    problems: list[str] = []
+    latest: dict[str, tuple[str, str, str]] = {}
+    for login, state, commit, at in reviews:
+        if login != author and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            latest[login] = (state, commit, at)
+    reviewer = latest.get(REVIEWER_LOGIN)
+    if reviewer is None or reviewer[0] != "APPROVED" or reviewer[1] != head:
+        problems.append(f"{REVIEWER_LOGIN} 尚未在当前 head {head[:12]} 上给出准出（Approve）")
+    blocked = sorted(
+        login for login, (state, _, _) in latest.items() if state == "CHANGES_REQUESTED"
+    )
+    if blocked:
+        problems.append(f"仍有未处理的 Request changes：{', '.join(blocked)}")
+    if unresolved:
+        problems.append(f"还有 {unresolved} 个未解决的评审线程")
+    if reviewer is not None and reviewer[0] == "APPROVED":
+        approved_at = reviewer[2]
+        late = sorted(
+            {
+                login
+                for login, at in comments
+                if at > approved_at and login not in {author, REVIEWER_LOGIN}
+            }
+            | {
+                login
+                for login, state, _, at in reviews
+                if at > approved_at
+                and login not in {author, REVIEWER_LOGIN}
+                and state == "COMMENTED"
+            }
+        )
+        if late:
+            problems.append(f"准出之后还有未经 Reviewer 复核的评论：{', '.join(late)}")
+    return problems

@@ -37,7 +37,7 @@ MAX_HOPS = 50
 #: Push retries when the target moved between fetch and push.
 PUSH_ATTEMPTS = 3
 #: Checks the resolution PR head must have passed before it is landed.
-REQUIRED_CHECKS = ("ci-ok", "secret-scan")
+REQUIRED_CHECKS = ("ci-ok", "secret-scan", "release-guard")
 BOT_ID_RE = re.compile(r"\bBOT-[1-9][0-9]*\b")
 
 
@@ -264,8 +264,11 @@ def land_forward_pr(git: Git, gh: GitHub, number: int) -> str:
     """Land an approved conflict-resolution PR by fast-forwarding its target.
 
     The PR head must be a merge that contains the current target tip and the
-    paused source tip, carry the ``release-forward`` label, be approved by
-    someone other than its author and have passed the required checks. The
+    paused source tip, carry the ``release-forward`` label, pass the Reviewer
+    gate (``GitHub.review_gate``: Reviewer approval of this head, no open
+    threads, no unhandled later comments) and the required checks, and still be
+    the same head right before the push, because the release App bypasses the
+    branch rules that would otherwise enforce this. The
     push is a plain fast-forward (GitHub then marks the PR as merged), so the
     merge relation survives; squash would drop it and re-open the gap.
     """
@@ -294,10 +297,16 @@ def land_forward_pr(git: Git, gh: GitHub, number: int) -> str:
         if gh.find_issue(Hop(v, _version_or_none(pr.base)).marker)
     ):
         raise ReleaseError(f"PR #{number} 没有包含任何处于冲突暂停的来源分支")
-    if not gh.pr_approved(number):
-        raise ReleaseError(f"PR #{number} 尚未获得作者以外的批准，或仍有 Request changes")
+    problems = gh.review_gate(number, head)
+    if problems:
+        raise ReleaseError(f"PR #{number} 不能落地：" + "；".join(problems))
     if not gh.checks_passed(head, REQUIRED_CHECKS):
         raise ReleaseError(f"PR #{number} 的 {', '.join(REQUIRED_CHECKS)} 尚未全部通过")
+    latest = gh.get_pr(number)
+    if latest.head_sha != head or latest.state != "open" or latest.base != pr.base:
+        raise ReleaseError(
+            f"PR #{number} 在检查期间发生变化（head/base/状态），未落地；下次对账重新检查"
+        )
     if not git.push_ref(head, f"refs/heads/{pr.base}"):
         raise ReleaseError(f"快进 {pr.base} 失败（目标已变化），请合入最新目标后重试")
     return head

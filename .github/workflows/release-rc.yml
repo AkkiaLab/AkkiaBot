@@ -1,11 +1,12 @@
 name: Release RC to staging
 
-# Cut (or redeploy) a release candidate and put that exact commit on staging
-# (docs/release.md §4.1): backend image and Mini App from the same sha, then
-# hand over to the staging deploy + diff acceptance on the runtime machine
-# (`just release-staging <tag>`), which holds the staging lock. RC tags are only
-# created here (or by release-window.yml dispatching here), never by a tag push,
-# so one RC means exactly one run. Runs are serialised on the staging environment.
+# Cut (or recheck) a release candidate and build its backend image, then hand
+# over to the runtime machine (docs/release.md §4.1): `just release-staging <tag>`
+# takes the staging lease and, while holding it, publishes the Mini App of the
+# same sha (webapp-deploy.yml), deploys the backend and runs the acceptance.
+# This workflow itself never writes to staging, so it cannot replace a version
+# under acceptance. RC tags are only created here (or by release-window.yml
+# dispatching here), never by a tag push, so one RC means exactly one run.
 
 run-name: RC ${{ inputs.tag || inputs.version }}
 
@@ -22,7 +23,7 @@ on:
         type: string
 
 concurrency:
-  group: staging-release
+  group: release-rc
   cancel-in-progress: false
 
 permissions:
@@ -69,17 +70,8 @@ jobs:
       contents: read
       packages: write
 
-  webapp:
-    needs: rc
-    uses: ./.github/workflows/webapp-deploy.yml
-    with:
-      sha: ${{ needs.rc.outputs.sha }}
-    secrets: inherit
-    permissions:
-      contents: read
-
   handoff:
-    needs: [rc, image, webapp]
+    needs: [rc, image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -93,9 +85,9 @@ jobs:
         run: |
           {
             echo "### $TAG → staging"
-            echo "- sha: \`$SHA\`（镜像与 Mini App 已就绪）"
+            echo "- sha: \`$SHA\`（后端镜像已就绪）"
             echo "- 差异基线：${BASELINE:-无（全量验收）}"
-            echo "- 运行机执行：\`just release-staging $TAG <场景>\`（部署后端并在同一把锁内验收）"
+            echo "- 运行机执行：\`just release-staging $TAG <场景>\`（取得 staging 租约后依次部署 Mini App、后端并验收，结束才释放）"
           } >> "$GITHUB_STEP_SUMMARY"
           payload="$(jq -n --arg tag "$TAG" --arg sha "$SHA" --arg baseline "$BASELINE" --arg run "$RUN_URL" \
             '{kind: "release-rc-ready", tag: $tag, sha: $sha, baseline: $baseline, run: $run}')"

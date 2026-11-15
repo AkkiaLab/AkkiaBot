@@ -3,10 +3,12 @@ name: Webapp deploy
 # Publishes apps/webapp to Cloudflare Pages with `wrangler pages deploy`
 # (docs/webapp.md). This workflow never touches production:
 #   - pull requests → per-branch preview (`<branch>.<project>.pages.dev`);
-#   - release-rc.yml (an RC sha) and manual runs → the fixed alias
-#     `staging.<project>.pages.dev`, the Mini App of the staging bot. Master pushes
-#     no longer publish staging, so master moving on cannot replace the commit
-#     under staging acceptance (docs/release.md §4.1).
+#   - manual runs with a sha → the fixed alias `staging.<project>.pages.dev`, the
+#     Mini App of the staging bot. Only while the staging lease
+#     (`refs/release/staging-lease`, docs/release.md §4.1) is held for exactly
+#     that sha: `just release-staging` dispatches this under its lease, and a
+#     manual run must take the lease first. Master pushes no longer publish
+#     staging, so nothing can replace the commit under staging acceptance.
 # Both use the `webapp-preview` environment (staging API, staging Turnstile key,
 # dev/staging Cloudflare token). Production only receives builds through
 # webapp-promote.yml, for commits that passed the staging acceptance.
@@ -16,13 +18,9 @@ name: Webapp deploy
 # VITE_TURNSTILE_SITE_KEY. Without the token (e.g. fork PRs) the build and the
 # dev-mock check still run; only the upload is skipped.
 
+run-name: ${{ inputs.nonce && format('staging {0} {1}', inputs.sha, inputs.nonce) || github.event.pull_request.title || format('Webapp deploy {0}', inputs.sha) }}
+
 on:
-  workflow_call:
-    inputs:
-      sha:
-        description: Full commit sha to publish to the staging alias (the RC)
-        required: true
-        type: string
   pull_request:
     paths:
       - apps/webapp/**
@@ -35,7 +33,11 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: Commit to publish to the staging alias (default the selected ref)
+        description: Full commit sha to publish to the staging alias; needs the staging lease on it
+        required: true
+        type: string
+      nonce:
+        description: Set by `just release-staging` to find this run (leave empty by hand)
         required: false
         type: string
 
@@ -98,6 +100,24 @@ jobs:
             exit 1
           fi
           echo "upload=true" >> "$GITHUB_OUTPUT"
+      - name: Release tooling (master)
+        if: steps.gate.outputs.upload == 'true' && github.event_name != 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Staging lease is held for this sha
+        # Right before the upload: the alias may only change for the RC that holds
+        # the staging lease (docs/release.md §4.1), manual runs included.
+        if: steps.gate.outputs.upload == 'true' && github.event_name != 'pull_request'
+        env:
+          COMMIT_SHA: ${{ steps.rev.outputs.sha }}
+        working-directory: release-tools
+        run: |
+          git remote set-url origin "https://github.com/$GITHUB_REPOSITORY.git"
+          python3 -m scripts.release lease check "$COMMIT_SHA"
       - name: Upload to Cloudflare Pages
         id: deploy
         if: steps.gate.outputs.upload == 'true'
