@@ -195,6 +195,11 @@ class Grafana:
     def datasources(self) -> list[dict[str, Any]]:
         return self._check(self.client.get("/api/datasources"), "读取数据源").json()
 
+    def datasource(self, uid: str) -> dict[str, Any]:
+        return self._check(
+            self.client.get(f"/api/datasources/uid/{uid}"), f"读取数据源 {uid}"
+        ).json()
+
     def ensure_folder(self) -> None:
         response = self.client.get(f"/api/folders/{FOLDER_UID}")
         if response.status_code == 404:
@@ -232,7 +237,10 @@ def discover(grafana: Grafana) -> dict[str, dict[str, str]]:
     out: dict[str, dict[str, str]] = {}
     for kind in ("prometheus", "loki"):
         ds = pick_datasource(sources, kind)
-        out[kind] = {"uid": ds.uid, "name": ds.name, "push_url": ds.push_url, "user": ds.user}
+        # Grafana Cloud's list endpoint omits basicAuthUser (the instance id Alloy
+        # authenticates as); only the per-uid endpoint returns it.
+        user = ds.user or str(grafana.datasource(ds.uid).get("basicAuthUser", ""))
+        out[kind] = {"uid": ds.uid, "name": ds.name, "push_url": ds.push_url, "user": user}
     return out
 
 
