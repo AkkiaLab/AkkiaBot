@@ -206,6 +206,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
     - 编写 `akkiabot import-legacy` 脚本，直接读取 Go 版的 SQLite 文件（`botlab_core/data/sqlite.db` 的只读副本），把 `telegram_chats` 的 `EnableCaptcha`、`EnableAntiSpam`、`EnableWarn`、`MaxWarnCount` 映射为新的 `chat.settings`；把 `telegram_chat_members` 的 `WarnCount` 写入新的 `chat_member`；支持 `--dry-run`，并输出差异报告。
     - 如果脚本在实际数据上不划算，退而求其次：导出成 CSV 后手动导入，或者让管理员在各群里重新执行 `/config`，并在运维手册中写明。
     - 切换时如果还有处于 captcha 禁言中的成员，脚本把他们列出来，由管理员手动处理（新系统中没有对应的 challenge）。
+      - 实施说明（BOT-16，2026-11-15）：真实旧库中约有 3 万名历史 captcha 禁言成员，负责人决定不处理历史禁言（在 Telegram 中保持禁言），报告按群汇总，只列出停服前 48 小时内被禁言的成员交给管理员。为了让切换无感，脚本同时导入成员发言数（反垃圾豁免依赖它）和最近 48 小时的消息 id（封禁后清理消息依赖它），并覆盖旧库中没有群记录的群。细节见 `docs/operations.md` §9.3。
   - 切换步骤（写入运维手册）：
     1. 停止 Go 版 core（同一个 bot token 同一时间只能有一个进程拉取更新）；
     2. 导入配置；

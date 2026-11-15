@@ -54,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     legacy.add_argument(
         "--report", type=Path, help="另外把差异写成 JSON 文件（必须是不存在的新文件）"
     )
+    legacy.add_argument(
+        "--recent-hours",
+        type=int,
+        default=48,
+        help="从旧库最后活动时间往前算的“最近”窗口：导入这段时间的消息 id，"
+        "并列出这段时间内被禁言的成员（默认 48）",
+    )
     return parser
 
 
@@ -113,7 +120,9 @@ def _serve() -> int:
     return 0
 
 
-def _import_legacy(legacy_db: Path, *, dry_run: bool, report: Path | None) -> int:
+def _import_legacy(
+    legacy_db: Path, *, dry_run: bool, report: Path | None, recent_hours: int = 48
+) -> int:
     """Exit codes: 0 ok, 1 statistics mismatch (nothing written), 2 bad input/config."""
     import asyncio
     import os
@@ -141,7 +150,7 @@ def _import_legacy(legacy_db: Path, *, dry_run: bool, report: Path | None) -> in
             return 2
 
     async def run() -> legacy_import.ImportPlan:
-        snapshot = legacy_import.read_legacy(legacy_db)
+        snapshot = legacy_import.read_legacy(legacy_db, recent_hours=recent_hours)
         if db_url is None:
             return await legacy_import.run_import(snapshot, None, dry_run=dry_run)
         engine = create_engine(db_url)
@@ -177,7 +186,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "openapi":
         return _openapi(args.output)
     if args.command == "import-legacy":
-        return _import_legacy(args.legacy_db, dry_run=args.dry_run, report=args.report)
+        if args.recent_hours < 1:
+            build_parser().error("--recent-hours 必须是正整数")
+        return _import_legacy(
+            args.legacy_db,
+            dry_run=args.dry_run,
+            report=args.report,
+            recent_hours=args.recent_hours,
+        )
     print(f"akkiabot {__version__}")
     return 0
 
