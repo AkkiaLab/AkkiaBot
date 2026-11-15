@@ -17,7 +17,7 @@ _ICONS: dict[str, str] = {"passed": "✅", "failed": "❌", "error": "💥", "sk
 
 #: Why a scenario was skipped. A skipped scenario never counts as passed.
 SKIP_REASONS: dict[str, str] = {
-    "not_selected": "未选中（PR 级未改动）",
+    "not_selected": "未选中（本次改动未涉及）",
     "missing_credentials": "缺少凭据或配置",
     "rate_limited": "限流中止",
     "aborted": "运行中止",
@@ -59,8 +59,9 @@ class Report:
     """Counts of ``passed`` / ``failed`` (incl. errors) / ``skipped`` results."""
     server_log: str | None = None
     release: dict[str, str | None] | None = None
-    """Staging release run (``--record-status``): target sha and the Mini App
-    versions observed at start and end of the run."""
+    """Staging release run (``--record-status``): target sha, the baseline of a
+    diff run (``None`` for a full run) and the Mini App versions observed at
+    start and end of the run."""
     not_automated: list[str] = field(default_factory=list)
     """Steps the run could not perform automatically (e.g. a real Turnstile
     challenge). They are listed, never counted as passed."""
@@ -134,6 +135,16 @@ class Report:
                 "- 发版验收版本：目标 `{target_sha}`，开始时 staging Mini App 为 "
                 "`{webapp_sha_at_start}`，结束时为 `{webapp_sha_at_end}`".format(**self.release)
             )
+            baseline = self.release.get("baseline_sha")
+            if baseline:
+                ran = [r.name for r in self.results if r.skip_reason != "not_selected"]
+                lines.append(
+                    f"- 差异验收：基线 `{baseline}`（已通过 staging-acceptance），"
+                    f"执行场景 {'、'.join(f'`{n}`' for n in ran) or '无'}；"
+                    f"其余 {len(self.results) - len(ran)} 个场景未涉及基线以来的改动，未执行（不计为通过）"
+                )
+            else:
+                lines.append("- 全量验收：全部场景都须实际执行并通过")
         for item in self.test_keys:
             lines.append(f"- 官方测试 key（不代表真实挑战通过）：{item}")
         for item in self.not_automated:

@@ -52,6 +52,7 @@ from akkiabot_e2e.redaction import Redactor, Secret
 from akkiabot_e2e.release import (
     DEFAULT_REPO,
     STATUS_CONTEXT,
+    check_baseline,
     check_sha,
     guarded_run,
     record_status,
@@ -133,7 +134,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "staging 发版验收：先确认 E2E_WEBAPP_URL 的 version.json 就是该 commit，"
-            "全量运行后把结果写为 GitHub commit status staging-acceptance"
+            "运行后把结果写为 GitHub commit status staging-acceptance；"
+            "带 --scenarios 时为差异验收，必须同时给出 --baseline"
+        ),
+    )
+    run.add_argument(
+        "--baseline",
+        metavar="SHA",
+        default=None,
+        help=(
+            "差异验收的基线：上一个 staging-acceptance=success 且是目标祖先的 master commit；"
+            "只执行 --scenarios 选中的、基线以来改动明确涉及的场景"
         ),
     )
 
@@ -414,7 +425,9 @@ async def _run_live(
                 # a newer staging deployment slip under the version being recorded.
                 assert config.webapp_url is not None  # noqa: S101 - checked in _live()
                 assert web is not None  # noqa: S101
-                return await guarded_run(args.record_status, config.webapp_url, web, run)
+                return await guarded_run(
+                    args.record_status, config.webapp_url, web, run, baseline=args.baseline
+                )
             return await run()
         from akkiabot_e2e.server import ManagedServer
 
@@ -465,12 +478,21 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         raise E2EError(
             "--serve（PR 级验收）只复用固定测试群，不新建群；--fresh-group 只用于 staging 发版验收"
         )
+    repo = env.get("GITHUB_REPOSITORY") or DEFAULT_REPO
+    if args.baseline and not args.record_status:
+        raise E2EError("--baseline 只用于 staging 发版的差异验收，需与 --record-status 同用")
     if args.record_status:
         check_sha(args.record_status)
-        if args.scenarios or args.serve:
+        if args.serve:
+            raise E2EError("--record-status 只用于针对已部署 staging 的验收，不能与 --serve 同用")
+        if bool(args.scenarios) != bool(args.baseline):
             raise E2EError(
-                "--record-status 只用于针对已部署 staging 的全量验收，不能与 --scenarios / --serve 同用"
+                "--record-status 的差异验收要同时给出 --scenarios 和 --baseline"
+                "（基线以来改动涉及的场景）；全量验收两者都不加"
             )
+        if args.baseline:
+            # Before Telegram: the baseline must be an accepted ancestor.
+            check_baseline(args.baseline, args.record_status, repo=repo)
     _setup_logging()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = ensure_private_dir(
@@ -481,9 +503,7 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     print(report.to_markdown(redact))
     print(f"报告：{md_path}\nJSON：{json_path}")
     if args.record_status:
-        state = record_status(
-            args.record_status, report, repo=env.get("GITHUB_REPOSITORY") or DEFAULT_REPO
-        )
+        state = record_status(args.record_status, report, repo=repo)
         print(f"已写入 commit status {STATUS_CONTEXT}={state}（{args.record_status}）")
     return EXIT_PASSED if report.status == "passed" else EXIT_FAILED
 

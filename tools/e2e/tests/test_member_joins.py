@@ -278,7 +278,7 @@ async def test_unselected_scenarios_are_skipped_not_passed(
     assert not report.fully_executed()
     md = report.to_markdown(Redactor())
     assert f"实际通过 1 / 失败 0 / 跳过 {len(SCENARIOS) - 1}（不计为通过）" in md
-    assert "未选中（PR 级未改动）" in md
+    assert "未选中（本次改动未涉及）" in md
 
 
 async def test_missing_credentials_skip_fails_the_run(
