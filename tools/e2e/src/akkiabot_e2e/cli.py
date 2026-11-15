@@ -17,7 +17,7 @@ import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -58,7 +58,14 @@ from akkiabot_e2e.release import (
 )
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import Connect, run_acceptance
-from akkiabot_e2e.scenarios import SCENARIOS, Scenario, select_scenarios
+from akkiabot_e2e.scenarios import (
+    LOCAL_SCENARIOS,
+    SCENARIOS,
+    TEST_KEYS_SCENARIO,
+    Scenario,
+    catalog,
+    select_scenarios,
+)
 from akkiabot_e2e.transport import UserInfo
 from akkiabot_e2e.vault import BOT_ITEM, E2E_ITEM, FieldValue, Vault, shred_file
 from akkiabot_e2e.web import HttpWebProbe
@@ -163,6 +170,8 @@ def _cmd_list() -> int:
     for s in SCENARIOS:
         print(f"{s.name:<22} {s.milestone}  {s.description}")
     print(f"{'m2.message-log':<22} M2  （仅 --serve）群消息被记录到 message_log")
+    for s in LOCAL_SCENARIOS:
+        print(f"{s.name:<22} {s.milestone}  {s.description}")
     return EXIT_PASSED
 
 
@@ -333,6 +342,9 @@ def _skipped_report(missing: list[str]) -> Report:
     )
 
 
+#: Mini App sources for the local test-key builds (``just`` runs from the repository root).
+WEBAPP_DIR = Path("apps/webapp")
+
 #: Poll interval while waiting for the session lock (tests shorten it).
 LOCK_POLL = 2.0
 
@@ -346,7 +358,7 @@ def session_lock() -> AbstractAsyncContextManager[None]:
 
 async def _live(args: argparse.Namespace, env: Mapping[str, str], run_dir: Path) -> Report:
     config = load_config(env)
-    selected = select_scenarios(args.scenarios)
+    selected = select_scenarios(args.scenarios, serve=args.serve)
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     if args.serve or token:
         import httpx
@@ -406,7 +418,23 @@ async def _run_live(
             return await run()
         from akkiabot_e2e.server import ManagedServer
 
-        async with ManagedServer(run_dir, env) as server:
+        async with AsyncExitStack() as stack:
+            lab_apps = None
+            if any(s.name == TEST_KEYS_SCENARIO for s in selected):
+                from akkiabot_e2e.turnstile_lab import LocalMiniApps
+
+                lab_apps = stack.enter_context(LocalMiniApps(run_dir))
+            server = ManagedServer(
+                run_dir, env, extra_env=lab_apps.server_env() if lab_apps else None
+            )
+            lab = None
+            if lab_apps is not None:
+                from akkiabot_e2e.turnstile_lab import LocalTurnstileLab, PlaywrightMiniApp
+
+                await lab_apps.build(WEBAPP_DIR, server.api_base_url)
+                browser = await stack.enter_async_context(PlaywrightMiniApp())
+                lab = LocalTurnstileLab(server, lab_apps, browser)
+            await stack.enter_async_context(server)
             report = await run_acceptance(
                 config,
                 selected,
@@ -417,7 +445,8 @@ async def _run_live(
                 message_log=server.logged_message_ids,
                 web=web,
                 fresh_group=fresh_group,
-                catalog=SCENARIOS,
+                catalog=catalog(serve=True),
+                turnstile_lab=lab,
             )
             report.server_log = str(server.log_path)
             return report
@@ -429,7 +458,7 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     if missing:
         print(_skipped_report(missing).to_markdown(redact))
         return EXIT_SKIPPED
-    select_scenarios(args.scenarios)  # validate before touching Telegram
+    select_scenarios(args.scenarios, serve=args.serve)  # validate before touching Telegram
     if args.serve and args.fresh_group:
         # PR-level runs reuse the fixed test group with the member staying in it;
         # creating groups is for staging release runs only (docs/e2e-acceptance.md §3.1).

@@ -62,6 +62,9 @@ class Report:
     not_automated: list[str] = field(default_factory=list)
     """Steps the run could not perform automatically (e.g. a real Turnstile
     challenge). They are listed, never counted as passed."""
+    test_keys: list[str] = field(default_factory=list)
+    """Scenarios run on Cloudflare's official Turnstile test keys and the keys
+    used: a class of evidence of its own, never a real challenge."""
 
     def finish(self) -> None:
         """Overall status.
@@ -124,6 +127,8 @@ class Report:
                 "- 发版验收版本：目标 `{target_sha}`，开始时 staging Mini App 为 "
                 "`{webapp_sha_at_start}`，结束时为 `{webapp_sha_at_end}`".format(**self.release)
             )
+        for item in self.test_keys:
+            lines.append(f"- 官方测试 key（不代表真实挑战通过）：{item}")
         for item in self.not_automated:
             lines.append(f"- 未自动化（不计入通过）：{item}")
         if self.flood_waits:

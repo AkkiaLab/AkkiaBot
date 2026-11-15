@@ -53,6 +53,44 @@ class WebProbe(Protocol):
     async def post_json(self, url: str, body: Mapping[str, Any], *, origin: str) -> HttpResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class MiniAppVisit:
+    """What a headless browser saw after opening the Mini App (local test-key runs)."""
+
+    phase: Literal["passed", "failed", "timeout"]
+    """``passed``: the page reports success; ``failed``: it shows an error
+    (``role="alert"``); ``timeout``: neither appeared in time."""
+    text: str
+    """Visible status / error text of the page."""
+    verify_calls: tuple[tuple[int, str | None], ...] = ()
+    """``POST /api/v1/captcha/verify`` responses seen by the page: (HTTP status, ``error``)."""
+    client_events: tuple[str, ...] = ()
+    """Events the page posted to the (emulated) Telegram client, e.g. ``web_app_close``."""
+
+
+class TurnstileLab(Protocol):
+    """Local Mini App builds with Cloudflare's official Turnstile test keys (``--serve`` only).
+
+    ``pass_origin`` is the build with the always-passing site key (the bot's
+    ``WEBAPP_URL``), ``widget_fail_origin`` the same app built with the
+    always-failing site key. The bot under test starts with the always-failing
+    secret key; :meth:`use_secret` restarts it with the other one.
+    ``siteverify`` names the secret key in use (``pass`` / ``fail``).
+    """
+
+    pass_origin: str
+    widget_fail_origin: str
+    siteverify: Literal["pass", "fail"]
+
+    def describe(self) -> list[str]:
+        """Report lines naming the test keys in use (all public Cloudflare test values)."""
+        ...
+
+    async def use_secret(self, which: Literal["pass", "fail"]) -> None: ...
+
+    async def visit(self, url: str) -> MiniAppVisit: ...
+
+
 @dataclass(slots=True)
 class ScenarioContext:
     admin: Account
@@ -81,6 +119,10 @@ class ScenarioContext:
     """Expected Mini App origin (M7); ``None`` accepts whatever the bot links to."""
     not_automated: list[str] = field(default_factory=list)
     """Steps a scenario could not perform automatically; reported, never counted as passed."""
+    turnstile_lab: TurnstileLab | None = None
+    """Local Mini App with Turnstile test keys (``m7.captcha-test-keys``, ``--serve`` only)."""
+    test_keys: list[str] = field(default_factory=list)
+    """Scenarios that ran on Cloudflare's test keys: reported as their own class of evidence."""
 
     def record(self, step: str, msg: Msg | None = None, **extra: Any) -> None:
         item: dict[str, Any] = {"step": step}
@@ -753,6 +795,159 @@ async def captcha_scenario(ctx: ScenarioContext) -> None:
             await restore_unmuted(ctx)
 
 
+#: What the page shows when the Turnstile widget itself fails (always-fail site key).
+WIDGET_ERROR_TEXT = "人机验证组件加载失败"
+#: The API's message for ``turnstile_failed`` (Siteverify rejected the token).
+SITEVERIFY_REJECTED_TEXT = "人机验证未通过"
+TEST_KEYS_NOTE = (
+    "m7.captcha-test-keys：使用 Cloudflare 官方 Turnstile 测试 key，在本地构建的 Mini App "
+    "和本机被测 bot 上验证业务链路；它证明 widget → 提交 → Siteverify → 解除/保持禁言的链路，"
+    "不证明真实挑战可被真人通过，不能替代 staging 的真实 widget 证据"
+)
+
+
+def require_turnstile_lab(ctx: ScenarioContext) -> TurnstileLab:
+    if ctx.turnstile_lab is None:
+        raise ScenarioSkipped(
+            "仅在本地 --serve 并显式选择 m7.captcha-test-keys 时运行（需要本地 Mini App 与浏览器）"
+        )
+    return ctx.turnstile_lab
+
+
+def _on_origin(url: str, origin: str) -> str:
+    """``url`` (path, query and Telegram's launch fragment) served from ``origin``."""
+    parts = urllib.parse.urlsplit(url)
+    target = urllib.parse.urlsplit(origin)
+    return urllib.parse.urlunsplit(
+        (target.scheme, target.netloc, parts.path, parts.query, parts.fragment)
+    )
+
+
+async def _visit(ctx: ScenarioContext, lab: TurnstileLab, step: str, url: str) -> MiniAppVisit:
+    visit = await lab.visit(url)
+    ctx.record(
+        step,
+        origin="{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(url)),
+        siteverify_secret=lab.siteverify,
+        page_phase=visit.phase,
+        page_text=visit.text,
+        verify_calls=[{"status": status, "error": error} for status, error in visit.verify_calls],
+        client_events=list(visit.client_events),
+    )
+    return visit
+
+
+async def _check_still_muted(ctx: ScenarioContext, why: str) -> None:
+    still = await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id)
+    ctx.record(f"{why}后检查成员状态", restricted=still)
+    check(still, f"{why}，成员却被解除了禁言")
+
+
+async def wait_unrestricted(ctx: ScenarioContext) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ctx.reply_timeout
+    while await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id):
+        if loop.time() >= deadline:
+            raise CheckFailed(f"验证通过后 {ctx.reply_timeout:g} 秒内成员仍被禁言")
+        await asyncio.sleep(ctx.poll_interval)
+    ctx.record("成员已被解除禁言")
+
+
+async def captcha_test_keys_scenario(ctx: ScenarioContext) -> None:
+    """Official Turnstile test keys, real widget in a browser, real Telegram (local only).
+
+    One join, three attempts on the same challenge:
+
+    1. always-fail **site key**: the widget errors, the page never calls the API;
+    2. always-pass site key + always-fail **secret key**: the widget yields the
+       dummy token, Siteverify rejects it, the API answers ``turnstile_failed``;
+    3. always-pass site key + always-pass secret key: verification passes and
+       the bot lifts the mute.
+    """
+    lab = require_turnstile_lab(ctx)
+    ctx.test_keys.extend([TEST_KEYS_NOTE, *lab.describe()])
+    await set_captcha(ctx, True)
+    try:
+        await restore_unmuted(ctx)
+        if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is not None:
+            await ctx.member.leave(ctx.chat.id)
+            ctx.record("成员退群")
+        anchor = await post_anchor(ctx, "M7 入群验证（官方测试 key）开始")
+        # The owner adds the member back: a join like any other for the captcha,
+        # without spending one of the member's rate-limited link joins.
+        await owner_add_member(ctx.admin, ctx.chat.id, ctx.member_user.id)
+        ctx.record("群主把成员拉回群")
+        token = await wait_captcha_prompt(ctx, anchor.id)
+        await wait_restricted(ctx)
+
+        request = await ctx.member.send(ctx.bot.id, f"/start {token}")
+        ctx.record("成员在私聊中打开验证深链", request)
+        reply = await wait_for_reply(ctx, ctx.member, request)
+        button = next((b for b in reply.buttons if b.web_app and b.url), None)
+        check(button is not None, "私聊回复中没有打开 Mini App 的 web_app 按钮")
+        assert button is not None  # noqa: S101 - narrowed by check()
+        assert button.url is not None  # noqa: S101
+        page_url = button.url
+        check(
+            _CHALLENGE.search(page_url) is not None,
+            f"Mini App 地址 {page_url!r} 不是 /captcha?challenge=<uuid>",
+        )
+        check(
+            page_url.startswith(f"{lab.pass_origin}/"),
+            f"Mini App 地址 {page_url!r} 不是本地测试 Mini App {lab.pass_origin}",
+        )
+        launch = await ctx.member.open_web_app(ctx.bot, page_url)
+        init_data = launch_init_data(launch)
+        ctx.record("Telegram 签发 Mini App 启动参数", init_data_length=len(init_data))
+        check(bool(init_data), "启动地址中没有 initData")
+
+        # 1. Widget fails: nothing reaches the API.
+        if lab.siteverify != "fail":
+            await lab.use_secret("fail")
+        visit = await _visit(
+            ctx,
+            lab,
+            "固定失败 site key：打开 Mini App",
+            _on_origin(launch, lab.widget_fail_origin),
+        )
+        check(
+            visit.phase == "failed" and WIDGET_ERROR_TEXT in visit.text,
+            f"固定失败的 widget 应显示“{WIDGET_ERROR_TEXT}”，实际为 {visit.phase} {visit.text!r}",
+        )
+        check(not visit.verify_calls, f"widget 失败时页面不应调用验证接口：{visit.verify_calls}")
+        await _check_still_muted(ctx, "widget 失败")
+
+        # 2. Widget passes, Siteverify rejects.
+        visit = await _visit(ctx, lab, "固定失败 secret key：打开 Mini App", launch)
+        check(
+            visit.verify_calls == ((400, "turnstile_failed"),),
+            f"Siteverify 拒绝时接口应返回一次 400 turnstile_failed，实际为 {visit.verify_calls}",
+        )
+        check(
+            visit.phase == "failed" and SITEVERIFY_REJECTED_TEXT in visit.text,
+            f"页面应显示“{SITEVERIFY_REJECTED_TEXT}”，实际为 {visit.phase} {visit.text!r}",
+        )
+        await _check_still_muted(ctx, "Siteverify 拒绝")
+
+        # 3. Both pass: the member is unmuted.
+        await lab.use_secret("pass")
+        ctx.record("被测 bot 以固定通过的 secret key 重启")
+        visit = await _visit(ctx, lab, "固定通过 secret key：打开 Mini App", launch)
+        check(
+            visit.verify_calls == ((200, None),),
+            f"验证通过时接口应返回一次 200，实际为 {visit.verify_calls}",
+        )
+        check(visit.phase == "passed", f"页面没有显示验证成功：{visit.phase} {visit.text!r}")
+        check("web_app_close" in visit.client_events, "验证成功后页面没有关闭 Mini App")
+        await wait_unrestricted(ctx)
+    finally:
+        try:
+            await set_captcha(ctx, False)
+        finally:
+            await restore_member(ctx)
+            await restore_unmuted(ctx)
+
+
 SCENARIOS: tuple[Scenario, ...] = (
     # M5 first: the spam check only applies to members with at most 3 recorded
     # messages, and every scenario below makes the member post more.
@@ -796,13 +991,42 @@ SCENARIOS: tuple[Scenario, ...] = (
 )
 
 
-def select_scenarios(selectors: list[str] | None) -> list[Scenario]:
-    """Select by milestone (``m2``) or exact name (``m3.ip``); default: all."""
+#: Scenarios that only run against a bot started by ``run --serve`` and only
+#: when named explicitly: never part of a default or milestone selection, never
+#: part of the staging release catalog.
+TEST_KEYS_SCENARIO = "m7.captcha-test-keys"
+LOCAL_SCENARIOS: tuple[Scenario, ...] = (
+    Scenario(
+        TEST_KEYS_SCENARIO,
+        "M7",
+        "（仅本地 --serve，官方 Turnstile 测试 key）widget 固定失败、Siteverify 拒绝时保持禁言；"
+        "通过时解除禁言",
+        captcha_test_keys_scenario,
+    ),
+)
+
+
+def catalog(*, serve: bool) -> tuple[Scenario, ...]:
+    """Every scenario a run can report on: local-only ones need ``--serve``."""
+    return SCENARIOS + LOCAL_SCENARIOS if serve else SCENARIOS
+
+
+def select_scenarios(selectors: list[str] | None, *, serve: bool = False) -> list[Scenario]:
+    """Select by milestone (``m2``) or exact name (``m3.ip``); default: all.
+
+    Local-only scenarios (:data:`LOCAL_SCENARIOS`) are selected by exact name
+    only, and only with ``serve``.
+    """
     if not selectors:
         return list(SCENARIOS)
     wanted = {s.strip().lower() for selector in selectors for s in selector.split(",") if s.strip()}
-    known = {s.name for s in SCENARIOS} | {s.milestone.lower() for s in SCENARIOS}
+    local = {s.name for s in LOCAL_SCENARIOS}
+    if wanted & local and not serve:
+        raise ValueError(f"{', '.join(sorted(wanted & local))} 只能与 --serve 一起使用")
+    known = {s.name for s in SCENARIOS} | {s.milestone.lower() for s in SCENARIOS} | local
     unknown = wanted - known
     if unknown:
         raise ValueError(f"未知场景：{', '.join(sorted(unknown))}")
-    return [s for s in SCENARIOS if s.name in wanted or s.milestone.lower() in wanted]
+    return [s for s in SCENARIOS if s.name in wanted or s.milestone.lower() in wanted] + [
+        s for s in LOCAL_SCENARIOS if s.name in wanted
+    ]
