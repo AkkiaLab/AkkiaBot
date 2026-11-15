@@ -9,7 +9,7 @@
 - **可观测性从第一天开始**：每个任务都要为新增功能补上结构化日志字段和指标（见架构文档 §5.5），不留到最后统一补。
 - **旧仓库保持只读**，等新系统正式切换上线后再归档。
 - 每个任务都要附带测试，并通过 CI（lint + type + test）。
-- 验收标准中“在测试群中……”一类的真实 Telegram 行为，在 Telegram 测试环境中自动执行（方法见 [e2e-acceptance.md](./e2e-acceptance.md)）。按**分层验收**（2026-11-14 负责人确认）执行：单个任务只验证受影响部分（`just e2e --scenarios …`，报告贴回 issue）；全量自动化验收在 staging 发版时执行（`just e2e-staging --record-status <sha>`，可以汇总多个任务）；prod 只提升已通过 staging 验收的版本，做配置、健康和冒烟检查。无法自动化的第三方交互（目前只有真实 Turnstile 挑战）要在报告中如实列出，不能用 mock 或测试 key 代替。
+- 验收标准中“在测试群中……”一类的真实 Telegram 行为，在 Telegram 测试环境中自动执行（方法见 [e2e-acceptance.md](./e2e-acceptance.md)）。按**分层验收**（2026-11-14 负责人确认）执行：单个任务只验证改动明确涉及的场景（`just e2e --scenarios …`，报告贴回 issue；无法判断影响、或只改了共享配置、handler 注册、依赖升级时默认跳过，PR 描述列出已验证和留给 staging 全量的部分，规则见 e2e-acceptance.md §6，BOT-28 确认）；全量自动化验收在 staging 发版时执行（`just e2e-staging --record-status <sha>`，可以汇总多个任务）；prod 只提升已通过 staging 验收的版本，做配置、健康和冒烟检查。无法自动化的第三方交互（目前只有真实 Turnstile 挑战）要在报告中如实列出，不能用 mock 或测试 key 代替。
 - 规模估算：**S** 不超过约 300 行，**M** 约 300–1000 行，**L** 超过 1000 行（含测试）。
 
 ## 已确认的决策（2026-11-14）

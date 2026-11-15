@@ -113,10 +113,11 @@ async def test_m7_wrong_webapp_origin_fails(world: FakeTelegram) -> None:
     assert "不是预期的 https://staging.example.test" in report.results[0].detail
 
 
-async def test_m7_not_run_without_api(world: FakeTelegram) -> None:
+async def test_m7_skipped_without_api(world: FakeTelegram) -> None:
     config = load_config(live_env(E2E_API_BASE_URL=""))
     report = await run_m7(world, config)
-    assert report.results[0].status == "not_run"
+    assert report.results[0].status == "skipped"
+    assert report.results[0].skip_reason == "missing_credentials"
     assert "E2E_API_BASE_URL" in report.results[0].detail
     assert report.status == "failed"
 

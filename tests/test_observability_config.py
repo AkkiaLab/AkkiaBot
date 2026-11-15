@@ -261,8 +261,9 @@ def test_parse_duration() -> None:
 
 
 class FakeGrafana:
-    def __init__(self, *, folder_exists: bool = False) -> None:
+    def __init__(self, *, folder_exists: bool = False, list_hides_user: bool = False) -> None:
         self.folder_exists = folder_exists
+        self.list_hides_user = list_hides_user
         self.requests: list[tuple[str, str, Any]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -271,7 +272,15 @@ class FakeGrafana:
         assert request.headers["Authorization"] == "Bearer fake-grafana-token-for-tests"
         match request.method, request.url.path:
             case "GET", "/api/datasources":
+                if self.list_hides_user:
+                    hidden = [
+                        {k: v for k, v in s.items() if k != "basicAuthUser"} for s in CLOUD_SOURCES
+                    ]
+                    return httpx.Response(200, json=hidden)
                 return httpx.Response(200, json=CLOUD_SOURCES)
+            case "GET", path if path.startswith("/api/datasources/uid/"):
+                uid = path.rsplit("/", 1)[-1]
+                return httpx.Response(200, json=next(s for s in CLOUD_SOURCES if s["uid"] == uid))
             case "GET", "/api/folders/akkiabot":
                 return httpx.Response(200 if self.folder_exists else 404, json={})
             case "POST", "/api/dashboards/db":
@@ -332,6 +341,20 @@ def test_discover_prints_alloy_endpoints(capsys: pytest.CaptureFixture[str]) -> 
         "push_url": "https://logs-prod.example.net/loki/api/v1/push",
         "user": "222",
     }
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_discover_reads_instance_id_from_datasource_detail(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression: Grafana Cloud's /api/datasources list has no basicAuthUser
+    # (seen 2026-11-15), so discover printed an empty Alloy user.
+    fake = FakeGrafana(list_hides_user=True)
+    assert grafana_sync.main(["discover"], transport=httpx.MockTransport(fake)) == 0
+    found = json.loads(capsys.readouterr().out)
+    assert (found["prometheus"]["user"], found["loki"]["user"]) == ("111", "222")
+    paths = [p for _, p, _ in fake.requests]
+    assert "/api/datasources/uid/grafanacloud-prom" in paths
 
 
 @pytest.mark.usefixtures("grafana_env")

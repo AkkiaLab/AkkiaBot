@@ -84,6 +84,8 @@ async def test_normal_reuse_does_not_touch_the_registry(world: FakeTelegram) -> 
     chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
     chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
     registry = FakeRegistry(allowed={chat.id})
+    world.contacts[MEMBER.id].add(ADMIN.id)  # set up by an earlier run
+    world.contacts[ADMIN.id].add(MEMBER.id)
 
     report = await run(world, registry)
 
@@ -150,7 +152,7 @@ async def test_allowlist_write_failure_fails_clearly_and_rerun_recovers(
     assert f"测试群 {chat_id} 已创建，但写入 allowed_chat_ids 失败" in detail
     assert "不要删除该群" in detail
     assert f"建群操作 {registry.pending}" in detail
-    assert report.results == []  # no scenario ran
+    assert all(r.status == "skipped" for r in report.results)  # no scenario ran
 
     report = await run(world, registry)
 
