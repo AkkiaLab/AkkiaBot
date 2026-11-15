@@ -8,12 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from scripts.e2e_prune_trigger import iso_week, recent_releases, run
 
 NOW = datetime(2026, 11, 16, 3, 17, tzinfo=UTC)
-API = "https://api.github.com"
 REPO = "AkkiaLab/AkkiaBot"
 # mock: 人工构造的不可用 webhook 地址，不是凭据。
 MOCK_WEBHOOK_URL = "https://multica.example.test/api/webhooks/autopilots/fake-token-for-tests"
@@ -21,16 +21,47 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "e2e-
 
 
 class FakeGitHub:
-    def __init__(self, statuses: dict[str, list[dict[str, str]]]) -> None:
-        self.statuses = statuses
-        self.urls: list[str] = []
+    """GraphQL master history, newest first; each commit has its newest status per context."""
 
-    def __call__(self, url: str) -> Any:
-        self.urls.append(url)
-        if "/statuses" in url:
-            sha = url.split("/commits/")[1].split("/")[0]
-            return self.statuses.get(sha, [])
-        return [{"sha": sha} for sha in self.statuses]
+    def __init__(self, commits: list[tuple[str, list[dict[str, str]]]]) -> None:
+        self.commits = commits
+        self.pages: list[str | None] = []
+        self.errors: list[dict[str, str]] | None = None
+
+    def __call__(self, query: str, variables: Mapping[str, Any]) -> Any:
+        assert "refs/heads/master" in query
+        if self.errors:
+            return {"data": None, "errors": self.errors}
+        after = variables["after"]
+        self.pages.append(after)
+        start = int(after) if after else 0
+        chunk = self.commits[start : start + variables["first"]]
+        end = start + len(chunk)
+        return {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "target": {
+                            "history": {
+                                "pageInfo": {
+                                    "hasNextPage": end < len(self.commits),
+                                    "endCursor": str(end),
+                                },
+                                "nodes": [
+                                    {"oid": sha, "status": {"contexts": ctx} if ctx else None}
+                                    for sha, ctx in chunk
+                                ],
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+def filler(n: int) -> list[tuple[str, list[dict[str, str]]]]:
+    """``n`` newer commits without a staging-acceptance status."""
+    return [(f"{i:040x}", []) for i in range(n)]
 
 
 class FakePost:
@@ -47,16 +78,17 @@ def env(**extra: str) -> dict[str, str]:
     return {"GITHUB_REPOSITORY": REPO, "GITHUB_RUN_ID": "42", **extra}
 
 
-def status(context: str, created_at: str, state: str = "success") -> dict[str, str]:
-    return {"context": context, "created_at": created_at, "state": state}
+def status(context: str, created_at: str, state: str = "SUCCESS") -> dict[str, str]:
+    return {"context": context, "createdAt": created_at, "state": state}
 
 
 def test_no_release_ends_without_calling_the_webhook() -> None:
     gh = FakeGitHub(
-        {
-            "a" * 40: [status("staging-acceptance", "2026-11-08T03:16:00Z")],  # just outside
-            "b" * 40: [status("ci", "2026-11-15T00:00:00Z")],
-        }
+        [
+            ("a" * 40, [status("staging-acceptance", "2026-11-08T03:16:00Z")]),  # just outside
+            ("b" * 40, [status("ci", "2026-11-15T00:00:00Z")]),
+            *filler(150),
+        ]
     )
     post = FakePost()
     lines: list[str] = []
@@ -68,13 +100,10 @@ def test_no_release_ends_without_calling_the_webhook() -> None:
 
 def test_release_triggers_the_webhook_once_per_week() -> None:
     gh = FakeGitHub(
-        {
-            "a" * 40: [status("staging-acceptance", "2026-11-14T22:00:00Z", "failure")],
-            "c" * 40: [
-                status("staging-acceptance", "2026-11-15T01:20:00Z"),
-                status("staging-acceptance", "2026-10-01T00:00:00Z"),
-            ],
-        }
+        [
+            ("a" * 40, [status("staging-acceptance", "2026-11-14T22:00:00Z", "FAILURE")]),
+            ("c" * 40, [status("staging-acceptance", "2026-11-15T01:20:00Z")]),
+        ]
     )
     post = FakePost()
     lines: list[str] = []
@@ -82,14 +111,51 @@ def test_release_triggers_the_webhook_once_per_week() -> None:
     ((url, body, headers),) = post.calls
     assert url == MOCK_WEBHOOK_URL
     assert headers["Idempotency-Key"] == "akkiabot-e2e-prune-2026-W47"
-    assert [r["sha"] for r in body["releases"]] == ["c" * 40, "a" * 40]
+    assert [(r["sha"], r["state"]) for r in body["releases"]] == [
+        ("c" * 40, "success"),
+        ("a" * 40, "failure"),
+    ]
     assert body["workflow_run"] == f"https://github.com/{REPO}/actions/runs/42"
     # The webhook URL (a secret) is never printed.
     assert all("fake-token-for-tests" not in line for line in lines)
 
 
+def test_release_on_a_later_page_is_found() -> None:
+    """The accepted commit was pushed down by 250 newer commits (third page)."""
+    gh = FakeGitHub(
+        [*filler(250), ("d" * 40, [status("staging-acceptance", "2026-11-15T01:20:00Z")])]
+    )
+    releases = recent_releases(gh, REPO, NOW)
+    assert [r.sha for r in releases] == ["d" * 40]
+    assert gh.pages == [None, "100", "200"]
+
+
+def test_old_commit_accepted_this_week_is_found() -> None:
+    """No age cut-off on commits: re-accepting an old master commit counts."""
+    gh = FakeGitHub(
+        [*filler(5), ("e" * 40, [status("staging-acceptance", "2026-11-13T00:00:00Z")])]
+    )
+    assert [r.sha for r in recent_releases(gh, REPO, NOW)] == ["e" * 40]
+
+
+def test_incomplete_scan_fails_instead_of_reporting_no_release() -> None:
+    post = FakePost()
+    lines: list[str] = []
+    gh = FakeGitHub(filler(3))
+    gh.errors = [{"message": "API rate limit exceeded"}]
+    assert run(env(MULTICA_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, post, NOW, lines.append) == 1
+    assert "无法完整判断" in lines[-1]
+    assert "rate limit" in lines[-1]
+
+    from scripts.e2e_prune_trigger import IncompleteScan
+
+    with pytest.raises(IncompleteScan, match="未能检查完整"):
+        recent_releases(FakeGitHub(filler(250)), REPO, NOW, max_pages=2)
+    assert post.calls == []
+
+
 def test_missing_secret_or_failed_call_fails_the_job() -> None:
-    gh = FakeGitHub({"c" * 40: [status("staging-acceptance", "2026-11-15T01:20:00Z")]})
+    gh = FakeGitHub([("c" * 40, [status("staging-acceptance", "2026-11-15T01:20:00Z")])])
     lines: list[str] = []
     assert run(env(), gh, FakePost(), NOW, lines.append) == 1
     assert "MULTICA_PRUNE_WEBHOOK_URL" in lines[-1]
@@ -99,14 +165,6 @@ def test_missing_secret_or_failed_call_fails_the_job() -> None:
         == 1
     )
     assert lines[-1] == "::error::调用 Multica webhook 失败：HTTP 404"
-
-
-def test_queries_master_commits_with_lookback() -> None:
-    gh = FakeGitHub({})
-    assert recent_releases(gh, API, REPO, NOW) == []
-    assert gh.urls == [
-        f"{API}/repos/{REPO}/commits?sha=master&since=2026-09-17T03:17:00Z&per_page=100"
-    ]
 
 
 def test_iso_week() -> None:

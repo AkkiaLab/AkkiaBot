@@ -3,7 +3,9 @@
 Used by ``.github/workflows/e2e-prune-trigger.yml`` (BOT-30). Every staging
 release acceptance (``just e2e-staging --record-status <sha>``) creates a test
 group and writes the commit status ``staging-acceptance``. This script asks the
-GitHub API whether any such status was written in the last ``WINDOW_DAYS`` days.
+GitHub GraphQL API whether any such status was written in the last
+``WINDOW_DAYS`` days, scanning the whole master history page by page; an
+incomplete scan fails the job instead of reporting "no release".
 
 * Yes: POST to the Multica autopilot webhook (URL from the
   ``MULTICA_PRUNE_WEBHOOK_URL`` secret), which starts an Engineer task that runs
@@ -32,15 +34,41 @@ from typing import Any
 
 STATUS_CONTEXT = "staging-acceptance"
 WINDOW_DAYS = 7
-#: Release acceptance records the deployed master commit, which may be older
-#: than the window; look this far back for candidate commits.
-COMMIT_LOOKBACK_DAYS = 60
-MAX_COMMITS = 100
+PAGE_SIZE = 100
+#: Upper bound on history pages (100 commits each). Exceeding it fails the job
+#: instead of reporting "no release" from an incomplete scan.
+MAX_PAGES = 100
 
-#: GET returning parsed JSON (url -> data).
-Fetch = Callable[[str], Any]
+#: GraphQL call (query, variables) -> response JSON (``data`` / ``errors``).
+Graphql = Callable[[str, Mapping[str, Any]], Any]
 #: POST a JSON body with headers; returns the HTTP status.
 Post = Callable[[str, bytes, Mapping[str, str]], int]
+
+# Release acceptance records the deployed master commit (docs/e2e-acceptance.md
+# §6.2), which may be arbitrarily old, so every master commit is checked. A
+# commit's `status.contexts` holds the newest status of each context (like the
+# REST combined status): if the newest `staging-acceptance` status is older
+# than the window, no status of that context was written within it.
+HISTORY_QUERY = """
+query($owner: String!, $name: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: "refs/heads/master") {
+      target {
+        ... on Commit {
+          history(first: $first, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { oid status { contexts { context state createdAt } } }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+class IncompleteScan(Exception):  # noqa: N818 - reads better in the job log
+    """The history could not be scanned completely; never reported as "no release"."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,24 +83,43 @@ def _parse_time(value: str) -> datetime:
 
 
 def recent_releases(
-    fetch: Fetch, api: str, repo: str, now: datetime, *, window_days: int = WINDOW_DAYS
+    graphql: Graphql,
+    repo: str,
+    now: datetime,
+    *,
+    window_days: int = WINDOW_DAYS,
+    max_pages: int = MAX_PAGES,
 ) -> list[Release]:
-    """``staging-acceptance`` statuses written within the window, newest first."""
-    since = (now - timedelta(days=COMMIT_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    commits = fetch(f"{api}/repos/{repo}/commits?sha=master&since={since}&per_page={MAX_COMMITS}")
+    """Master commits whose newest ``staging-acceptance`` status is within the window."""
+    owner, name = repo.split("/", 1)
     cutoff = now - timedelta(days=window_days)
     found: list[Release] = []
-    for commit in commits:
-        sha = commit["sha"]
-        statuses = fetch(f"{api}/repos/{repo}/commits/{sha}/statuses?per_page=100")
-        for status in statuses:
-            if status.get("context") != STATUS_CONTEXT:
-                continue
-            created = _parse_time(status["created_at"])
-            if created >= cutoff:
-                found.append(Release(sha, status.get("state", ""), created))
-    found.sort(key=lambda r: r.created_at, reverse=True)
-    return found
+    after: str | None = None
+    for _ in range(max_pages):
+        variables = {"owner": owner, "name": name, "first": PAGE_SIZE, "after": after}
+        response = graphql(HISTORY_QUERY, variables)
+        if response.get("errors"):
+            messages = "; ".join(str(e.get("message", e)) for e in response["errors"])
+            raise IncompleteScan(f"GitHub GraphQL 返回错误：{messages}")
+        ref = (((response.get("data") or {}).get("repository") or {}).get("ref")) or {}
+        history = (ref.get("target") or {}).get("history")
+        if history is None:
+            raise IncompleteScan("没有读到 master 的提交历史")
+        for commit in history["nodes"]:
+            for context in (commit.get("status") or {}).get("contexts") or ():
+                if context.get("context") != STATUS_CONTEXT:
+                    continue
+                created = _parse_time(context["createdAt"])
+                if created >= cutoff:
+                    found.append(Release(commit["oid"], str(context["state"]).lower(), created))
+        page = history["pageInfo"]
+        if not page["hasNextPage"]:
+            found.sort(key=lambda r: r.created_at, reverse=True)
+            return found
+        after = page["endCursor"]
+    raise IncompleteScan(
+        f"master 提交超过 {max_pages * PAGE_SIZE} 个，未能检查完整，请调大 MAX_PAGES"
+    )
 
 
 def iso_week(now: datetime) -> str:
@@ -98,14 +145,17 @@ def webhook_payload(releases: list[Release], repo: str, now: datetime, run_url: 
 
 def run(
     env: Mapping[str, str],
-    fetch: Fetch,
+    graphql: Graphql,
     post: Post,
     now: datetime,
     out: Callable[[str], None] = print,
 ) -> int:
-    api = env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
     repo = env["GITHUB_REPOSITORY"]
-    releases = recent_releases(fetch, api, repo, now)
+    try:
+        releases = recent_releases(graphql, repo, now)
+    except IncompleteScan as exc:
+        out(f"::error::无法完整判断过去 {WINDOW_DAYS} 天是否有 staging 发版：{exc}")
+        return 1
     if not releases:
         out(f"过去 {WINDOW_DAYS} 天没有 {STATUS_CONTEXT} 状态（没有 staging 发版），不触发清理。")
         return 0
@@ -133,20 +183,21 @@ def run(
     return 0
 
 
-def _github_fetch(token: str) -> Fetch:
-    def fetch(url: str) -> Any:
+def _github_graphql(token: str, api: str) -> Graphql:
+    def graphql(query: str, variables: Mapping[str, Any]) -> Any:
         request = urllib.request.Request(  # noqa: S310 - fixed https API base
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+            f"{api}/graphql",
+            data=json.dumps({"query": query, "variables": dict(variables)}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                return json.load(response)
+        except urllib.error.URLError as exc:
+            raise IncompleteScan(f"调用 GitHub GraphQL 失败：{exc}") from None
 
-    return fetch
+    return graphql
 
 
 def _post(url: str, body: bytes, headers: Mapping[str, str]) -> int:
@@ -165,7 +216,8 @@ def _post(url: str, body: bytes, headers: Mapping[str, str]) -> int:
 
 def main() -> int:
     env = os.environ
-    return run(env, _github_fetch(env["GITHUB_TOKEN"]), _post, datetime.now(UTC))
+    api = env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    return run(env, _github_graphql(env["GITHUB_TOKEN"], api), _post, datetime.now(UTC))
 
 
 if __name__ == "__main__":

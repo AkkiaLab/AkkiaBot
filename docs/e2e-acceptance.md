@@ -285,7 +285,7 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 
 负责人已授权（BOT-28/BOT-30）：每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
 
-**触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub API 查询过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态：
+**触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub GraphQL API 逐页检查 master 的全部提交，看过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态（不按提交时间截断，重新验收旧提交也算）。API 出错或提交数超出检查上限时，workflow 直接失败，不会当作“无发版”：
 
 - 有，就 POST 调用 Multica autopilot 的 webhook，由 Engineer 在本机执行清理。URL 存在 Actions secret `MULTICA_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；
 - 没有，就直接结束，不占用 Multica 运行次数；
