@@ -274,11 +274,13 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
 按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异（负责人于 BOT-16 决定，BOT-34 实现）：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
 
-1. 选定要发版的 master commit `SHA`（完整 40 位）。
-2. 前端：每次 master 推送都会把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`。也可以在 master 上手动运行 `webapp-deploy.yml`。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
-3. 后端：按 `docs/operations.md` §8.1，把预发布栈升级到同一个 `SHA` 的镜像。
+版本流程（`docs/release.md` §4.1）下，第 1–3 步和第 5 步由 `just release-staging <RC tag> <场景>` 在同一把 staging 锁内完成；以下是它执行的内容和手动执行时的步骤。
+
+1. 被验收的 `SHA` 是当前有效 RC tag `vX.Y.Z-rc.N` 指向的 commit（完整 40 位），由 `release-rc.yml` 创建。
+2. 前端：`just release-staging` 在持有 staging 租约时触发 `webapp-deploy.yml`，把该 commit 发布到 `staging.akkiabot-webapp.pages.dev`；租约持续到验收结束，其他 RC 或手动运行在此期间不能覆盖前端（master 推送不再发布 staging）。用 `curl -s https://staging.akkiabot-webapp.pages.dev/version.json` 确认 `sha`。
+3. 后端：`just release-staging` 用该 commit 的 `deploy/upgrade.sh` 把预发布栈升级到同一个 `SHA` 的镜像（`docs/operations.md` §8.1）。
 4. 确定差异场景：
-   - **基线** `BASE`：master 上最近一个 `staging-acceptance=success` 的 commit（完整 40 位），且是 `SHA` 的祖先；
+   - **基线** `BASE`：`SHA` 的祖先中最近一个 `staging-acceptance=success` 的 commit（完整 40 位，`just release baseline SHA`）。只认祖先：补丁版本的 RC 不会以较新常规版本的验收为基线，反之亦然；
    - 查看 `git log BASE..SHA` 和 `git diff BASE SHA` 中的**产品改动**，按 §6“PR 级验收的场景选择”的同一规则，只选改动明确涉及的场景；也可以直接汇总这段区间内各 PR 描述中“已验证的场景”；
    - 没有改加群流程（群主拉人、链接入群、入群申请、入群验证）时，不选 `m7.captcha`、`m2.service-message`、`m2.join-request` 等入群相关场景；
    - 无法判断影响时默认跳过，并在发版记录中如实列出跳过的场景和原因；
@@ -294,14 +296,14 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
    `just e2e-staging` 每次都带 `--fresh-group`（`--record-status` 也会自动启用，差异验收同样如此）：本次运行新建一个标题为“AkkiaBot Staging 发版验收群 <运行标识>”的专用测试群，按 6.1 节的可恢复流程写入白名单，不复用旧群，再由群主把成员拉入新群。判断依据是“是否需要新成员状态”：staging bot 的数据库长期保留，按群累计的成员发言数、各项开关和警告次数会影响 `m5.*`（新成员才会被检查）、`m4.warn`（计数）、`m4.config`（开关初始状态）等多数场景，逐个判断哪些场景不依赖群状态容易出错；而新建群只由群主拉人，不占用成员账号的链接入群额度，所以保持默认开启。原因见下方“持久化被测 bot 的数据准备”。成员账号的链接入群只发生在选中的 `m7.captcha`、`m2.service-message` 中，`m2.join-request` 另有一次入群申请（不入群）；差异验收没有选中它们时，一次链接入群都没有。
 
-   staging 别名会被每次 master 推送覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行选中的场景（全量时为全部场景，含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`，只有满足以下条件才写 `success`，否则写 `failure`：
+   staging 别名可能被另一次 RC 部署或手动运行覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行选中的场景（全量时为全部场景，含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`，只有满足以下条件才写 `success`，否则写 `failure`：
    - 全量：全部场景实际执行并通过（任何跳过都不算）；
    - 差异：选中的场景全部实际执行并通过（因限流、缺少凭据、运行中止而跳过都不算），未选中的场景记为跳过（原因“未选中（本次改动未涉及）”），同样不计为通过；
    - 两者都要求开始和结束时都是 `SHA`。
 
    差异验收的报告写明基线 `BASE`、执行的场景和未执行的场景数；status 描述形如“差异验收（基线 2814ea1）：1/1 个选中场景通过（运行 …）；15 个未涉及差异、未执行；场景 m2.join-request”（超过 GitHub 的 140 字上限时截断场景列表，完整列表见报告）。`--record-status` 不能与 `--serve` 同时使用。
 6. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、基线、后端镜像、结果，以及按规则跳过的场景和原因。报告中的“未自动化”项要原样保留。
-7. 前端提升到生产：负责人确认后，在 master 上运行 `gh workflow run webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署。只有 `staging-acceptance=success` 的 commit 能通过检查；`success` 可能来自全量或差异验收，差异验收的含义见第 5 步。
+7. 生产：RC 通过后封版并打正式 tag，`release-production.yml` 等待负责人审批，后端由 `just release-deploy production <tag>` 部署，随后自动触发 `webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署（`docs/release.md` §4.2–4.3）。只有 `staging-acceptance=success` 的 commit 能通过检查；`success` 可能来自全量或差异验收，差异验收的含义见第 5 步。
 
 写 commit status 需要本机 `gh` 已登录，且对仓库有写权限。
 

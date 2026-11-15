@@ -1,8 +1,10 @@
 name: Webapp promote to production
 
 # The only way a build reaches production (bot.akkia.moe). Promotes one exact
-# master commit that already passed the staging acceptance (docs/webapp.md):
-#   1. `verify`: the sha is on master and carries the commit status
+# commit that already passed the staging acceptance (docs/webapp.md):
+#   1. `verify`: the sha carries a formal release tag vX.Y.Z (docs/release.md;
+#      `just release-deploy production` dispatches this after the backend) or,
+#      for releases made before the version flow, is on master; and carries the commit status
 #      `staging-acceptance` = success (written by `just e2e-staging --record-status`:
 #      a full run, or a diff run against an already accepted ancestor, see
 #      docs/e2e-acceptance.md §6.2);
@@ -16,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: Full 40-character master commit that passed the staging acceptance
+        description: Full 40-character commit (formal release tag, or legacy master) that passed the staging acceptance
         required: true
         type: string
 
@@ -52,8 +54,11 @@ jobs:
             echo "::error::sha must be a full 40-character lowercase commit id"
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$SHA" origin/master; then
-            echo "::error::$SHA is not on master"
+          formal="$(git tag --points-at "$SHA" | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true)"
+          if [[ -n "$formal" ]]; then
+            echo "formal release tag: $formal"
+          elif ! git merge-base --is-ancestor "$SHA" origin/master; then
+            echo "::error::$SHA has no formal release tag and is not on master"
             exit 1
           fi
           # Newest status per context wins (the API lists newest first).

@@ -1,0 +1,112 @@
+name: Release to production
+
+# Production pipeline of one formal tag (docs/release.md §4.3). Started by
+# release-seal.yml, or by hand to retry the same tag (tags never move):
+#   verify  — tag on a sealed branch, branch head = tag, staging-acceptance=success,
+#             and the `production` environment really requires a reviewer;
+#   image   — the backend image of that sha exists (built if missing);
+#   approve — environment `production`: waits for the owner's approval;
+#   handoff — tells Multica to deploy on the runtime machine
+#             (`just release-deploy production <tag>`), which refuses to run
+#             unless this run's `approve` job was approved.
+# Nothing here touches the servers; the Mini App follows via webapp-promote.yml.
+
+run-name: 生产发布 ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Formal tag (vX.Y.Z)
+        required: true
+        type: string
+
+concurrency:
+  group: release-production-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Only from master
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "::error::run release-production.yml from master"
+            exit 1
+          fi
+      - name: Tag gate
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          git remote set-url origin "https://github.com/$GITHUB_REPOSITORY.git"
+          python3 -m scripts.release verify-formal "$TAG"
+      - name: Environment `production` requires a reviewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          reviewers="$(gh api "repos/$GITHUB_REPOSITORY/environments/production" \
+            --jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' || echo 0)"
+          if [[ "$reviewers" -lt 1 ]]; then
+            echo "::error::environment production has no required reviewer; refusing (docs/release.md §7)"
+            exit 1
+          fi
+
+  image:
+    needs: verify
+    uses: ./.github/workflows/release.yml
+    with:
+      sha: ${{ needs.verify.outputs.sha }}
+    permissions:
+      contents: read
+      packages: write
+
+  approve:
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: production
+    steps:
+      - name: Approved
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: echo "- 负责人已批准 $TAG（$SHA）的生产发布" >> "$GITHUB_STEP_SUMMARY"
+
+  handoff:
+    needs: [verify, approve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hand over to the production deploy
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "- 运行机执行：\`just release-deploy production $TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$MULTICA_RELEASE_WEBHOOK_URL" ]]; then
+            echo "::notice::MULTICA_RELEASE_WEBHOOK_URL not configured; start the production deploy manually"
+            exit 0
+          fi
+          payload="$(jq -n --arg tag "$TAG" --arg sha "$SHA" --arg run "$RUN_URL" \
+            '{kind: "release-production-approved", tag: $tag, sha: $sha, run: $run}')"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            --data "$payload" "$MULTICA_RELEASE_WEBHOOK_URL")"
+          echo "Multica webhook: HTTP $code"
+          [[ "$code" =~ ^2 ]]

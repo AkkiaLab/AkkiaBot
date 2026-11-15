@@ -13,6 +13,13 @@
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
 - 真实产品数据不公开（负责人于 BOT-4 决定，2026-11-15）：仓库是公开的，真实业务统计（群数、成员数、消息数、禁言人数、命中率等）、生产指标数值及其截图、导出和验收记录，都不能写进代码、文档、PR / issue 评论或公开的 CI 产物，也不能用汇总统计或“约 N 万”之类的近似值绕过。真实数据和验收证据只放在有访问控制的内部记录（Multica issue、1Password、生产机上权限 600 的报告）；公开文档只写方法、指标定义、查询模板和明确标注的虚构示例。发现已公开的内容，先在受控位置留存原文，再清理并在内部记录位置与处理状态，报告中不复述数值；历史提交等仍可访问的残留如实列出，历史重写等额外操作先提方案、经确认再执行。
 
+## 版本分支与发布
+
+- 按版本开发（负责人于 2026-11-15 确认，BOT-38；实现见 `docs/release.md`）：任务分支从目标 `releases/vX.Y.Z` 创建，PR 提向该 release，不再默认基于 master 或提向 master；不跟本期上线的任务提向下一个 release，缺失的版本分支由 Platform 创建（`just release create`）。常规版本从最新 master 创建，小版本从上一个正式 tag 创建。
+- 原始实现 PR 由 Reviewer squash 合并；release 之间及到 master 的逐级上合由流水线以 merge commit 完成并保留 merge 关系，冲突时自动建任务，按 `docs/release.md` §3.3 用带 `release-forward` 标签的 PR 解决（不 squash）。
+- 发布日 18:00（UTC+8）当前常规版本冻结新增功能：修复 PR 加 `release:fix` 标签，功能下车到下一个 release。`release-guard` 检查 PR 的目标、冻结与基分支。
+- 已封版分支不接收任何 PR、推送或上合；正式 tag `vX.Y.Z` 与 RC tag 永不移动或删除。正式 tag 不等于生产部署成功，生产以部署记录为准，生产切换仍需负责人审批。
+
 ## 部署与运行环境
 
 - staging、production 一律用仓库 `deploy/compose.yaml` 完整 docker compose 部署，不在服务器上直接运行二进制或 `uv run`（负责人于 BOT-16 要求，2026-11-15）。
@@ -26,8 +33,8 @@
     - 无法判断是否受影响时默认跳过；共享配置、handler 注册、依赖升级等也按不受影响处理，除非确实改到了相关场景的代码。staging 发版同样只验收差异，间接影响不会被自动补跑。
     - PR 描述列出“已验证的场景”和“未验证、留给 staging”的部分。报告中未选中的场景记为跳过，不计为通过。
     - 选择规则见 `docs/e2e-acceptance.md` §6“PR 级验收的场景选择”，入群限流见 §7。两次验收之间不再要求固定间隔（负责人于 BOT-16 取消“全量至少间隔约 1 小时”）；失败后先查清原因再重跑，不盲目连续重试，FloodWait、`PEER_FLOOD` 如实报错。
-  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行**差异**自动化验收（负责人于 BOT-16 决定）：`just e2e-staging --record-status <master sha> --baseline <上一个通过 staging-acceptance 的 sha> --scenarios <场景>`，只跑基线以来产品改动明确涉及的场景，选择规则与 PR 级相同；没改加群流程就不跑入群相关场景，无法判断时默认跳过并如实列出。选中的场景全部实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本、基线、场景和结果。需要时仍可不带 `--scenarios`/`--baseline` 执行全量。细则见 `docs/e2e-acceptance.md` §6.2。
-  - **prod 发布**：只提升已通过 staging 验收的 sha（前端用 `webapp-promote.yml`）。只做环境配置检查、健康检查和非 Telegram 的必要冒烟（例如 `/readyz`、`webapp-promote.yml` 的页面检查），不重复全量验收。生产侧受 Telegram 平台限制，不执行 Telegram 相关的主动冒烟，也不请求生产验证账号；相关能力通过自然流量的日志、指标、链路和告警观测，分别记录已覆盖和未观测的能力，未观测不算通过，也不因缺少测试账号阻塞收尾（负责人于 BOT-4 决定，2026-11-15）。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
+  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行**差异**自动化验收（负责人于 BOT-16 决定）：`just release-staging <RC tag> <场景>`（部署 RC 并在同一把锁内执行 `just e2e-staging --record-status <RC sha> --baseline <该 sha 谱系中上一个通过 staging-acceptance 的祖先> --scenarios <场景>`，`docs/release.md` §4.1），只跑基线以来产品改动明确涉及的场景，选择规则与 PR 级相同；没改加群流程就不跑入群相关场景，无法判断时默认跳过并如实列出。选中的场景全部实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本、基线、场景和结果。需要时仍可不带 `--scenarios`/`--baseline` 执行全量。细则见 `docs/e2e-acceptance.md` §6.2。
+  - **prod 发布**：只发布已通过 staging 验收、经封版打正式 tag 的 sha（`release-production.yml` 审批后 `just release-deploy production <tag>`，前端随后经 `webapp-promote.yml`，`docs/release.md` §4.3）。只做环境配置检查、健康检查和非 Telegram 的必要冒烟（例如 `/readyz`、`webapp-promote.yml` 的页面检查），不重复全量验收。生产侧受 Telegram 平台限制，不执行 Telegram 相关的主动冒烟，也不请求生产验证账号；相关能力通过自然流量的日志、指标、链路和告警观测，分别记录已覆盖和未观测的能力，未观测不算通过，也不因缺少测试账号阻塞收尾（负责人于 BOT-4 决定，2026-11-15）。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
 - 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。本地 `just e2e-turnstile-test-keys`（`m7.captcha-test-keys`）用 Cloudflare 官方测试 key 跑通通过/拒绝链路，报告单独标为“官方测试 key”，属于另一类证据，不能替代 staging 真实 widget 的证据（`docs/e2e-acceptance.md` §6.4）。
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。

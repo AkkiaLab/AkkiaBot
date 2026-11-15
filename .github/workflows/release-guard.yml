@@ -1,0 +1,42 @@
+name: Release guard
+
+# Check `release-guard` on every PR (docs/release.md §2): the base must be a
+# receivable release (not sealed), a frozen release only takes `release:fix`
+# PRs, and the head must be cut from its target release. The rules come from
+# the base branch's copy of the tooling, never from the PR itself. Read-only:
+# no secrets, no writes. The ruleset of releases/** makes it required (BOT-40).
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  release-guard:
+    name: release-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check base branch, freeze and source of the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ ! -f scripts/release/cli.py ]]; then
+            echo "::notice::base branch has no release tooling yet; nothing to check"
+            exit 0
+          fi
+          git remote set-url origin "https://github.com/$GITHUB_REPOSITORY.git"
+          python3 -m scripts.release guard "$PR"

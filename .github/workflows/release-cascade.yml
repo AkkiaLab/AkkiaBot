@@ -1,0 +1,73 @@
+name: Release cascade
+
+# Forward every release into every later one and finally master, keeping merge
+# commits (docs/release.md §3). Each run reconciles all branches from scratch,
+# so duplicate, delayed or dropped events are harmless; the hourly schedule
+# compensates any event GitHub did not deliver. Runs are serialised; a queued
+# run replaced by a newer one loses nothing because the newer run reconciles
+# everything. Conflicts pause that one direction, open a
+# `release-forward-conflict` issue and notify Multica (squad task) once.
+#
+# Writes need the release App (bypass on releases/** and master, BOT-40). The
+# tooling always comes from master; `pull_request_target` never checks out PR code.
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: ["releases/**"]
+  push:
+    branches: ["releases/**"]
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      land_pr:
+        description: Approved conflict-resolution PR (label release-forward) to land first
+        required: false
+        type: string
+
+concurrency:
+  group: release-cascade
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cascade:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Any release branch at all?
+        id: boot
+        run: |
+          if git ls-remote --exit-code --heads "https://github.com/$GITHUB_REPOSITORY.git" 'releases/*' >/dev/null; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no releases/* branch yet (flow not bootstrapped); nothing to forward"
+          fi
+      - uses: AkkiaLab/AkkiaBot/.github/actions/release-setup@master
+        if: steps.boot.outputs.active == 'true'
+        id: setup
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Land approved conflict resolutions
+        if: steps.boot.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          LAND_PR: ${{ inputs.land_pr }}
+        run: |
+          if [[ -n "$LAND_PR" ]]; then
+            python3 -m scripts.release land "$LAND_PR"
+          else
+            python3 -m scripts.release land-approved
+          fi
+      - name: Forward merges
+        if: steps.boot.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          TRIGGER: "${{ github.event_name == 'pull_request_target' && format('PR #{0}', github.event.pull_request.number) || format('{0} {1}', github.event_name, github.ref_name) }}"
+        run: python3 -m scripts.release cascade --trigger "$TRIGGER"
