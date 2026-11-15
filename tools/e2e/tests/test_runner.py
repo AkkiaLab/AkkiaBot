@@ -441,6 +441,8 @@ async def test_m4_warn_enables_the_switch_when_run_alone(
         ("no_purge", True, "m4.warn", "没有被删除"),
         ("no_ban", True, "m4.ban", "只删除了 0 条消息"),
         ("no_ban", True, "m4.warn", "封禁列表"),
+        ("full_names", True, "m4.ban", "@username"),
+        ("full_names", True, "m4.warn", "@username"),
         ("warn_limit", 2, "m4.permissions", None),  # a different limit is still fine
     ],
 )
@@ -539,6 +541,7 @@ async def test_m5_missing_trace_fails(world: FakeTelegram, config: E2EConfig) ->
         ("antispam_ignores_switch", "m5.disabled", "反垃圾已关闭，但消息"),
         ("antispam_no_exemption", "m5.exempt", "老成员应被豁免，但消息"),
         ("antispam_no_mute", "m5.spam", "成员没有被禁言"),
+        ("full_names", "m5.spam", "@username"),
     ],
 )
 async def test_m5_regressions_are_caught(
