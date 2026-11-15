@@ -19,13 +19,21 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from akkiabot_core.db import Chat, ChatMember, ChatSettings, create_engine, create_session_factory
+from akkiabot_core.db import (
+    Chat,
+    ChatMember,
+    ChatSettings,
+    MessageLog,
+    create_engine,
+    create_session_factory,
+)
 from akkiabot_core.db.migrate import upgrade
 from akkiabot_server import legacy_import
 from akkiabot_server.main import main
 
 # DDL as emitted by gorm.io/driver/sqlite AutoMigrate for model.TelegramChat /
-# model.TelegramChatMember (botlab-core 52c8b40), trimmed of indexes.
+# model.TelegramChatMember / model.TelegramMessage (botlab-core 52c8b40), trimmed
+# of indexes.
 LEGACY_DDL = """
 CREATE TABLE `telegram_chats` (
   `id` integer, `created_at` datetime, `updated_at` datetime, `deleted_at` datetime,
@@ -43,6 +51,11 @@ CREATE TABLE `telegram_chat_members` (
   PRIMARY KEY (`id`)
 );
 CREATE UNIQUE INDEX `idx_chat_member` ON `telegram_chat_members`(`chat_id`,`user_id`);
+CREATE TABLE `telegram_messages` (
+  `id` integer PRIMARY KEY AUTOINCREMENT, `created_at` datetime, `updated_at` datetime,
+  `deleted_at` datetime, `chat_id` integer, `user_id` integer, `text` text,
+  `message_id` integer, `spam_flag` integer DEFAULT 0
+);
 """
 
 TS = "2025-01-20 12:00:00.000000+08:00"
@@ -57,7 +70,7 @@ CHATS: list[tuple[Any, ...]] = [
     (PRIVATE, "private", "", 0, 0, 0, 3, None),
 ]
 
-# (chat_id, user_id, warn_count, restriction_type, deleted_at)
+# (chat_id, user_id, warn_count, restriction_type, deleted_at[, message_count[, updated_at]])
 MEMBERS: list[tuple[Any, ...]] = [
     (G1, 11, 2, "NoRestriction", None),
     (G1, 12, 0, "CaptchaBAN", None),  # still captcha-muted
@@ -71,8 +84,12 @@ MEMBERS: list[tuple[Any, ...]] = [
 
 
 def make_legacy_db(
-    path: Path, chats: list[tuple[Any, ...]], members: list[tuple[Any, ...]]
+    path: Path,
+    chats: list[tuple[Any, ...]],
+    members: list[tuple[Any, ...]],
+    messages: list[tuple[Any, ...]] = (),  # pyright: ignore[reportArgumentType]
 ) -> Path:
+    """``messages``: ``(chat_id, user_id, message_id, created_at, deleted_at)`` in id order."""
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(LEGACY_DDL)
         conn.executemany(
@@ -83,8 +100,13 @@ def make_legacy_db(
         )
         conn.executemany(
             "INSERT INTO telegram_chat_members (chat_id, user_id, warn_count, restriction_type, "
-            "deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(*row, TS, TS) for row in members],
+            "deleted_at, message_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(*(row + (0, TS)[len(row) - 5 :]), TS) for row in members],
+        )
+        conn.executemany(
+            "INSERT INTO telegram_messages (chat_id, user_id, message_id, created_at, deleted_at, "
+            "text) VALUES (?, ?, ?, ?, ?, 'mock text')",
+            list(messages),
         )
         conn.commit()
     return path
@@ -172,6 +194,8 @@ def test_read_legacy_ignores_soft_deleted_rows_and_counts_with_sql(legacy_db: Pa
         members_total=7,
         members_with_warnings=3,
         warn_count_sum=4,
+        members_with_messages=0,
+        message_count_sum=0,
         captcha_muted=2,
     )
 
@@ -239,7 +263,7 @@ def test_plan_against_empty_target(legacy_db: Path) -> None:
         G3: {"captcha": True, "antispam": False, "warn": True, "max_warn_count": 1},
     }
     assert {c.action for c in plan.chats} == {"create"}
-    assert [(m.chat_id, m.user_id, m.after) for m in plan.members] == [
+    assert [(m.chat_id, m.user_id, m.warn_after) for m in plan.members] == [
         (G3, 31, 1),
         (G2, 21, 1),
         (G1, 11, 2),
@@ -273,7 +297,7 @@ def test_dry_run_writes_nothing(legacy_db: Path, target_url: str) -> None:
     plan = run(_import(target_url, legacy_db, dry_run=True))
     assert plan.consistent
     assert plan.target_checked
-    assert plan.counts() == {"chats": {"create": 3}, "members": {"create": 3}}
+    assert plan.counts() == {"chats": {"create": 3}, "members": {"create": 3}, "messages": {}}
     assert run(_rows(target_url)) == ({}, {})
 
 
@@ -286,6 +310,7 @@ def test_import_writes_settings_and_warnings_and_is_idempotent(
     assert plan.counts() == {
         "chats": {"update": 1, "create": 2},
         "members": {"create": 2, "unchanged": 1},
+        "messages": {},
     }
     g1 = next(c for c in plan.chats if c.chat_id == G1)
     assert g1.before == {"captcha": False, "antispam": True, "warn": False, "max_warn_count": 3}
@@ -306,7 +331,11 @@ def test_import_writes_settings_and_warnings_and_is_idempotent(
     assert (G1, 12) not in members
 
     again = run(_import(target_url, legacy_db, dry_run=False))
-    assert again.counts() == {"chats": {"unchanged": 3}, "members": {"unchanged": 3}}
+    assert again.counts() == {
+        "chats": {"unchanged": 3},
+        "members": {"unchanged": 3},
+        "messages": {},
+    }
 
 
 def test_new_chat_rows_keep_legacy_type_and_title(legacy_db: Path, target_url: str) -> None:
@@ -378,7 +407,7 @@ def test_cli_dry_run_without_db_url(
     data = json.loads(report.read_text(encoding="utf-8"))
     assert data["consistent"] is True
     assert data["source_stats"]["group_chats"] == 3
-    assert data["counts"] == {"chats": {"create": 3}, "members": {"create": 3}}
+    assert data["counts"] == {"chats": {"create": 3}, "members": {"create": 3}, "messages": {}}
     assert len(data["captcha_muted"]) == 2
 
 
@@ -498,3 +527,195 @@ def test_cli_report_refuses_existing_file_and_missing_dir(
     assert "报告所在目录不存在" in err
     assert existing.read_text(encoding="utf-8") == "keep me"
     assert run(_rows(target_url)) == ({}, {})
+
+
+# ----------------------------------------------------------------------- member state & recent window
+
+LAST = "2026-11-15 16:00:00+08:00"  # 08:00 UTC: newest legacy message = last activity
+
+# Message counts, captcha mutes at different ages, messages around the 48 h window.
+TIMED_MEMBERS: list[tuple[Any, ...]] = [
+    (G1, 11, 0, "", None, 10, "2026-11-15 07:00:00.123456789+00:00"),
+    (G1, 12, 0, "CaptchaBAN", None, 0, "2026-11-14 10:00:00+00:00"),  # recent
+    (G1, 13, 0, "CaptchaBAN", None, 0, "2026-10-01 10:00:00+00:00"),  # old
+    (G1, 14, 2, "", None, 3, "2026-11-01 10:00:00+00:00"),
+    (G2, 21, 0, "", None, 0, "2026-11-01 10:00:00+00:00"),  # nothing to import
+]
+# (chat_id, user_id, message_id, created_at, deleted_at), oldest first (id order)
+TIMED_MESSAGES: list[tuple[Any, ...]] = [
+    (G1, 11, 100, "2026-11-10 10:00:00+00:00", None),  # too old
+    (G1, 11, 101, "2026-11-13 09:00:00.123456789+00:00", None),
+    (G1, 11, 102, "2026-11-14 09:00:00+00:00", TS),  # soft-deleted
+    (PRIVATE, 51, 7, "2026-11-14 09:00:00+00:00", None),  # not a group
+    (G1, None, 104, "2026-11-14 09:00:00+00:00", None),  # no sender
+    (G2, 21, 105, LAST, None),
+]
+
+
+@pytest.fixture
+def timed_db(tmp_path: Path) -> Path:
+    return make_legacy_db(tmp_path / "timed.db", CHATS[:2], TIMED_MEMBERS, TIMED_MESSAGES)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-11-15 08:15:24.287366611+00:00", "2026-11-15T08:15:24.287366+00:00"),
+        ("2025-01-20 12:00:00+08:00", "2025-01-20T04:00:00+00:00"),
+        ("2025-01-20T12:00:00Z", "2025-01-20T12:00:00+00:00"),
+        ("2025-01-20 12:00:00", "2025-01-20T12:00:00+00:00"),
+        ("2025-01-20 12:00:00.5+0800", "2025-01-20T04:00:00.500000+00:00"),
+    ],
+)
+def test_parse_timestamp(raw: str, expected: str) -> None:
+    parsed = legacy_import.parse_timestamp(raw)
+    assert parsed is not None
+    assert parsed.isoformat() == expected
+
+
+@pytest.mark.parametrize("raw", [None, "", "yesterday", "2025-13-40 99:00:00"])
+def test_parse_timestamp_rejects_garbage(raw: str | None) -> None:
+    assert legacy_import.parse_timestamp(raw) is None
+
+
+def test_recent_window_is_measured_from_last_legacy_activity(timed_db: Path) -> None:
+    snapshot = legacy_import.read_legacy(timed_db)
+
+    assert snapshot.last_activity is not None
+    assert snapshot.last_activity.isoformat() == "2026-11-15T08:00:00+00:00"
+    assert [(m.chat_id, m.message_id, m.user_id) for m in snapshot.recent_messages] == [
+        (G2, 105, 21),
+        (G1, 101, 11),
+    ]
+    assert snapshot.stats.members_with_messages == 2
+    assert snapshot.stats.message_count_sum == 13
+
+    narrow = legacy_import.read_legacy(timed_db, recent_hours=1)
+    assert [m.message_id for m in narrow.recent_messages] == [105]
+
+
+def test_plan_imports_message_counts_and_flags_recent_captcha(timed_db: Path) -> None:
+    snapshot = legacy_import.read_legacy(timed_db)
+    plan = legacy_import.build_plan(
+        snapshot, legacy_import.TargetState.empty(), target_checked=False
+    )
+
+    assert plan.consistent
+    assert [(m.user_id, m.warn_after, m.messages_after) for m in plan.members] == [
+        (11, 0, 10),
+        (14, 2, 3),
+    ]
+    assert [(m.user_id, m.recent) for m in plan.captcha_muted] == [(12, True), (13, False)]
+    assert plan.counts()["messages"] == {"create": 2}
+
+    report = legacy_import.render_report(plan, source=timed_db, dry_run=True)
+    assert "| 有发言数的成员 | 2 | 2 | 一致 |" in report
+    assert "| 发言数合计 | 13 | 13 | 一致 |" in report
+    assert "旧库最后活动时间：2026-11-15 08:00:00 UTC" in report
+    assert "| -1001 | Mock 群 \\| 一 | 2 | 1 |" in report  # per-chat summary
+    assert "最近 48 小时内被禁言的成员（1 人）" in report
+    assert "| -1001 | Mock 群 \\| 一 | 12 |" in report
+    assert "| -1001 | Mock 群 \\| 一 | 13 |" not in report  # old mutes: summary only
+    assert "发言数超过 3 的成员共 1 名" in report
+
+    data = legacy_import.plan_to_json(plan, source=timed_db, dry_run=True)
+    assert [m["user_id"] for m in data["captcha_muted"]] == [12, 13]  # full list
+    assert data["last_activity"] == "2026-11-15T08:00:00+00:00"
+    assert data["messages"][0]["created_at"] == "2026-11-15T08:00:00+00:00"
+
+
+def test_import_writes_message_counts_and_recent_message_ids(
+    timed_db: Path, target_url: str
+) -> None:
+    async def seed() -> None:
+        engine = create_engine(target_url)
+        try:
+            async with create_session_factory(engine)() as session, session.begin():
+                # The new bot already counted more messages: the larger value wins.
+                session.add(ChatMember(chat_id=G1, user_id=11, message_count=20))
+        finally:
+            await engine.dispose()
+
+    async def message_log() -> list[tuple[int, int, int | None]]:
+        engine = create_engine(target_url)
+        try:
+            async with create_session_factory(engine)() as session:
+                rows = await session.execute(
+                    select(MessageLog.chat_id, MessageLog.message_id, MessageLog.user_id)
+                    .where(MessageLog.text.is_(None))
+                    .order_by(MessageLog.message_id)
+                )
+                return [tuple(r) for r in rows]  # pyright: ignore[reportReturnType]
+        finally:
+            await engine.dispose()
+
+    async def member_counts() -> dict[tuple[int, int], tuple[int, int, str]]:
+        engine = create_engine(target_url)
+        try:
+            async with create_session_factory(engine)() as session:
+                return {
+                    (m.chat_id, m.user_id): (m.warn_count, m.message_count, m.restriction.value)
+                    for m in (await session.scalars(select(ChatMember))).all()
+                }
+        finally:
+            await engine.dispose()
+
+    run(seed())
+    plan = run(_import(target_url, timed_db, dry_run=False))
+    assert plan.counts()["members"] == {"unchanged": 1, "create": 1}
+    assert run(member_counts()) == {(G1, 11): (0, 20, "none"), (G1, 14): (2, 3, "none")}
+    assert run(message_log()) == [(G1, 101, 11), (G2, 105, 21)]
+
+    again = run(_import(target_url, timed_db, dry_run=False))
+    assert again.counts() == {
+        "chats": {"unchanged": 2},
+        "members": {"unchanged": 2},
+        "messages": {"unchanged": 2},
+    }
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_cli_recent_hours(timed_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["import-legacy", str(timed_db), "--dry-run", "--recent-hours", "0"])
+    assert exc.value.code == 2
+    capsys.readouterr()
+
+    assert main(["import-legacy", str(timed_db), "--dry-run", "--recent-hours", "1"]) == 0
+    assert "最近 1 小时内被禁言的成员（0 人）" in capsys.readouterr().out
+
+
+UNREGISTERED = -1009
+
+
+def test_unregistered_groups_get_member_state_but_no_chat_row(
+    tmp_path: Path, target_url: str
+) -> None:
+    members = [
+        *TIMED_MEMBERS,
+        (UNREGISTERED, 91, 1, "", None, 8, "2026-11-15 07:00:00+00:00"),
+        (77, 92, 0, "", None, 5, "2026-11-15 07:00:00+00:00"),  # private chat: skipped
+    ]
+    messages = [
+        *TIMED_MESSAGES,
+        (UNREGISTERED, 91, 300, "2026-11-15 07:30:00+00:00", None),
+        (77, 92, 301, "2026-11-15 07:30:00+00:00", None),
+    ]
+    path = make_legacy_db(tmp_path / "u.db", CHATS[:2], members, messages)
+
+    snapshot = legacy_import.read_legacy(path)
+    assert snapshot.unregistered_groups == frozenset({UNREGISTERED})
+    assert snapshot.stats.members_with_messages == 3
+    assert snapshot.stats.members_with_warnings == 2
+
+    plan = run(_import(target_url, path, dry_run=False))
+    assert plan.consistent
+    assert plan.skipped_members_unknown_chat == 1
+    assert any("1 个群在旧库中没有群记录" in n for n in plan.notes)
+
+    chats, member_rows = run(_rows(target_url))
+    assert UNREGISTERED not in chats
+    assert member_rows[(UNREGISTERED, 91)] == 1  # warn count
+    assert (77, 92) not in member_rows
+    assert {(m.chat_id, m.message_id) for m in plan.messages} >= {(UNREGISTERED, 300)}
+    assert (77, 301) not in {(m.chat_id, m.message_id) for m in plan.messages}
