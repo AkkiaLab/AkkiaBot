@@ -258,6 +258,8 @@ def deploy(
 
 
 WEBAPP_WORKFLOW = "webapp-deploy.yml"
+#: Exit code when the staging lease is kept because a frontend run could not be confirmed ended.
+LEASE_KEPT = 11
 
 
 def webapp_title(sha: str, nonce: str) -> str:
@@ -294,17 +296,33 @@ def release_staging(
     candidate = check_rc(git.state(), tag, gh.sealed_branches())
     command = staging_acceptance_command(git, gh, candidate.sha, scenarios)
     lines: list[str] = []
-    with staging_lease.held(git, candidate.sha, tag) as held:
+    held = staging_lease.acquire(git, candidate.sha, tag)
+    keep = False
+    try:
         lines.append(f"已取得 staging 租约（{held.commit[:12]}，到 {held.expires.isoformat()}）")
         nonce = held.commit[:12]
-        conclusion = gh.run_and_wait(
-            WEBAPP_WORKFLOW,
-            {"sha": candidate.sha, "nonce": nonce},
-            webapp_title(candidate.sha, nonce),
-        )
+        try:
+            conclusion = gh.run_and_wait(
+                WEBAPP_WORKFLOW,
+                {"sha": candidate.sha, "nonce": nonce},
+                webapp_title(candidate.sha, nonce),
+            )
+        except Exception as exc:
+            # The upload may still be running (or may still start): releasing now
+            # would let it overwrite the next RC. Keep the lease for a person.
+            keep = True
+            lines.append(f"前端部署状态无法确认：{exc}")
+            lines.append(
+                "已保留 staging 租约。恢复：在 Actions 中确认该 webapp-deploy 运行已结束（必要时取消），"
+                f"再执行 `just release lease release {candidate.sha}`，然后重跑 `just release-staging`；"
+                f"租约最迟 {held.expires.isoformat()} 过期"
+            )
+            return StagingResult(LEASE_KEPT, lines)
         lines.append(f"staging Mini App（{WEBAPP_WORKFLOW}）：{conclusion}")
         if conclusion != "success":
-            lines.append("前端未部署成功：后端未改动，已停止；查因后重跑 `just release-staging`")
+            lines.append(
+                "前端未部署成功（运行已结束）：后端未改动，已停止；查因后重跑 `just release-staging`"
+            )
             return StagingResult(1, lines)
         result = deploy(git, gh, target, tag, allow_migration=allow_migration, run=run, log=log)
         lines += result.lines
@@ -320,6 +338,9 @@ def release_staging(
         code = runner(command)
         lines.append(f"验收命令退出码：{code}")
         return StagingResult(code, lines)
+    finally:
+        if not keep and not staging_lease.release(git, held):
+            lines.append("释放 staging 租约失败：它已过期并被接管，或已被人工释放")
 
 
 def staging_acceptance_command(git: Git, gh: GitHub, sha: str, scenarios: str | None) -> list[str]:

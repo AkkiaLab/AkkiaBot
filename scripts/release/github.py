@@ -8,6 +8,7 @@ Tests use an in-memory fake (tests/release/conftest.py).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from scripts.release.versions import ReleaseError
 
@@ -81,12 +82,21 @@ class GhError(ReleaseError):
     pass
 
 
+class RunNotTerminatedError(ReleaseError):
+    """A dispatched run may still be running (or may still start): the caller must keep
+    whatever it protects (the staging lease) until a person confirms it ended."""
+
+
 class GhCli:
     """``GitHub`` over ``gh api``; ``repo`` is ``owner/name``."""
 
     def __init__(self, repo: str, *, webhook_env: str = "MULTICA_RELEASE_WEBHOOK_URL") -> None:
         self.repo = repo
         self.webhook_env = webhook_env
+        self.sleep = time.sleep
+        self.clock = time.monotonic
+        self.poll_interval = 10.0
+        self.cancel_timeout = 300.0
 
     # ----------------------------------------------------------- plumbing
     def _api(
@@ -256,30 +266,11 @@ class GhCli:
         the PR author and the Reviewer commented after that approval (feedback
         that came later must be handled and re-approved first).
         """
-        query = """
-        query($owner: String!, $name: String!, $number: Int!) {
-          repository(owner: $owner, name: $name) {
-            pullRequest(number: $number) {
-              author { login }
-              reviewThreads(first: 100) { nodes { isResolved } }
-              reviews(last: 100) {
-                nodes { author { login } state submittedAt commit { oid } }
-              }
-              comments(last: 100) { nodes { author { login } createdAt } }
-            }
-          }
-        }"""
-        owner, name = self.repo.split("/", 1)
-        args = ["gh", "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}"]
-        args += ["-F", f"name={name}", "-F", f"number={number}"]
-        proc = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
-        if proc.returncode != 0:
-            raise GhError(f"读取 PR #{number} 的评审状态失败：{proc.stderr.strip()[:300]}")
-        pr = json.loads(proc.stdout)["data"]["repository"]["pullRequest"]
+        pr = self._review_data(number)
         return review_problems(
-            author=(pr["author"] or {}).get("login", ""),
+            author=pr["author"],
             head=head,
-            unresolved=sum(1 for t in pr["reviewThreads"]["nodes"] if not t["isResolved"]),
+            unresolved=sum(1 for t in pr["threads"] if not t["isResolved"]),
             reviews=[
                 (
                     (r["author"] or {}).get("login", ""),
@@ -287,13 +278,65 @@ class GhCli:
                     (r["commit"] or {}).get("oid", ""),
                     r["submittedAt"] or "",
                 )
-                for r in pr["reviews"]["nodes"]
+                for r in pr["reviews"]
             ],
             comments=[
-                ((c["author"] or {}).get("login", ""), c["createdAt"])
-                for c in pr["comments"]["nodes"]
+                ((c["author"] or {}).get("login", ""), c["createdAt"]) for c in pr["comments"]
             ],
         )
+
+    #: One GraphQL query per connection, paged oldest first until ``hasNextPage`` is false.
+    REVIEW_CONNECTIONS: ClassVar[dict[str, str]] = {
+        "threads": "reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { isResolved } }",
+        "reviews": "reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { login } state submittedAt commit { oid } } }",
+        "comments": "comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { login } createdAt } }",
+    }
+    MAX_REVIEW_PAGES: int = 50
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> Any:
+        args = ["gh", "api", "graphql", "-f", f"query={query}"]
+        for key, value in variables.items():
+            if value is None:
+                continue
+            args += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
+        proc = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
+        if proc.returncode != 0:
+            raise GhError(f"GraphQL 查询失败：{proc.stderr.strip()[:300]}")
+        data = json.loads(proc.stdout)
+        if data.get("errors"):
+            raise GhError(f"GraphQL 查询返回错误：{str(data['errors'])[:300]}")
+        return data["data"]
+
+    def _review_data(self, number: int) -> dict[str, Any]:
+        """Every review thread, review and comment of the PR (all pages, or an error)."""
+        owner, name = self.repo.split("/", 1)
+        result: dict[str, Any] = {"author": ""}
+        for key, connection in self.REVIEW_CONNECTIONS.items():
+            field = connection.split("(", 1)[0]
+            query = (
+                "query($owner: String!, $name: String!, $number: Int!, $after: String) {"
+                " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
+                f" author {{ login }} {connection} }} }} }}"
+            )
+            nodes: list[Any] = []
+            after: str | None = None
+            for _ in range(self.MAX_REVIEW_PAGES):
+                data = self._graphql(
+                    query, {"owner": owner, "name": name, "number": number, "after": after}
+                )
+                pr = data["repository"]["pullRequest"]
+                result["author"] = (pr["author"] or {}).get("login", "")
+                page = pr[field]
+                nodes.extend(page["nodes"])
+                if not page["pageInfo"]["hasNextPage"]:
+                    break
+                after = page["pageInfo"]["endCursor"]
+            else:
+                raise GhError(
+                    f"PR #{number} 的 {field} 超过 {self.MAX_REVIEW_PAGES} 页，未读全，拒绝落地"
+                )
+            result[key] = nodes
+        return result
 
     # ------------------------------------------------------------ workflows
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool:
@@ -333,27 +376,71 @@ class GhCli:
     def run_and_wait(
         self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
     ) -> str:
-        """Dispatch ``workflow`` (its ``run-name`` must equal ``title``), wait, return the conclusion."""
+        """Dispatch ``workflow`` (its ``run-name`` must equal ``title``), wait, return the conclusion.
+
+        Returns only once the run is known to have ended. On timeout or API
+        failure the run is cancelled and its end confirmed; when that cannot be
+        confirmed (run not found, cancel or polling failing) ``RunNotTerminatedError``
+        is raised so the caller keeps its lease rather than letting a late
+        upload overwrite the next RC.
+        """
         self.dispatch(workflow, inputs)
-        deadline = time.monotonic() + timeout
-        run_id = None
-        while time.monotonic() < deadline:
-            time.sleep(10)
-            if run_id is None:
-                runs = self._api(
-                    self._r(
-                        f"actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=30"
-                    )
-                )
-                for run in (runs or {}).get("workflow_runs", []):
-                    if run.get("display_title") == title:
-                        run_id = run["id"]
-                        break
+        deadline = self.clock() + timeout
+        run_id: int | None = None
+        try:
+            while self.clock() < deadline:
+                self.sleep(self.poll_interval)
+                if run_id is None:
+                    run_id = self._find_run(workflow, title)
+                    continue
+                run = self._api(self._r(f"actions/runs/{run_id}"))
+                if run.get("status") == "completed":
+                    return run.get("conclusion") or "unknown"
+            problem = f"{timeout:.0f} 秒内未结束"
+        except GhError as exc:
+            problem = f"查询失败（{exc}）"
+        if run_id is None:
+            try:
+                run_id = self._find_run(workflow, title)
+            except GhError:
+                run_id = None
+        if run_id is None:
+            raise RunNotTerminatedError(
+                f"{workflow} 运行 {title!r} {problem}，且找不到该运行，无法确认它不会继续执行"
+            )
+        if self._cancel_and_confirm(run_id):
+            return "cancelled"
+        raise RunNotTerminatedError(f"{workflow} 运行 {run_id} {problem}，取消后仍未确认结束")
+
+    def _find_run(self, workflow: str, title: str) -> int | None:
+        runs = self._api(
+            self._r(f"actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=30")
+        )
+        for run in (runs or {}).get("workflow_runs", []):
+            if run.get("display_title") == title:
+                return run["id"]
+        return None
+
+    def _cancel_and_confirm(self, run_id: int) -> bool:
+        """Cancel (force-cancel if needed) and wait until GitHub reports the run completed."""
+        deadline = self.clock() + self.cancel_timeout
+        forced = False
+        # A 409 when it already finished is fine: the status below decides.
+        with contextlib.suppress(GhError):
+            self._api(self._r(f"actions/runs/{run_id}/cancel"), method="POST")
+        while self.clock() < deadline:
+            self.sleep(self.poll_interval)
+            try:
+                run = self._api(self._r(f"actions/runs/{run_id}"))
+            except GhError:
                 continue
-            run = self._api(self._r(f"actions/runs/{run_id}"))
             if run.get("status") == "completed":
-                return run.get("conclusion") or "unknown"
-        return "timed_out"
+                return True
+            if not forced and self.clock() > deadline - self.cancel_timeout / 2:
+                forced = True
+                with contextlib.suppress(GhError):
+                    self._api(self._r(f"actions/runs/{run_id}/force-cancel"), method="POST")
+        return False
 
     # -------------------------------------------------------------- webhook
     def notify(self, payload: dict[str, Any]) -> str:

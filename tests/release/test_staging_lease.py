@@ -8,6 +8,7 @@ import pytest
 from scripts.release import deploy, lease
 from scripts.release.branches import create_release
 from scripts.release.git import Git
+from scripts.release.github import GhError, RunNotTerminatedError
 from scripts.release.rc import create_rc
 from scripts.release.seal import seal
 from scripts.release.versions import ReleaseError, Version
@@ -194,3 +195,49 @@ def test_cli_production_does_not_promote_frontend_after_failed_check(
     args = cli.build_parser().parse_args(["deploy", "production", "v1.0.0"])
     assert cli.cmd_deploy(repo.git, gh, args) == deploy.PUBLIC_HEALTH_FAILED
     assert gh.dispatched == []  # webapp-promote.yml not triggered
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RunNotTerminatedError("取消后仍未确认结束"), GhError("HTTP 502 while dispatching")],
+)
+def test_unconfirmed_frontend_run_keeps_the_lease(
+    repo: Repo, gh: FakeGitHub, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """Upload timed out / API failed mid-upload: the lease stays, the next RC cannot interleave."""
+    a, b = _two_rcs(repo, gh)
+    calls: list[str | None] = []
+
+    def stuck(*args: object, **kwargs: object) -> str:
+        raise failure
+
+    monkeypatch.setattr(gh, "run_and_wait", stuck)
+
+    def host(
+        args: list[str], stdin: str | None, env: dict[str, str] | None
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(stdin)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    result = deploy.release_staging(
+        repo.git,
+        gh,
+        deploy.TARGETS["staging"],
+        "v1.0.0-rc.1",
+        scenarios=None,
+        accept=True,
+        run=host,
+        accept_run=lambda argv: 0,
+        log=lambda _: None,
+    )
+    assert result.code == deploy.LEASE_KEPT
+    assert any("lease release" in line for line in result.lines)  # recovery entry
+    assert calls == []  # backend untouched
+    kept = lease.read_lease(repo.git)
+    assert kept is not None
+    assert kept.sha == a
+    # The next RC can neither take staging nor upload its frontend meanwhile.
+    with pytest.raises(ReleaseError, match="占用"):
+        lease.acquire(Git(repo.dev), b, "v1.1.0-rc.1")
+    with pytest.raises(ReleaseError, match="拒绝覆盖"):
+        lease.check(Git(repo.dev), b)
