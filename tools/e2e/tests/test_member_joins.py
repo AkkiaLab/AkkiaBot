@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from telethon import errors, types
 
 from akkiabot_e2e import cli
 from akkiabot_e2e.config import E2EConfig
-from akkiabot_e2e.errors import InviteFailed
+from akkiabot_e2e.errors import FloodWait, InviteFailed
 from akkiabot_e2e.pacing import Pacer
 from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.report import Report
@@ -23,6 +24,7 @@ from akkiabot_e2e.testing import (
     BOT,
     MEMBER,
     Connector,
+    FakeAccount,
     FakeRegistry,
     FakeTelegram,
     FakeTraces,
@@ -145,6 +147,60 @@ async def test_prepare_stops_when_owner_cannot_add_the_member(
     assert "准备阶段失败" in report.detail
     assert "PEER_FLOOD" in report.detail
     assert "join_by_link" not in world.calls
+    # Every scenario is still listed: the selected one as aborted, the rest unselected.
+    by_name = {r.name: r for r in report.results}
+    assert set(by_name) == {s.name for s in SCENARIOS}
+    assert (by_name["m2.help"].status, by_name["m2.help"].skip_reason) == ("skipped", "aborted")
+    assert {r.skip_reason for n, r in by_name.items() if n != "m2.help"} == {"not_selected"}
+    assert report.summary == {"passed": 0, "failed": 0, "skipped": len(SCENARIOS)}
+    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 0}
+    data = json.loads(report.to_json(Redactor()))
+    assert data["summary"] == report.summary
+    assert data["results"][0]["skip_reason"] == "aborted"
+    md = report.to_markdown(Redactor())
+    assert f"实际通过 0 / 失败 0 / 跳过 {len(SCENARIOS)}（不计为通过）" in md
+    assert "| `m2.help` /help 返回命令列表 | M2 | ⏭️ skipped | 运行中止：准备阶段失败" in md
+    assert "成员通过链接入群 0 次，群主拉人 0 次" in md
+
+
+async def test_prepare_rate_limit_lists_scenarios_and_keeps_join_counts(
+    world: FakeTelegram, config: E2EConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner adds the member, then the membership check hits a long flood wait.
+    original = FakeAccount.participant_role
+
+    async def participant_role(self: FakeAccount, chat_id: int, user_id: int):
+        if user_id == MEMBER.id and "invite" in self.world.calls:
+            members = self.world.chats[chat_id].members
+            if MEMBER.id in members:
+                raise FloodWait(3600)
+        return await original(self, chat_id, user_id)
+
+    monkeypatch.setattr(FakeAccount, "participant_role", participant_role)
+
+    report = await _run(world, config, ["m4.ban", "m2.service-message"])
+
+    assert report.status == "failed"
+    assert "准备阶段失败" in report.detail
+    by_name = {r.name: r for r in report.results}
+    assert [r.name for r in report.results[:2]] == ["m4.ban", "m2.service-message"]
+    for name in ("m4.ban", "m2.service-message"):
+        assert (by_name[name].status, by_name[name].skip_reason) == ("skipped", "rate_limited")
+    assert by_name["m2.help"].skip_reason == "not_selected"
+    # The add completed before the run stopped: it is counted.
+    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 1}
+    (event,) = report.flood_waits
+    assert (event["method"], event["seconds"], event["aborted"]) == ("participant_role", 3600, True)
+    data = json.loads(report.to_json(Redactor()))
+    assert data["joins"]["owner_added_member"] == 1
+    assert data["summary"] == {"passed": 0, "failed": 0, "skipped": len(SCENARIOS)}
+    md = report.to_markdown(Redactor())
+    assert (
+        "| `m4.ban` /ban 封禁成员并删除其历史消息 | M4 | ⏭️ skipped | 限流中止：准备阶段因限流中止"
+        in md
+    )
+    assert "成员通过链接入群 0 次，群主拉人 1 次" in md
+    assert "超过上限，中止" in md
 
 
 async def test_flood_waits_are_itemised(world: FakeTelegram, config: E2EConfig) -> None:

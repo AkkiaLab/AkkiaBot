@@ -84,6 +84,8 @@ async def run_acceptance(
         allow_create = True
     pacer = pacer or Pacer(max_wait=config.flood_max_wait, send_interval=config.send_interval)
     report = Report(run_id=run_id, status="failed", started_at=datetime.now(UTC).isoformat())
+    member_id: int | None = None
+    """Set once the member account's identity is confirmed (counts its joins)."""
     async with AsyncExitStack() as stack:
         try:
             admin = PacedAccount(await connect("admin", config.admin_session), pacer, "admin")
@@ -93,6 +95,7 @@ async def run_acceptance(
 
             admin_user, member_user = await admin.me(), await member.me()
             check_identities(config, admin_user, member_user)
+            member_id = member_user.id
             bot = await admin.resolve_user(config.bot_username)
             if not bot.is_bot:
                 raise SafetyError(f"@{config.bot_username} 不是 bot 账号")
@@ -113,7 +116,14 @@ async def run_acceptance(
             )
         except (E2EError, OSError) as exc:
             report.detail = f"准备阶段失败：{exc}"
-            _record_pacing(report, pacer, None)
+            # Every scenario is still listed: selected ones as not run because
+            # of the actual cause, the others as not selected.
+            if isinstance(exc, RateLimitExceeded):
+                cause = ("rate_limited", "准备阶段因限流中止，未执行")
+            else:
+                cause = ("aborted", "准备阶段失败，运行中止，未执行")
+            _list_unrun(report, scenarios, catalog or scenarios, cause)
+            _record_pacing(report, pacer, member_id)
             report.finish()
             return report
 
@@ -146,9 +156,28 @@ async def run_acceptance(
         report.not_automated = list(dict.fromkeys(ctx.not_automated))
         if message_log is not None and ctx.plain_message_ids:
             report.results.append(await _check_message_log(ctx, message_log))
-    _record_pacing(report, pacer, member_user.id)
+    _record_pacing(report, pacer, member_id)
     report.finish()
     return report
+
+
+def _list_unrun(
+    report: Report,
+    scenarios: Sequence[Scenario],
+    catalog: Sequence[Scenario],
+    cause: tuple[str, str],
+) -> None:
+    """Report every scenario as skipped when the run stopped before any of them ran."""
+    selected = {s.name for s in scenarios}
+    for scenario in [*scenarios, *(s for s in catalog if s.name not in selected)]:
+        result = ScenarioResult(
+            scenario.name, scenario.milestone, scenario.description, status="skipped"
+        )
+        if scenario.name in selected:
+            result.skip_reason, result.detail = cause
+        else:
+            result.skip_reason = "not_selected"
+        report.results.append(result)
 
 
 def _record_pacing(report: Report, pacer: Pacer, member_id: int | None) -> None:
