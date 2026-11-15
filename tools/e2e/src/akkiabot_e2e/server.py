@@ -61,6 +61,7 @@ class ManagedServer:
         *,
         command: Sequence[str] = ("akkiabot",),
         ready_timeout: float = 60.0,
+        extra_env: Mapping[str, str] | None = None,
     ) -> None:
         self.workdir = workdir
         self.db_path = workdir / "bot.sqlite3"
@@ -69,6 +70,8 @@ class ManagedServer:
         self.env = server_env(
             base_env, db_path=self.db_path, port=self.port, metrics_port=free_port()
         )
+        # Run-specific settings (e.g. the local Mini App with Turnstile test keys).
+        self.env.update(extra_env or {})
         self.command = list(command)
         self.ready_timeout = ready_timeout
         self._process: subprocess.Popen[bytes] | None = None
@@ -105,6 +108,22 @@ class ManagedServer:
     async def __aexit__(self, *_: object) -> None:
         await self.stop()
 
+    @property
+    def api_base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    async def restart(self, overrides: Mapping[str, str]) -> None:
+        """Stop ``serve``, apply ``overrides`` and start it again on the same
+        port and database (migrations are re-run, a no-op)."""
+        log = self._log
+        if log is None:
+            raise E2EError("bot 进程尚未启动")
+        process, self._process = self._process, None
+        if process is not None:
+            await _terminate(process)
+        self.env.update(overrides)
+        await self._start(log)
+
     async def _wait_ready(self) -> None:
         process = self._process
         if process is None:
@@ -129,19 +148,25 @@ class ManagedServer:
 
     async def stop(self) -> None:
         process, self._process = self._process, None
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                await asyncio.to_thread(process.wait, 20)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                await asyncio.to_thread(process.wait)
+        if process is not None:
+            await _terminate(process)
         if self._log is not None:
             self._log.close()
             self._log = None
 
     async def logged_message_ids(self, chat_id: int, message_ids: Sequence[int]) -> set[int]:
         return await asyncio.to_thread(query_message_log, self.db_path, chat_id, message_ids)
+
+
+async def _terminate(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.to_thread(process.wait, 20)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        await asyncio.to_thread(process.wait)
 
 
 def query_message_log(db_path: Path, chat_id: int, message_ids: Sequence[int]) -> set[int]:

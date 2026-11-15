@@ -230,3 +230,22 @@ async def test_managed_server_reports_failed_migration(tmp_path: Path) -> None:
     with pytest.raises(E2EError, match="退出码 3"):
         async with ManagedServer(tmp_path, env, command=[sys.executable, str(script)]):
             pass
+
+
+async def test_managed_server_extra_env_and_restart(tmp_path: Path) -> None:
+    script = tmp_path / "fake_akkiabot.py"
+    script.write_text(FAKE_SERVER.replace("flush=True)", "os.environ.get('MARK'), flush=True)"))
+    server = ManagedServer(
+        tmp_path, live_env(), command=[sys.executable, str(script)], extra_env={"MARK": "first"}
+    )
+    async with server:
+        first = server._process
+        await server.restart({"MARK": "second"})
+        assert server._process is not first
+        assert first is not None
+        assert first.poll() is not None
+        port = server.port
+    assert server.port == port
+    log = server.log_path.read_text()
+    assert log.index("first") < log.index("second")
+    assert log.count("migrated") == 2
