@@ -16,8 +16,11 @@
 
 - 一律使用 Telegram 测试环境（MTProto 测试 DC、Bot API `/test/` 端点、测试环境 BotFather），无法使用时报错阻塞，不回退生产；产品侧开关为 `TELEGRAM_TEST_ENVIRONMENT`。
 - 分层验收（负责人于 2026-11-14 确认，取代“每个需求都完整真实验收”和“staging 客户端验收必须人工完成”的旧要求）：
-  - **单个需求 / PR**：只验证受影响的部分。涉及真实 Telegram 行为时用 `just e2e --scenarios <受影响的里程碑或场景>`（本机 `--serve`），把报告 `report.md` 贴回对应 issue。
-  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行全量自动化验收：`just e2e-staging --record-status <master sha>`。通过后写入 commit status `staging-acceptance`，并在发版记录中写明版本和结果。
+  - **单个需求 / PR**：只验证改动**明确涉及**的场景（规则适用于所有场景，负责人于 BOT-28 确认）。用 `just e2e --scenarios <场景>`（本机 `--serve`，只复用固定测试群、不新建群），把报告 `report.md` 贴回对应 issue。
+    - 无法判断是否受影响时默认跳过；共享配置、handler 注册、依赖升级等也按不受影响处理，除非确实改到了相关场景的代码。间接影响留给 staging 全量发现。
+    - PR 描述列出“已验证的场景”和“未验证、留给 staging 全量”的部分。报告中未选中的场景记为跳过，不计为通过。
+    - 选择规则和运行间隔见 `docs/e2e-acceptance.md` §6“PR 级验收的场景选择”和 §7“入群限流与运行间隔”。
+  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行全量自动化验收：`just e2e-staging --record-status <master sha>`。只有全部场景实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本和结果。
   - **prod 发布**：只提升已通过 staging 验收的 sha（前端用 `webapp-promote.yml`）。只做环境配置检查、健康检查和必要冒烟，不重复全量验收。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
 - 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
