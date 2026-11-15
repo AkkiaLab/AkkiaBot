@@ -133,6 +133,76 @@ def test_add_ids_merges_and_drops_placeholder() -> None:
     assert labels(op, "e2e-telegram")["allowed_chat_ids"] == ("STRING", "-1002,-1001")
 
 
+def test_remove_ids_removes_only_given_ids_and_reads_back() -> None:
+    op = FakeOp(
+        {"e2e-telegram": [{"id": "x", "label": "allowed_chat_ids", "value": "-1003,-1002,-1001"}]}
+    )
+    vault = Vault(run=op)
+    assert vault.read_ids("e2e-telegram", "allowed_chat_ids") == [-1003, -1002, -1001]
+    assert vault.remove_ids("e2e-telegram", "allowed_chat_ids", {-1002, -9999}) == [-1003, -1001]
+    assert labels(op, "e2e-telegram")["allowed_chat_ids"] == ("STRING", "-1003,-1001")
+    assert vault.read_ids("e2e-telegram", "missing_field") == []
+
+
+class FlakyOp(FakeOp):
+    """``FakeOp`` whose n-th call of a verb (1-based) fails like a network error."""
+
+    def __init__(self, items: dict[str, list[dict]], fail_on: dict[str, set[int]]) -> None:
+        super().__init__(items)
+        self.fail_on = fail_on
+        self.counts: dict[str, int] = {}
+
+    def __call__(self, argv: Sequence[str], stdin: bytes | None) -> tuple[int, bytes, bytes]:
+        verb = "read" if argv[1] == "read" else argv[2]
+        self.counts[verb] = self.counts.get(verb, 0) + 1
+        if self.counts[verb] in self.fail_on.get(verb, set()):
+            self.calls.append((list(argv), stdin))
+            return 1, b"", b"[ERROR] Post https://my.1password.com: connection reset"
+        return super().__call__(argv, stdin)
+
+
+ALLOWED = [{"id": "x", "label": "allowed_chat_ids", "value": "-1003,-1002,-1001"}]
+
+
+def edits(op: FakeOp) -> int:
+    return sum(1 for argv, _ in op.calls if argv[1:3] == ["item", "edit"])
+
+
+def test_id_list_read_failure_never_writes() -> None:
+    """A failed read must not look like an empty list (it would wipe the allowlist)."""
+    for method, ids in (("remove_ids", {-1002}), ("add_ids", [-1004])):
+        op = FlakyOp({"e2e-telegram": ALLOWED}, {"get": {1}, "read": {1}})
+        with pytest.raises(ConfigError, match="读取 1Password 条目"):
+            getattr(Vault(run=op), method)("e2e-telegram", "allowed_chat_ids", ids)
+        assert edits(op) == 0
+        assert labels(op, "e2e-telegram")["allowed_chat_ids"][1] == "-1003,-1002,-1001"
+
+
+def test_prune_reread_failure_after_delete_keeps_allowlist() -> None:
+    from akkiabot_e2e.prune import VaultAllowlist
+
+    # Planning read (get #1) succeeds; the re-read before removing (get #2) fails.
+    op = FlakyOp({"e2e-telegram": ALLOWED}, {"get": {2}})
+    allowlist = VaultAllowlist(Vault(run=op))
+    assert allowlist.chat_ids() == {-1003, -1002, -1001}
+    with pytest.raises(ConfigError):
+        allowlist.remove({-1002})
+    assert edits(op) == 0
+    assert labels(op, "e2e-telegram")["allowed_chat_ids"][1] == "-1003,-1002,-1001"
+
+
+def test_empty_readback_needs_a_successful_read() -> None:
+    pending = [{"id": "p", "label": "pending_group_operation", "value": "0123abcd4567"}]
+    # `op read` fails and the confirming item read fails too: not verified.
+    op = FlakyOp({"e2e-telegram": pending}, {"read": set(range(1, 10)), "get": set(range(2, 10))})
+    with pytest.raises(ConfigError, match="回读"):
+        Vault(run=op, sleep=lambda _: None).clear_field("e2e-telegram", "pending_group_operation")
+    # `op read` fails but the item shows the field empty: verified.
+    op = FlakyOp({"e2e-telegram": pending}, {"read": set(range(1, 10))})
+    Vault(run=op, sleep=lambda _: None).clear_field("e2e-telegram", "pending_group_operation")
+    assert labels(op, "e2e-telegram")["pending_group_operation"][1] == ""
+
+
 def test_group_registry_records_and_clears_the_pending_operation() -> None:
     op = FakeOp({"e2e-telegram": [{"id": "c", "label": "allowed_chat_ids", "value": "-1001"}]})
     registry = VaultGroupRegistry(Vault(run=op))

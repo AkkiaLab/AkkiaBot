@@ -31,7 +31,7 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | --- | --- |
 | 测试账号登录后，通过测试环境的 BotFather 创建测试 bot，并把 token 和用户名写回 1Password | 第三方客户端**不能注册新账号**（Telethon 的 `sign_up` 已被 Telegram 禁止）。测试环境账号需要负责人用官方客户端的测试模式注册，首次登录时由负责人输入验证码和两步验证密码 |
 | 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | 真实 Turnstile 挑战的完成及其后的解除禁言：需要真人在浏览器中完成。工具不求解挑战，也不使用 Turnstile 测试站点 key；`m7.captcha` 把它列为“未自动化”，不计入通过 |
-| 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 删除测试群、清理历史消息：工具从不执行这些操作，需要时另行确认 |
+| 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 清理历史消息、删除常驻测试群：工具从不执行。唯一例外是 6.3 节按负责人授权的范围每周清理旧的 staging 发版验收群 |
 | 群主在群内发 `/config`，用深链在与 bot 的私聊中打开配置菜单并点击开关按钮；群主回复成员消息执行 `/warn`、`/ban`，检查封禁状态和历史消息删除，然后解除封禁、由群主把成员拉回群 | 开关回调被越权调用（例如伪造按钮数据）：用户账号只能点击自己收到的按钮，由单元测试覆盖 |
 | 检查回复文本和行内代码实体（确认 MarkdownV2 已正确渲染，没有残留反斜杠） | |
 | 成员退群后再入群，检查两条系统消息都被 bot 删除 | |
@@ -297,9 +297,35 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 
 - 针对持久化被测 bot 的运行一律使用 `--fresh-group`，让每次运行的群内状态与首次运行一致。不要通过清库、删除或重置成员计数等方式“恢复新成员”，也不要为了验收调高豁免阈值或把 `skipped`/`exempt` 当作通过。
 - 只验收部分场景时同样适用，例如连续复验反垃圾：`just e2e-staging --scenarios m5`。
-- 每次运行留下一个测试群（工具从不删除群），两个测试账号的已加入群数随之增长。Telegram 对单个账号可加入的群数有上限（普通账号约 500 个），接近上限前需要清理旧群；删除群属于删除操作，须先报告范围并经负责人确认。
+- 每次运行留下一个测试群，两个测试账号的已加入群数随之增长（Telegram 对单个账号可加入的群数有上限，普通账号约 500 个）。旧群按 6.3 节每周清理，只保留最近 2 个。
 - 建群中断后遗留的、不在白名单中的同名群不会被后续运行认领（每次运行的标题都不同）；1Password 中残留的待恢复标识会被下一次建群沿用，不影响运行。
 - 本地 `just e2e --serve` 每次使用新数据库，不需要 `--fresh-group`。
+
+### 6.3 每周清理旧的 staging 发版验收群
+
+负责人已授权（BOT-28/BOT-30）：每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
+
+**触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub GraphQL API 逐页检查 master 的全部提交，看过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态（不按提交时间截断，重新验收旧提交也算）。API 出错或提交数超出检查上限时，workflow 直接失败，不会当作“无发版”：
+
+- 有，就 POST 调用 Multica autopilot 的 webhook，由 Engineer 在本机执行清理。URL 存在 Actions secret `MULTICA_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；
+- 没有，就直接结束，不占用 Multica 运行次数；
+- workflow 不接触 Telegram 会话。没有用 `--record-status` 的手动 staging 运行不会被检测到，它们留下的群会在下一次有发版的那周一并清理。
+
+**清理**（只能在持有测试账号会话的机器上执行）：
+
+```bash
+just e2e-prune-groups            # dry-run：只列出，不删除
+just e2e-prune-groups --apply    # 真正删除
+```
+
+- 范围：群主测试账号创建、标题严格为“AkkiaBot Staging 发版验收群 <运行标识>”（运行标识形如 `20261115T012000Z-1a2b3c`）、并且 id 在 `allowed_chat_ids` 中的超级群；
+- 按运行标识中的 UTC 时间（即建群时间）保留最近 2 个，作为最近发版的证据；
+- 不动常驻测试群（“AkkiaBot E2E 自动验收群”）和其他标题不符合上述格式的群；标题符合但不在白名单中的群（例如建群中断遗留的）不删除，只在输出中列出，按 6.1 节人工处理；
+- 删除后从 1Password `e2e-telegram/allowed_chat_ids` 中移除对应 id，并回读校验。中途失败（如限流超过 `E2E_FLOOD_MAX_WAIT`）时立即停止，已删除的群仍会从白名单中移除，退出码为 1；
+- 输出只包含数量和运行标识，不包含群 id；
+- 与 `run` 使用同一把验收锁，不会与正在进行的验收并发。
+
+**Multica autopilot**：由 Leader 在工作区创建（webhook 触发，指派给 Engineer）。任务内容：先执行 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，把两次输出（数量和运行标识）报告到任务中。
 
 ## 7. 安全约束
 
@@ -307,14 +333,14 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 - **命令行参数中不出现任何凭据**：令牌通过环境变量传给 `op`，写入 vault 的值通过标准输入传递。不要使用 `op item edit ... "field[password]=值"` 这类赋值参数。
 - **显式脱敏**：工具在输出和写入报告前，会把已知密钥（会话、`api_hash`、bot token、ipinfo token、Sentry DSN、服务账号令牌）替换为 `[REDACTED]`；`Secret` 类型的 `repr` 不显示原值。这符合仓库的日志约定：由调用方改写已知密钥，日志模块本身不做自动识别或脱敏。
 - **第三方日志**：Telethon、`httpx`、`httpcore` 的日志级别固定为 WARNING（Bot API 的 URL 中含有 token）。被测 bot 沿用 M2 的做法（见 README），它的输出写入权限为 600 的 `server.log`。
-- **会话只能串行使用**：同一会话如果同时从两个地方连接，Telegram 可能判定为 `AUTH_KEY_DUPLICATED` 并作废会话。工具在本机用同一把文件锁（`~/.local/state/akkiabot-e2e/run.lock`）保护所有复用已有会话的入口（`run`、`bootstrap-bot`、`session-store`），覆盖从连接到断开的全过程，保证同一时间只有一个进程使用测试账号会话。**文件锁无法跨机器生效，同一时间只能在一台机器上运行验收。**
+- **会话只能串行使用**：同一会话如果同时从两个地方连接，Telegram 可能判定为 `AUTH_KEY_DUPLICATED` 并作废会话。工具在本机用同一把文件锁（`~/.local/state/akkiabot-e2e/run.lock`）保护所有复用已有会话的入口（`run`、`bootstrap-bot`、`session-store`、`prune-groups`），覆盖从连接到断开的全过程，保证同一时间只有一个进程使用测试账号会话。**文件锁无法跨机器生效，同一时间只能在一台机器上运行验收。**
 - **限流**：工具关闭了 Telethon 自带的自动等待，自行处理 `FLOOD_WAIT`（`run` 与 `bootstrap-bot` 的 BotFather 对话使用同一策略）：
   - 要求的等待时间不超过 `E2E_FLOOD_MAX_WAIT`（默认 120 秒）时，等待后重试，最多 3 次；
   - 超过上限时，停止本次验收，剩余场景标记为跳过（原因“限流中止”）；
   - 两次发送之间至少间隔 `E2E_SEND_INTERVAL`（默认 2 秒）；
   - 每次 FloodWait 的账号、方法、秒数和重试次数都写入报告（6 节“结果”），用于判断是哪类操作触发了限流。
 - **入群限流与运行间隔**：Telegram 按成员账号统计短时间内的入群次数（BOT-27：1 小时内 4 次全量运行后，每次链接入群需等待约 170 秒）。所以成员恢复和新群准备都改由群主拉人，只有 `m7.captcha`、`m2.service-message` 通过链接入群；PR 级只跑明确涉及的场景，通常不产生链接入群。两次全量验收之间仍至少间隔约 1 小时；失败后先冷却再重跑，不要连续重试。群主拉人同样可能被限流（`PEER_FLOOD`），此时如实报错停止，不回退为链接入群。
-- **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；从不删除群，也不清理历史消息。
+- **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；不清理历史消息。删除群只有 `prune-groups --apply` 一个入口，范围见 6.3 节。
 
 ## 8. Sentry
 

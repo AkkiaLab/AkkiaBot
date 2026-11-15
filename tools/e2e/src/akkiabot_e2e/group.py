@@ -7,7 +7,9 @@ Safety rules:
 * an existing group is used only if its id is in ``E2E_ALLOWED_CHAT_IDS``;
 * a group is created only with ``--create-group``, and never while a same-title
   group outside the allowlist exists (that may be one we created and failed to
-  register); it is never deleted, and its history is never cleared by this tool.
+  register); its history is never cleared by this tool, and it is never deleted
+  here (only ``prune-groups`` deletes old staging release groups, see
+  :mod:`akkiabot_e2e.prune`).
 
 Creating a group is a multi-step operation that can be interrupted half way, so
 it is made recoverable (see docs/e2e-acceptance.md, "建群的中断恢复"):

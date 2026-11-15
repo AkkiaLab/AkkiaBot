@@ -513,6 +513,21 @@ class FakeAccount:
             if c.creator_id == self.user.id and c.title == title
         ]
 
+    async def owned_supergroups_with_prefix(self, prefix: str) -> list[ChatRef]:
+        self._op("owned_supergroups_with_prefix")
+        return [
+            ChatRef(c.id, c.title)
+            for c in self.world.chats.values()
+            if c.creator_id == self.user.id and c.title.startswith(prefix)
+        ]
+
+    async def delete_supergroup(self, chat_id: int) -> None:
+        self._op("delete_supergroup")
+        chat = self._chat(chat_id)
+        if chat.creator_id != self.user.id:
+            raise E2EError("CHAT_ADMIN_REQUIRED")
+        del self.world.chats[chat_id]
+
     async def create_supergroup(self, title: str, about: str) -> ChatRef:
         self._op("create_supergroup")
         chat = self.world.add_chat(title, self.user)

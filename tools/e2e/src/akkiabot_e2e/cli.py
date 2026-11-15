@@ -1,7 +1,7 @@
 """``akkiabot-e2e`` command line.
 
 Subcommands: ``token-init``, ``op-exec``, ``check-env``, ``login``, ``session-store``,
-``bootstrap-bot``, ``run``, ``list``. Everything Telegram-facing talks to the
+``bootstrap-bot``, ``run``, ``prune-groups``, ``list``. Everything Telegram-facing talks to the
 Telegram **test environment** only. ``run`` sends test messages only when every
 required variable is present (otherwise it reports "skipped" with exit code
 77 — never success).
@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +41,13 @@ from akkiabot_e2e.group import VaultGroupRegistry
 from akkiabot_e2e.login import default_session_file, interactive_login
 from akkiabot_e2e.onepassword import default_token_file, op_exec, token_init
 from akkiabot_e2e.pacing import PacedAccount, Pacer
+from akkiabot_e2e.prune import (
+    KEEP,
+    STAGING_RELEASE_CHAT_TITLE,
+    GroupOwner,
+    VaultAllowlist,
+    prune_groups,
+)
 from akkiabot_e2e.redaction import Redactor, Secret
 from akkiabot_e2e.release import (
     DEFAULT_REPO,
@@ -121,6 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
             "staging 发版验收：先确认 E2E_WEBAPP_URL 的 version.json 就是该 commit，"
             "全量运行后把结果写为 GitHub commit status staging-acceptance"
         ),
+    )
+
+    prune = sub.add_parser(
+        "prune-groups",
+        help=(
+            f"清理旧的“{STAGING_RELEASE_CHAT_TITLE} <运行标识>”验收群，保留最近 {KEEP} 个；"
+            "默认只列出（dry-run）"
+        ),
+    )
+    mode = prune.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="只列出将删除的群（默认）")
+    mode.add_argument(
+        "--apply", action="store_true", help="真正删除，并从 allowed_chat_ids 中移除对应 id"
     )
 
     sub.add_parser("list", help="列出验收场景")
@@ -272,6 +292,36 @@ def _telethon_connect(api: ApiCredentials) -> Connect:
         return await connect_account(api, role, session)
 
     return connect
+
+
+def _owner_connect(api: ApiCredentials) -> Callable[[Secret], Awaitable[GroupOwner]]:
+    from akkiabot_e2e.telethon_transport import connect_account
+
+    async def connect(session: Secret) -> GroupOwner:
+        return await connect_account(api, "admin", session)
+
+    return connect
+
+
+async def _prune(env: Mapping[str, str], apply: bool) -> int:
+    api = load_api_credentials(env)
+    session = env.get("E2E_ADMIN_SESSION", "").strip()
+    if not session:
+        raise E2EError("缺少 E2E_ADMIN_SESSION（用 just e2e-prune-groups 从 1Password 注入）")
+    pacer = Pacer(
+        max_wait=env_float(env, "E2E_FLOOD_MAX_WAIT", 120.0),
+        send_interval=env_float(env, "E2E_SEND_INTERVAL", 2.0),
+    )
+    allowlist = VaultAllowlist(_vault())
+    # Same lock as `run`: never delete while an acceptance run uses the session / groups.
+    async with session_lock():
+        admin = await _owner_connect(api)(Secret(session))
+        try:
+            result = await prune_groups(admin, allowlist, pacer, apply=apply)
+        finally:
+            await admin.close()
+    print(result.to_text())
+    return EXIT_FAILED if result.error else EXIT_PASSED
 
 
 def _skipped_report(missing: list[str]) -> Report:
@@ -439,6 +489,9 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 return EXIT_PASSED
             case "run":
                 return _cmd_run(args, env)
+            case "prune-groups":
+                _setup_logging()
+                return asyncio.run(_prune(env, apply=args.apply))
     except (E2EError, ValueError) as exc:
         print(f"错误：{redact(str(exc))}", file=sys.stderr)
         return EXIT_USAGE
