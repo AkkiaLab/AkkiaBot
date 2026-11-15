@@ -31,3 +31,7 @@
 - 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。本地 `just e2e-turnstile-test-keys`（`m7.captcha-test-keys`）用 Cloudflare 官方测试 key 跑通通过/拒绝链路，报告单独标为“官方测试 key”，属于另一类证据，不能替代 staging 真实 widget 的证据（`docs/e2e-acceptance.md` §6.4）。
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。
+
+## PR 评审
+
+- PR 评审通知（BOT-35）：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
