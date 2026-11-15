@@ -162,7 +162,7 @@ async def test_new_member_spam_is_removed(
     assert notice["parse_mode"] == "MarkdownV2"
     assert notice["text"] == (
         "\\[Anti SPAM\\]\n内容命中反垃圾策略\n用户："
-        f"[Spam\\*Bot](tg://user?id={SPAMMER_ID})\n动作：删除消息、禁言"
+        f"[Sp…ot](tg://user?id={SPAMMER_ID})\n动作：删除消息、禁言"
     )
     async with session_scope(runtime.session_factory) as session:
         row = await MessageLogRepository(session).get(CHAT, spam["message_id"])
@@ -182,6 +182,27 @@ async def test_new_member_spam_is_removed(
     assert len(tracer.generations) == 2
     assert tracer.generations[-1]["start"]["prompt_version"] == "antispam-v1"
     assert tracer.generations[-1]["end"]["usage"].total_tokens == 128
+
+
+@pytest.mark.usefixtures("members")
+async def test_spam_notice_shows_only_a_name_fragment(
+    api: FakeBotApi, llm: FakeLlm, group: Group
+) -> None:
+    """The ad in the spammer's name / @username is not repeated by the notice (BOT-37)."""
+    await group.enable()
+    api.clear()
+    llm.queue(verdict_json(True, "gambling", 0.97))
+    advert = group.updates.user(
+        SPAMMER_ID, "vcc 虚拟卡番茄", last_name="0开卡费 政策置顶", username="spam_channel"
+    )
+    await group.process(group.updates.message("彩金", chat=group.chat, from_user=advert))
+
+    (restrict,) = api.calls_to("restrictChatMember")
+    assert int(restrict["user_id"]) == SPAMMER_ID
+    notice = api.calls_to("sendMessage")[0]["text"]
+    assert f"用户：[vc…置顶](tg://user?id={SPAMMER_ID})" in notice
+    assert "虚拟卡" not in notice
+    assert "spam_channel" not in notice
 
 
 async def test_check_does_not_block_update_processing(
@@ -400,7 +421,7 @@ async def test_admin_report_bans_directly(
     await _report(group, OWNER_ID, target)
     assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [SPAMMER_ID]
     assert api.sent_texts()[-1] == (
-        f"[Spam\\*Bot](tg://user?id={SPAMMER_ID}) 已被封禁（垃圾信息），删除了 1 条消息。"
+        f"[Sp…ot](tg://user?id={SPAMMER_ID}) 已被封禁（垃圾信息），删除了 1 条消息。"
     )
     assert llm.requests == []
     assert metric_value("akkiabot_command_total", command="spam", result="admin_ban") >= 1
@@ -425,8 +446,7 @@ async def test_member_report_judged_spam_bans(
     (edit,) = api.calls_to("editMessageText")
     assert edit["parse_mode"] == "MarkdownV2"
     assert edit["text"] == (
-        f"举报成立：判定为垃圾信息，已封禁 [Spam\\*Bot](tg://user?id={SPAMMER_ID})，"
-        "删除了 1 条消息。"
+        f"举报成立：判定为垃圾信息，已封禁 [Sp…ot](tg://user?id={SPAMMER_ID})，删除了 1 条消息。"
     )
     async with session_scope(runtime.session_factory) as session:
         member = await ChatMemberRepository(session).get(CHAT, SPAMMER_ID)

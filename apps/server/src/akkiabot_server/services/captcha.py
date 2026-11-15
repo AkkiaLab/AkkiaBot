@@ -57,7 +57,7 @@ from akkiabot_core.observability import (
     log_context,
     observe_captcha_duration,
 )
-from akkiabot_core.telegram import InitDataError, WebAppInitData, parse_init_data
+from akkiabot_core.telegram import InitDataError, WebAppInitData, parse_init_data, public_name
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.moderation import ModerationApiError, RateLimitedError
 from akkiabot_server.services.start_payload import StartPayloadStore
@@ -101,12 +101,6 @@ class CaptchaApi(Protocol):
     async def delete_message(self, chat_id: int, message_id: int) -> None: ...
 
     async def answer_web_app_query(self, query_id: str, text: str) -> None: ...
-
-
-def redact_name(first_name: str) -> str:
-    """Display name for the public prompt: keep 2 chars at each end of long names."""
-    name = first_name.strip() or "新成员"
-    return f"{name[:2]}…{name[-2:]}" if len(name) > 4 else name
 
 
 class JoinOutcome(StrEnum):
@@ -292,7 +286,7 @@ class CaptchaService:
         )
         try:
             message_id = await api.send_prompt(
-                chat_id, user_id, redact_name(first_name), token, self.timeout
+                chat_id, user_id, public_name(first_name, "新成员"), token, self.timeout
             )
         except (ModerationApiError, RateLimitedError) as exc:
             # The member stays muted; the timeout job closes the challenge.

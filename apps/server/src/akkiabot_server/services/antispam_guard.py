@@ -41,7 +41,7 @@ from akkiabot_core.observability import (
     count_telegram_api_error,
     observe_antispam_llm,
 )
-from akkiabot_core.telegram import escape_markdown_v2
+from akkiabot_core.telegram import escape_markdown_v2, public_name
 from akkiabot_server.services.background import BackgroundTasks
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.moderation import (
@@ -89,8 +89,13 @@ class AntiSpamApi(ModerationApi, Protocol):
 
 
 def mention(name: str, user_id: int) -> str:
-    """MarkdownV2 mention link."""
+    """MarkdownV2 mention link showing the full name (administrators only)."""
     return f"[{_e(name or str(user_id))}](tg://user?id={user_id})"
+
+
+def target_mention(name: str, user_id: int) -> str:
+    """MarkdownV2 mention of the handled user: only a fragment of the name is shown."""
+    return f"[{_e(public_name(name))}](tg://user?id={user_id})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,7 +292,7 @@ class AntiSpamGuard:
         ]
         text = (
             _e("[Anti SPAM]\n内容命中反垃圾策略\n用户：")
-            + mention(message.sender_name, message.sender_id)
+            + target_mention(message.sender_name, message.sender_id)
             + _e(f"\n动作：{'、'.join(actions)}")
         )
         if not (deleted and muted):
@@ -366,7 +371,7 @@ class AntiSpamGuard:
         self, api: AntiSpamApi, report: SpamReport, verdict: SpamVerdict
     ) -> ReportOutcome:
         await self._record(report.chat_id, report.message_id, verdict, text=report.text)
-        target = mention(report.target_name, report.target_id)
+        target = target_mention(report.target_name, report.target_id)
         try:
             result = await self._moderation.ban(
                 api,

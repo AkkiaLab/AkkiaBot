@@ -33,7 +33,7 @@ from akkiabot_core.db import (
 )
 from akkiabot_core.db.types import utcnow
 from akkiabot_core.observability import configure_logging, get_log_context
-from akkiabot_core.telegram import sign_init_data
+from akkiabot_core.telegram import public_name, sign_init_data
 from akkiabot_server.api import create_app
 from akkiabot_server.bot.captcha import (
     START_EXPIRED,
@@ -45,7 +45,7 @@ from akkiabot_server.bot.captcha import (
     prompt_text,
 )
 from akkiabot_server.runtime import Runtime
-from akkiabot_server.services.captcha import CaptchaRejectedError, RejectReason, redact_name
+from akkiabot_server.services.captcha import CaptchaRejectedError, RejectReason
 from akkiabot_server.services.chat_settings import Toggle
 from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
@@ -287,9 +287,9 @@ async def test_join_mutes_and_posts_redacted_prompt(flow: Flow, api: FakeBotApi)
 @pytest.mark.parametrize(
     ("name", "shown"), [("Bob", "Bob"), ("Alice", "Al…ce"), ("  ", "新成员"), ("<b>x</b>", "<b…b>")]
 )
-def test_redact_name(name: str, shown: str) -> None:
-    assert redact_name(name) == shown
-    assert "&lt;b" in prompt_text(1, redact_name("<b>x</b>"), 300)
+def test_prompt_name(name: str, shown: str) -> None:
+    assert public_name(name, "新成员") == shown
+    assert "&lt;b" in prompt_text(1, public_name("<b>x</b>"), 300)
 
 
 async def test_join_ignored_when_captcha_disabled(flow: Flow, api: FakeBotApi) -> None:

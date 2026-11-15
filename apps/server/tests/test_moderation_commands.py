@@ -144,6 +144,25 @@ async def test_ban_permission_matrix(
             assert api.sent_texts() == [expected]
 
 
+async def test_ban_notice_shows_only_a_name_fragment(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    """Ad-style names (full name + @username) never appear in the public notice."""
+    advert = group.updates.user(
+        TARGET_ID, "*vcc 虚拟卡", last_name="@spam_channel 加群_", username="spam_channel"
+    )
+    target = group.updates.message_dict(chat=group.chat, from_user=advert, text="buy now")
+    api.clear()
+
+    await runtime.application.process_update(group.command("/ban", by=OWNER_ID, reply_to=target))
+
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
+    text = api.sent_texts()[-1]
+    assert text.startswith(f"[\\*v…群\\_](tg://user?id={TARGET_ID}) 已被封禁")
+    assert "spam" not in text
+    assert "虚拟卡" not in text
+
+
 async def test_ban_deletes_history_and_records_restriction(
     runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
 ) -> None:
@@ -159,8 +178,8 @@ async def test_ban_deletes_history_and_records_restriction(
     assert _deleted_ids(api) == sorted(m["message_id"] for m in posted)
     reply = api.calls_to("sendMessage")[-1]
     assert reply["parse_mode"] == "MarkdownV2"
-    # The name is escaped inside the mention link.
-    assert reply["text"] == (f"[Spam\\*Bot](tg://user?id={TARGET_ID}) 已被封禁，删除了 3 条消息。")
+    # Only a fragment of the name is shown (BOT-37).
+    assert reply["text"] == (f"[Sp…ot](tg://user?id={TARGET_ID}) 已被封禁，删除了 3 条消息。")
     async with session_scope(runtime.session_factory) as session:
         member = await ChatMemberRepository(session).get(CHAT, TARGET_ID)
         assert member is not None
@@ -263,7 +282,7 @@ async def test_warn_until_banned(
             group.command("/warn", by=ADMIN_ID, reply_to=posted[-1])
         )
 
-    mention = f"[Spam\\*Bot](tg://user?id={TARGET_ID})"
+    mention = f"[Sp…ot](tg://user?id={TARGET_ID})"
     assert api.sent_texts() == [
         f"{mention} 你已被警告 1/3 次",
         f"{mention} 你已被警告 2/3 次",
