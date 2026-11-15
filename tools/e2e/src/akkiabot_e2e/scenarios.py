@@ -262,6 +262,60 @@ async def service_message_scenario(ctx: ScenarioContext) -> None:
         )
 
 
+#: The bot's private notice to someone who asked to join (same text as the legacy bot).
+JOIN_REQUEST_TEXT = "Hello, please wait for the admin to approve your request."
+
+
+async def _last_private_id(ctx: ScenarioContext) -> int:
+    latest = await ctx.member.history(ctx.bot.id, min_id=0, limit=1)
+    return latest[-1].id if latest else 0
+
+
+async def wait_private_notice(ctx: ScenarioContext, after: int) -> Msg:
+    """The bot's next message in its private chat with the member."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ctx.reply_timeout
+    while True:
+        for msg in await ctx.member.history(ctx.bot.id, min_id=after):
+            if msg.sender_id == ctx.bot.id:
+                return msg
+        if loop.time() >= deadline:
+            raise CheckFailed(
+                f"申请入群后 {ctx.reply_timeout:g} 秒内成员没有收到 bot 的私聊等待提示"
+            )
+        await asyncio.sleep(ctx.poll_interval)
+
+
+async def join_request_scenario(ctx: ScenarioContext) -> None:
+    """Outside the group, the member asks to join through an approval link: before
+    any admin decides, the bot tells the member in private to wait. The bot must
+    not decide itself. Cleanup: the owner declines the request and adds the
+    member back (not a link join)."""
+    try:
+        if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is not None:
+            await ctx.member.leave(ctx.chat.id)
+            ctx.record("成员退群")
+        after = await _last_private_id(ctx)
+        link = await ctx.admin.export_request_link(ctx.chat.id)
+        await ctx.member.request_join(link)
+        ctx.record("成员通过需审批的邀请链接申请入群（尚未批准）")
+        notice = await wait_private_notice(ctx, after)
+        ctx.record("bot 私聊等待提示", notice)
+        check(
+            notice.text == JOIN_REQUEST_TEXT,
+            f"私聊提示与旧版不一致：{notice.text!r}（应为 {JOIN_REQUEST_TEXT!r}）",
+        )
+        role = await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id)
+        ctx.record("检查成员是否仍在申请阶段", role=role)
+        check(role is None, "管理员审批之前，成员已经在群里（bot 不应自行批准申请）")
+    finally:
+        try:
+            await ctx.admin.decline_join_request(ctx.chat.id, ctx.member_user.id)
+            ctx.record("群主拒绝入群申请")
+        finally:
+            await restore_member(ctx)
+
+
 # ------------------------------------------------------------------ M3
 
 IP_LABELS = ("IP", "Location", "AS", "Org", "ISP")
@@ -983,6 +1037,14 @@ SCENARIOS: tuple[Scenario, ...] = (
         "M7",
         "入群被禁言 → 群内提示 → 私聊深链 → Mini App（真实签名 initData）→ 验证接口与 CORS",
         captcha_scenario,
+    ),
+    # The member leaves, asks to join through an approval link; the owner
+    # declines and adds it back.
+    Scenario(
+        "m2.join-request",
+        "M2",
+        "成员通过需审批的链接申请入群，批准前收到 bot 的私聊等待提示（bot 不自行审批）",
+        join_request_scenario,
     ),
     # Last: it makes the member leave and rejoin the group.
     Scenario(

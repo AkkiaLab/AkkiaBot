@@ -82,7 +82,11 @@ async def test_new_group_and_ban_restore_use_the_owner_not_a_link(
     assert "export_invite_link" not in world.calls
     assert _group(world).members[MEMBER.id] == "member"
     # Once when preparing the new group, once after /ban.
-    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 2}
+    assert report.joins == {
+        "member_join_by_link": 0,
+        "member_join_request": 0,
+        "owner_added_member": 2,
+    }
     assert "群主把普通成员账号拉入群" in report.setup
     # Default privacy: only mutual contacts may add the member.
     assert "两个测试账号互加联系人（群主拉人入群需要双向联系人）" in report.setup
@@ -100,8 +104,10 @@ async def test_full_run_joins_by_link_only_for_captcha_and_service_message(
 
     assert report.status == "passed", report.to_markdown(Redactor())
     assert report.joins["member_join_by_link"] == 2  # m7.captcha, m2.service-message
-    # New group, then m4.warn, m4.ban and m5.spam-command each ban and restore.
-    assert report.joins["owner_added_member"] == 4
+    assert report.joins["member_join_request"] == 1  # m2.join-request (declined, no join)
+    # New group, then m4.warn, m4.ban and m5.spam-command each ban and restore;
+    # m2.join-request declines the request and adds the member back.
+    assert report.joins["owner_added_member"] == 5
     assert report.summary == {"passed": len(SCENARIOS), "failed": 0, "skipped": 0}
     assert report.fully_executed()
 
@@ -153,7 +159,11 @@ async def test_prepare_stops_when_owner_cannot_add_the_member(
     assert (by_name["m2.help"].status, by_name["m2.help"].skip_reason) == ("skipped", "aborted")
     assert {r.skip_reason for n, r in by_name.items() if n != "m2.help"} == {"not_selected"}
     assert report.summary == {"passed": 0, "failed": 0, "skipped": len(SCENARIOS)}
-    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 0}
+    assert report.joins == {
+        "member_join_by_link": 0,
+        "member_join_request": 0,
+        "owner_added_member": 0,
+    }
     data = json.loads(report.to_json(Redactor()))
     assert data["summary"] == report.summary
     assert data["results"][0]["skip_reason"] == "aborted"
@@ -188,7 +198,11 @@ async def test_prepare_rate_limit_lists_scenarios_and_keeps_join_counts(
         assert (by_name[name].status, by_name[name].skip_reason) == ("skipped", "rate_limited")
     assert by_name["m2.help"].skip_reason == "not_selected"
     # The add completed before the run stopped: it is counted.
-    assert report.joins == {"member_join_by_link": 0, "owner_added_member": 1}
+    assert report.joins == {
+        "member_join_by_link": 0,
+        "member_join_request": 0,
+        "owner_added_member": 1,
+    }
     (event,) = report.flood_waits
     assert (event["method"], event["seconds"], event["aborted"]) == ("participant_role", 3600, True)
     data = json.loads(report.to_json(Redactor()))

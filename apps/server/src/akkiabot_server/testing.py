@@ -346,6 +346,19 @@ class UpdateFactory:
             }
         )
 
+    def chat_join_request(
+        self, user: dict[str, Any], *, chat: dict[str, Any] | None = None
+    ) -> Update:
+        """``user`` asked to join ``chat`` through a link that needs admin approval."""
+        return self._update(
+            chat_join_request={
+                "chat": chat if chat is not None else self.group(),
+                "from": user,
+                "user_chat_id": user["id"],
+                "date": int(time.time()),
+            }
+        )
+
     def callback_query(
         self,
         data: str,

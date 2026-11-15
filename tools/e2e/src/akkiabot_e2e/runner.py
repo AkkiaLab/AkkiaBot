@@ -195,6 +195,7 @@ def _record_pacing(report: Report, pacer: Pacer, member_id: int | None) -> None:
     report.flood_waits = [asdict(event) for event in pacer.flood_waits]
     report.joins = {
         "member_join_by_link": pacer.completed["member.join_by_link"],
+        "member_join_request": pacer.completed["member.request_join"],
         "owner_added_member": (
             pacer.completed[f"admin.invite:{member_id}"] if member_id is not None else 0
         ),

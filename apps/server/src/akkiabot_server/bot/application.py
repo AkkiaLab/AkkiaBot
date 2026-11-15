@@ -10,6 +10,7 @@ from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatJoinRequestHandler,
     ChatMemberHandler,
     MessageHandler,
     TypeHandler,
@@ -27,6 +28,7 @@ from akkiabot_server.bot.handlers.group import (
     handle_service_message,
     record_group_message,
 )
+from akkiabot_server.bot.handlers.join_request import handle_join_request
 from akkiabot_server.bot.instrumentation import count_incoming_update, instrument, on_error
 from akkiabot_server.bot.jobs import schedule_jobs
 from akkiabot_server.bot.polling import PollHeartbeatRequest, default_get_updates_request
@@ -36,7 +38,13 @@ from akkiabot_server.services.captcha import START_KIND as CAPTCHA_START_KIND
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_UPDATES: Final = ("message", "callback_query", "chat_member", "my_chat_member")
+ALLOWED_UPDATES: Final = (
+    "message",
+    "callback_query",
+    "chat_member",
+    "my_chat_member",
+    "chat_join_request",
+)
 """Requested explicitly: ``chat_member`` is not delivered unless asked for."""
 
 # Handler groups run in ascending order; every group gets its chance at an update.
@@ -124,6 +132,7 @@ def register_handlers(application: App, commands: CommandRegistry) -> None:
             CallbackQueryHandler(
                 instrument("callback:config", config_callback), pattern=CALLBACK_PATTERN
             ),
+            ChatJoinRequestHandler(instrument("chat_join_request", handle_join_request)),
         ],
         group=GROUP_COMMANDS,
     )

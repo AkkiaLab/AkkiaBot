@@ -52,7 +52,9 @@ class Report:
     """Every flood wait: time, account role, method, seconds, attempt (see ``pacing``)."""
     joins: dict[str, int] = field(default_factory=dict)
     """How the member got into the group this run: ``member_join_by_link`` (the
-    joins Telegram rate-limits per account) and ``owner_added_member``."""
+    joins Telegram rate-limits per account) and ``owner_added_member``; plus
+    ``member_join_request``, requests through an approval link (m2.join-request),
+    which do not make the member join."""
     summary: dict[str, int] = field(default_factory=dict)
     """Counts of ``passed`` / ``failed`` (incl. errors) / ``skipped`` results."""
     server_log: str | None = None
@@ -116,6 +118,11 @@ class Report:
                 f"- 本轮入群：成员通过链接入群 {self.joins.get('member_join_by_link', 0)} 次，"
                 f"群主拉人 {self.joins.get('owner_added_member', 0)} 次"
             )
+            if self.joins.get("member_join_request"):
+                lines.append(
+                    f"- 成员通过需审批的链接申请入群 {self.joins['member_join_request']} 次"
+                    "（申请被拒绝，不入群）"
+                )
         if self.flood_wait_seconds:
             lines.append(f"- 因限流等待：{self.flood_wait_seconds:g} 秒")
         if self.joins and not self.flood_waits:

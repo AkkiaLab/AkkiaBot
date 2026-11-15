@@ -96,7 +96,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
 ### M2 · 机器人运行时与基础命令　`M`
 
 - **范围**
-  - `main.py`：PTB 与 uvicorn 在同一事件循环中运行，lifespan 负责启动和关闭；默认长轮询，可通过配置切换为 webhook；`allowed_updates` 显式包含 `message`、`callback_query`、`chat_member`、`my_chat_member`；提供 `/healthz`、`/readyz`，以及独立端口上只在内网可访问的 `/metrics`。
+  - `main.py`：PTB 与 uvicorn 在同一事件循环中运行，lifespan 负责启动和关闭；默认长轮询，可通过配置切换为 webhook；`allowed_updates` 显式包含 `message`、`callback_query`、`chat_member`、`my_chat_member`（BOT-33 起另含 `chat_join_request`，用于入群申请的私聊等待提示）；提供 `/healthz`、`/readyz`，以及独立端口上只在内网可访问的 `/metrics`。
   - 命令注册机制（一个声明式列表，同时生成 `set_my_commands` 和 `/help` 文本）；`/start` 的 payload 分发器（基于 `Cache.pop` 的一次性 payload）；`/help`、`/id`。
   - 每个 handler 都自动记录耗时、错误数，并把异常上报 Sentry；记录 `updates_total`、`command_total` 等基础指标。
   - 群消息处理：记录 `message_log`（只存 ID）；按群配置删除系统消息；首次见到某个群时写入 `chat` 记录。

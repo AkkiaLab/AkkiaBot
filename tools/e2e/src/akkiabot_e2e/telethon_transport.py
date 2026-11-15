@@ -390,6 +390,42 @@ class TelethonAccount:
         )
         return str(result.link)
 
+    async def export_request_link(self, chat_id: int) -> str:
+        # ``request_needed`` cannot be combined with ``usage_limit``.
+        result: Any = await _guard(
+            self._client(
+                functions.messages.ExportChatInviteRequest(
+                    peer=await self._chat(chat_id),
+                    expire_date=datetime.now(UTC) + _INVITE_TTL,
+                    request_needed=True,
+                    title="akkiabot-e2e-request",
+                )
+            )
+        )
+        return str(result.link)
+
+    async def request_join(self, link: str) -> None:
+        invite_hash = link.rstrip("/").rsplit("/", 1)[-1].removeprefix("+")
+        try:
+            await _guard(self._client(functions.messages.ImportChatInviteRequest(invite_hash)))
+        except errors.InviteRequestSentError:
+            return  # the expected outcome: the request now waits for an admin
+        raise E2EError("通过需审批的邀请链接直接入群了：链接没有要求管理员审批")
+
+    async def decline_join_request(self, chat_id: int, user_id: int) -> None:
+        try:
+            await _guard(
+                self._client(
+                    functions.messages.HideChatJoinRequestRequest(
+                        peer=await self._chat(chat_id),
+                        user_id=await self._user_in(chat_id, user_id),
+                        approved=False,
+                    )
+                )
+            )
+        except errors.HideRequesterMissingError:
+            return  # already handled or expired
+
     async def join_by_link(self, link: str) -> int | None:
         invite_hash = link.rstrip("/").rsplit("/", 1)[-1].removeprefix("+")
         try:
