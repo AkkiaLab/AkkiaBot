@@ -95,9 +95,18 @@ _SWITCHES = (
 )
 
 
-def _mention(user: UserInfo, rest: str) -> tuple[str, tuple[Entity, ...]]:
-    length = len(user.first_name.encode("utf-16-le")) // 2
-    return user.first_name + rest, (Entity("mention_name", 0, length),)
+def _public_name(name: str) -> str:
+    """Mirrors ``akkiabot_core.telegram.public_name`` (the real bot's name masking)."""
+    name = name.strip() or "该成员"
+    return f"{name[:2]}…{name[-2:]}" if len(name) > 4 else name
+
+
+def _mention(
+    user: UserInfo, rest: str, *, full_names: bool = False
+) -> tuple[str, tuple[Entity, ...]]:
+    shown = f"{user.first_name} @{user.username}" if full_names else _public_name(user.first_name)
+    length = len(shown.encode("utf-16-le")) // 2
+    return shown + rest, (Entity("mention_name", 0, length),)
 
 
 @dataclass
@@ -113,6 +122,8 @@ class FakeBot:
     """Ban without deleting the member's history."""
     no_ban: bool = False
     """Reply as if banned, but never ban."""
+    full_names: bool = False
+    """Mention handled members by full name and @username (before BOT-37)."""
     members_can_moderate: bool = False
     """Skip the permission check."""
     stale_menu: bool = False
@@ -288,7 +299,9 @@ class FakeBot:
                 if isinstance(target, str):
                     return target, (), ()
                 deleted = self._ban(chat, target)
-                text, entities = _mention(target, f" 已被封禁，删除了 {deleted} 条消息。")
+                text, entities = _mention(
+                    target, f" 已被封禁，删除了 {deleted} 条消息。", full_names=self.full_names
+                )
                 return text, entities, ()
             case "/warn":
                 if not self._switches(chat.id)["warn"]:
@@ -304,7 +317,7 @@ class FakeBot:
                     self.warns[key] = 0
                     deleted = self._ban(chat, target)
                     rest += f"，警告次数已达上限，已被封禁。\n删除了 {deleted} 条消息。"
-                text, entities = _mention(target, rest)
+                text, entities = _mention(target, rest, full_names=self.full_names)
                 return text, entities, ()
         return None
 
@@ -322,7 +335,7 @@ class FakeBot:
         chat.messages.pop(msg.id, None)
         if not self.antispam_no_mute:
             chat.restricted.add(sender)
-        text, entities = _mention(world.users[sender], "")
+        text, entities = _mention(world.users[sender], "", full_names=self.full_names)
         notice = f"[Anti SPAM]\n内容命中反垃圾策略\n用户：{text}\n动作：删除消息、禁言"
         offset = len("[Anti SPAM]\n内容命中反垃圾策略\n用户：".encode("utf-16-le")) // 2
         world.post(
@@ -381,7 +394,9 @@ class FakeBot:
                     target = world.users[reply.sender_id]
                     deleted = self._ban(chat, target)
                     text, entities = _mention(
-                        target, f" 已被封禁（垃圾信息），删除了 {deleted} 条消息。"
+                        target,
+                        f" 已被封禁（垃圾信息），删除了 {deleted} 条消息。",
+                        full_names=self.full_names,
                     )
                 else:
                     text = "举报已收到，正在进行机器审核……"

@@ -32,6 +32,10 @@
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。
 
+## 群内公开消息
+
+- 群内公开发送、提到某个成员的提醒（入群验证提示、`/ban`、`/warn`、`/spam` 及反垃圾通知等）只显示名字片段，不带完整名字和 `@username`，因为有人用名字或用户名打广告（负责人于 BOT-37 要求）。统一用 `akkiabot_core.telegram.public_name` 生成显示文本（超过 4 个字符时只保留首尾各 2 个字符），再包进 `tg://user?id=` 提及链接，提醒对象仍可点击识别；不要直接拼 `first_name` / `full_name` / `username`。只发给管理员的提及（如举报转人工时 @ 管理员）和用户主动查询的 `/id` 不受此限。真实验收中的检查见 `docs/e2e-acceptance.md`（`check_name_hidden`）。
+
 ## PR 评审
 
 - PR 评审通知（BOT-35）：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。

@@ -9,6 +9,7 @@ from akkiabot_core.telegram import (
     escape_markdown_v2,
     escape_markdown_v2_code,
     parse_init_data,
+    public_name,
     sign_init_data,
     verify_init_data,
 )
@@ -158,3 +159,28 @@ def test_escape_markdown_v2(text: str, expected: str) -> None:
 
 def test_escape_markdown_v2_code() -> None:
     assert escape_markdown_v2_code("a`b\\c.d_e") == "a\\`b\\\\c.d_e"
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("Bob", "Bob"),
+        ("Anna", "Anna"),
+        ("Alice", "Al…ce"),
+        ("vcc 虚拟卡番茄 0开卡费 政策置顶", "vc…置顶"),
+        ("  Alice  ", "Al…ce"),
+        ("", "该成员"),
+        ("  ", "该成员"),
+    ],
+)
+def test_public_name(name: str, shown: str) -> None:
+    assert public_name(name) == shown
+
+
+def test_public_name_hides_ads_and_usernames() -> None:
+    name = "加群领福利 @spam_channel 日入过万"
+    shown = public_name(name)
+    assert shown == "加群…过万"
+    assert "@" not in shown
+    assert "spam_channel" not in shown
+    assert public_name(" ", "新成员") == "新成员"

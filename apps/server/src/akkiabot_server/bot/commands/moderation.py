@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from telegram import Message, Update, User
 from telegram.constants import ParseMode
 
-from akkiabot_core.telegram import escape_markdown_v2
+from akkiabot_core.telegram import escape_markdown_v2, public_name
 from akkiabot_server.bot.commands.basic import replied_message
 from akkiabot_server.bot.deps import get_deps
 from akkiabot_server.bot.moderation_api import PtbModerationApi
@@ -118,8 +118,8 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> R
 
 
 def mention(user: User) -> str:
-    """MarkdownV2 mention link."""
-    return f"[{escape_markdown_v2(user.full_name)}](tg://user?id={user.id})"
+    """MarkdownV2 mention of the handled user: only a fragment of the name is shown."""
+    return f"[{escape_markdown_v2(public_name(user.full_name))}](tg://user?id={user.id})"
 
 
 async def ban_command(update: Update, context: Context) -> str | None:

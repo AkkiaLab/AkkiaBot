@@ -466,13 +466,31 @@ async def check_member_banned(ctx: ScenarioContext) -> None:
     check(banned, "成员没有出现在群的封禁列表中")
 
 
+def check_name_hidden(msg: Msg, ctx: ScenarioContext) -> None:
+    """Public notices show only a fragment of the handled member's name (BOT-37).
+
+    Long names (more than 4 characters) must not appear in full, and the
+    ``@username`` never appears.
+    """
+    name = ctx.member_user.first_name.strip()
+    if len(name) > 4:
+        check(name not in msg.text, "公开提醒中出现了被处理成员的完整名字")
+    username = ctx.member_user.username
+    if username:
+        check(f"@{username}" not in msg.text, "公开提醒中出现了被处理成员的 @username")
+
+
 def check_mention(reply: Msg, ctx: ScenarioContext) -> None:
     check_rendered(reply)
-    check(reply.text.startswith(ctx.member_user.first_name), "回复没有以被处理成员的名字开头")
+    check(
+        reply.text.startswith(ctx.member_user.first_name.strip()[:2]),
+        "回复没有以被处理成员的名字片段开头",
+    )
     check(
         any(e.kind == "mention_name" for e in reply.entities),
         "被处理成员的名字没有渲染为提及链接",
     )
+    check_name_hidden(reply, ctx)
 
 
 async def permissions_scenario(ctx: ScenarioContext) -> None:
@@ -641,6 +659,7 @@ async def spam_scenario(ctx: ScenarioContext) -> None:
             any(e.kind == "mention_name" for e in notice.entities),
             "反垃圾通知中没有提及被处理的成员",
         )
+        check_name_hidden(notice, ctx)
     finally:
         await restore_unmuted(ctx)
 
