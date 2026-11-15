@@ -86,7 +86,13 @@ async def test_polling_mode_requests_explicit_updates(
         await _wait_for(lambda: metric_value("akkiabot_telegram_poll_total", result="ok") > polls)
         assert metric_value("akkiabot_telegram_poll_last_success_timestamp_seconds") > 0
     assert api.calls_to("getUpdates")[0]["allowed_updates"] == list(ALLOWED_UPDATES)
-    assert set(ALLOWED_UPDATES) == {"message", "callback_query", "chat_member", "my_chat_member"}
+    assert set(ALLOWED_UPDATES) == {
+        "message",
+        "callback_query",
+        "chat_member",
+        "my_chat_member",
+        "chat_join_request",
+    }
     assert api.calls_to("setWebhook") == []
     assert not runtime.application.running
 
