@@ -67,6 +67,8 @@ $R gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threa
 $R gh pr merge <n> -R AkkiaLab/AkkiaBot --squash --delete-branch
 ```
 
+Reviewer 以 App 身份提交的评审不会触发 PR 评审通知（`docs/review-notify.md`），实现者仍由 Reviewer 在 issue 上 @ 交接；不要用 `AkkiaS7` 身份发带正文的评审，否则会被当作外部意见再提醒一次。
+
 installation token 不能调用 `gh api user`、`gh auth status` 等用户级接口，这属于正常现象。验证身份请使用 `reviewer-gh check`。
 
 ## 轮换与应急
