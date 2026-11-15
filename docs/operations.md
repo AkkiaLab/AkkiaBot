@@ -404,7 +404,7 @@ curl -fsS https://bot-api-staging.akkia.moe/readyz
 curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 $SHA
 ```
 
-然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和冒烟，不重复全量验收。
+然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收的 `SHA`：前端用 `webapp-promote.yml`，后端按 §5.1 把生产的 `AKKIABOT_TAG` 设为同一个 `SHA`。生产发布前需要负责人确认，发布后只做健康检查和非 Telegram 的冒烟，不重复全量验收；Telegram 相关能力只靠自然流量观测（见 §9.4 第 5 步）。
 
 在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
@@ -412,7 +412,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 
 ## 9. 正式切换（M10）
 
-本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、冒烟验证、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在 BOT-4 中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
+本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、健康检查与观测核对、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在 BOT-4 中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
 
 ### 9.1 前置检查
 
@@ -528,16 +528,14 @@ echo "exit=$?"
    echo "exit=$?"                                     # 必须为 0
    ```
 
-   历史上未完成验证的成员保持禁言，不需要处理。只把报告中“最近 48 小时内被禁言的成员”交给对应群的管理员：他们可能正在验证中途，旧的验证按钮已经失效。新 bot 没有解除禁言的命令，由管理员在 Telegram 客户端中确认：是真人就在群成员权限中解除限制，否则移出。
+   历史上未完成验证的成员保持禁言，不需要处理。报告中“最近 48 小时内被禁言的成员”的旧验证按钮已失效；负责人于 2026-11-15 决定**不主动交接**这份名单，禁言保持原状，报告只作受控留存（权限 600，不公开）。
 3. **启动新服务**：`docker compose up -d --wait`，然后按 §4.3 验证（`/readyz`、tunnel、日志中的 `bot started`）。Grafana 告警规则的预期环境加入 `production`（`docs/observability.md` §5）。
 4. **切换 Mini App 地址**：执行 `webapp-promote.yml`（同一个 sha，需要负责人审批），确认 `https://bot.akkia.moe/version.json`。如果旧 bot 在 BotFather 中设置过菜单按钮或 Mini App 地址（`/mybots` → Bot Settings → Menu Button / Configure Mini App），改为 `https://bot.akkia.moe`。新的入群验证按钮使用 `app.env` 的 `WEBAPP_URL`，不再使用旧前端的地址。
-5. **冒烟验证**（用正式 bot，在负责人指定的群里）：
-   - 私聊：`/start`、`/help`、`/id`、`/ip 1.1.1.1`；
-   - 群内（管理员）：`/config` 查看配置，应与导入结果一致；回复测试账号的消息执行 `/warn`（警告数从导入值继续累加）和 `/ban`，之后在客户端中把测试账号解封；
-   - 入群验证：测试账号入群 → 被禁言 → 私聊深链 → Mini App 完成验证 → 解除禁言；
-   - 反垃圾：在开启了反垃圾的群发送一条明显的垃圾消息样例，确认被处理，再用 `/spam` 标记一次；
-   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据，日志可以按 `chat_id` 检索到这次入群验证；Sentry：`production` 环境中能看到本次版本（release `akkiabot@<版本>`）上报的数据。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
-   结果记录到 BOT-16，包括版本 sha、各项结果和未自动化项。
+5. **健康检查与观测核对**：生产侧受 Telegram 平台限制，**不执行 Telegram 相关的主动冒烟**（不在生产群发命令、不用测试账号入群或制造垃圾消息），也不请求生产验证账号（负责人于 BOT-4 决定，2026-11-15）。
+   - 非 Telegram 检查：`/readyz`、tunnel、日志中的 `bot started` 和持续的 getUpdates；`https://bot.akkia.moe/version.json` 的 sha；必要时在生产容器内做不经过 Telegram 的后端调用（例如 whois 查询、LLM 判定）。
+   - Telegram 能力（私聊命令、群管理命令、入群验证、反垃圾、入群申请提示等）：用自然流量的日志、指标、链路和告警观测，按 `chat_id` 等条件检索；逐项记录**已观测**和**未观测**，未观测不算通过，也不因缺少测试账号阻塞收尾，后续有自然流量时再补记。
+   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<版本>`）的事件。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
+   结果记录到 BOT-16，包括版本 sha、已观测与未观测的能力。
 
 ### 9.5 回滚
 
@@ -556,7 +554,7 @@ echo "exit=$?"
 
 ### 9.7 版本记录
 
-切换完成后，在 BOT-16 记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、冒烟结果、旧版镜像 digest。
+切换完成后，在 BOT-16 记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、健康检查与观测核对结果（已观测/未观测）、旧版镜像 digest。
 
 ### 9.8 备选方案
 
