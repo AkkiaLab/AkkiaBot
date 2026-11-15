@@ -316,10 +316,13 @@ def test_sync_uploads_dashboards_and_rules(capsys: pytest.CaptureFixture[str]) -
     assert variables["loki"]["current"]["value"] == "grafanacloud-logs"
     _, _, rules = fake.requests[4]
     uids = [r["uid"] for r in rules["rules"]]
-    assert len(uids) == 5
-    assert uids[-1] == "akkiabot-env-missing-staging"  # default expected env
+    assert len(uids) == 6
+    assert uids[-2:] == [  # default expected envs
+        "akkiabot-env-missing-staging",
+        "akkiabot-env-missing-production",
+    ]
     out = capsys.readouterr().out
-    assert "5 rules" in out
+    assert "6 rules" in out
     assert "fake-grafana-token" not in out
 
 
@@ -395,7 +398,7 @@ def test_readyz_probe_has_the_job_the_queries_use() -> None:
 
 def test_env_missing_rule_per_expected_environment() -> None:
     template = load_env_missing()
-    assert template["environments"] == ["staging"]
+    assert template["environments"] == ["staging", "production"]
     rules = env_missing_rules(template, ["staging", "production"])
     assert [r["uid"] for r in rules] == [
         "akkiabot-env-missing-staging",
@@ -421,11 +424,10 @@ def test_env_missing_template_is_kept_out_of_provisioning() -> None:
 @pytest.mark.usefixtures("grafana_env")
 def test_sync_env_option_overrides_expected_envs() -> None:
     fake = FakeGrafana()
-    argv = ["sync", "--env", "staging", "--env", "production"]
+    argv = ["sync", "--env", "staging"]
     assert grafana_sync.main(argv, transport=httpx.MockTransport(fake)) == 0
     _, _, rules = fake.requests[-1]
-    assert [r["uid"] for r in rules["rules"]][-2:] == [
-        "akkiabot-env-missing-staging",
-        "akkiabot-env-missing-production",
-    ]
+    uids = [r["uid"] for r in rules["rules"]]
+    assert uids[-1] == "akkiabot-env-missing-staging"
+    assert "akkiabot-env-missing-production" not in uids
     assert all(r["ruleGroup"] == "akkiabot" for r in rules["rules"])
