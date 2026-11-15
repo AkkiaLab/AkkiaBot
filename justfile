@@ -129,6 +129,10 @@ antispam-eval *args:
 e2e-staging *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging-release.env.tpl -- akkiabot-e2e run --fresh-group {{ args }}
 
+# Delete old staging release acceptance groups (keeps the newest 2); dry run unless `--apply`
+e2e-prune-groups *args:
+    uv run akkiabot-e2e op-exec --env-file tools/e2e/staging-release.env.tpl -- akkiabot-e2e prune-groups {{ args }}
+
 # Regenerate the OpenAPI document and the frontend API types (commit both)
 gen-api:
     uv run akkiabot openapi --output apps/webapp/openapi.json
