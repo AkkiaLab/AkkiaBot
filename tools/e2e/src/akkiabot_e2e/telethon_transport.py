@@ -318,6 +318,34 @@ class TelethonAccount:
             raise InviteFailed(_invite_error(user_id, exc)) from None
         _check_invited(user_id, result)
 
+    async def ensure_contact(self, user: UserInfo) -> bool:
+        # The contact list needs no access hash: checking it works even when the
+        # account currently shares no chat with ``user``.
+        contacts = await _guard(self._client(functions.contacts.GetContactsRequest(hash=0)))
+        if any(u.id == user.id for u in getattr(contacts, "users", ())):
+            return False
+        try:
+            peer = await self._client.get_input_entity(user.id)
+        except ValueError:
+            if not user.username:
+                raise E2EError(
+                    f"当前账号看不到用户 {user.id}，无法把它加为联系人："
+                    "需要两个测试账号同在一个群里（例如固定测试群）时运行一次，联系人关系之后长期有效"
+                ) from None
+            peer = await _guard(self._client.get_input_entity(user.username))
+        await _guard(
+            self._client(
+                functions.contacts.AddContactRequest(
+                    id=peer,
+                    first_name=user.first_name,
+                    last_name="",
+                    phone="",
+                    add_phone_privacy_exception=False,
+                )
+            )
+        )
+        return True
+
     async def promote(self, chat_id: int, user_id: int, rights: frozenset[str]) -> None:
         admin_rights = types.ChatAdminRights(**dict.fromkeys(rights, True))
         await _guard(

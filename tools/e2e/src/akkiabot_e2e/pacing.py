@@ -179,6 +179,11 @@ class PacedAccount:
             count_as=f"{self._label('invite')}:{user_id}",
         )
 
+    async def ensure_contact(self, user: UserInfo) -> bool:
+        return await self.pacer.call(
+            self._label("ensure_contact"), lambda: self.inner.ensure_contact(user)
+        )
+
     async def promote(self, chat_id: int, user_id: int, rights: frozenset[str]) -> None:
         await self.pacer.call(
             self._label("promote"), lambda: self.inner.promote(chat_id, user_id, rights)

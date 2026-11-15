@@ -270,6 +270,13 @@ async def prepare_group(
         # Left over by an interrupted M5 run (spam detection mutes the member).
         await admin.unban(chat_id, member_user.id)
         actions.append("解除普通成员账号的禁言（上次运行中断时遗留）")
+    # The owner can only add the member back if they are *mutual* contacts:
+    # Telegram's default "who can add me to groups" privacy is "my contacts"
+    # (otherwise missing_invitees), and re-adding a user who left or was removed
+    # from a supergroup needs a mutual contact (USER_NOT_MUTUAL_CONTACT).
+    added = [await member.ensure_contact(admin_user), await admin.ensure_contact(member_user)]
+    if any(added):
+        actions.append("两个测试账号互加联系人（群主拉人入群需要双向联系人）")
     if await member.find_chat(chat_id) is None:
         # The owner adds the member: joins by link are what Telegram rate-limits
         # per account, and only m7.captcha / m2.service-message need a real one.

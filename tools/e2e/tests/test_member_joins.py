@@ -82,8 +82,13 @@ async def test_new_group_and_ban_restore_use_the_owner_not_a_link(
     # Once when preparing the new group, once after /ban.
     assert report.joins == {"member_join_by_link": 0, "owner_added_member": 2}
     assert "群主把普通成员账号拉入群" in report.setup
+    # Default privacy: only mutual contacts may add the member.
+    assert "两个测试账号互加联系人（群主拉人入群需要双向联系人）" in report.setup
+    assert world.contacts[MEMBER.id] == {ADMIN.id}
+    assert world.contacts[ADMIN.id] == {MEMBER.id}
     md = report.to_markdown(Redactor())
     assert "本轮入群：成员通过链接入群 0 次，群主拉人 2 次" in md
+    assert "FloodWait：本轮 0 次" in md
 
 
 async def test_full_run_joins_by_link_only_for_captcha_and_service_message(
@@ -252,3 +257,26 @@ async def test_pacer_counts_invites_per_user() -> None:
     await pacer.call("admin.invite", ok, count_as="admin.invite:1")
     await pacer.call("member.join_by_link", ok)
     assert pacer.completed == {"admin.invite:1": 1, "member.join_by_link": 1}
+
+
+async def test_contact_is_added_once(world: FakeTelegram, config: E2EConfig) -> None:
+    chat = world.add_chat(config.chat_title, ADMIN)
+    chat.members.update({BOT.id: "admin"})
+    chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
+    config = replace(config, allowed_chat_ids=frozenset({chat.id}))
+    world.contacts[MEMBER.id].add(ADMIN.id)  # already mutual contacts
+    world.contacts[ADMIN.id].add(MEMBER.id)
+
+    report = await _run(world, config, ["m2.help"])
+
+    assert report.status == "passed", report.to_markdown(Redactor())
+    assert report.setup == ["复用测试群", "群主把普通成员账号拉入群"]
+
+
+async def test_one_sided_contact_is_completed(world: FakeTelegram, config: E2EConfig) -> None:
+    world.contacts[MEMBER.id].add(ADMIN.id)  # only the member added the owner
+
+    report = await _run(world, config, ["m4.ban"])
+
+    assert report.status == "passed", report.to_markdown(Redactor())
+    assert world.contacts[ADMIN.id] == {MEMBER.id}

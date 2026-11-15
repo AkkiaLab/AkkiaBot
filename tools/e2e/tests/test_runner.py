@@ -88,6 +88,8 @@ async def test_reuses_allowlisted_group_without_setup(world: FakeTelegram) -> No
     chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
     chat.rights[BOT.id] = BOT_ADMIN_RIGHTS | {"pin_messages"}
     config = load_config(live_env(E2E_ALLOWED_CHAT_IDS=str(chat.id), E2E_REPLY_TIMEOUT="0.3"))
+    world.contacts[MEMBER.id].add(ADMIN.id)  # set up by an earlier run
+    world.contacts[ADMIN.id].add(MEMBER.id)
 
     report = await run(world, config, allow_create=False, scenarios=select_scenarios(["m2.help"]))
 

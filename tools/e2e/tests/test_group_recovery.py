@@ -84,6 +84,8 @@ async def test_normal_reuse_does_not_touch_the_registry(world: FakeTelegram) -> 
     chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
     chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
     registry = FakeRegistry(allowed={chat.id})
+    world.contacts[MEMBER.id].add(ADMIN.id)  # set up by an earlier run
+    world.contacts[ADMIN.id].add(MEMBER.id)
 
     report = await run(world, registry)
 

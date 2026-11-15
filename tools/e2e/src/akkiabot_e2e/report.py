@@ -115,6 +115,8 @@ class Report:
             )
         if self.flood_wait_seconds:
             lines.append(f"- 因限流等待：{self.flood_wait_seconds:g} 秒")
+        if self.joins and not self.flood_waits:
+            lines.append("- FloodWait：本轮 0 次")
         if self.detail:
             lines.append(f"- 说明：{self.detail}")
         if self.release:
