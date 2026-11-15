@@ -241,6 +241,24 @@ class TelethonAccount:
                 found.append(ChatRef(utils.get_peer_id(entity), entity.title))
         return found
 
+    async def owned_supergroups_with_prefix(self, prefix: str) -> list[ChatRef]:
+        found: list[ChatRef] = []
+        for dialog in await _guard(self._client.get_dialogs(limit=None)):
+            entity = dialog.entity
+            if (
+                isinstance(entity, types.Channel)
+                and entity.megagroup
+                and entity.creator
+                and entity.title.startswith(prefix)
+            ):
+                found.append(ChatRef(utils.get_peer_id(entity), entity.title))
+        return found
+
+    async def delete_supergroup(self, chat_id: int) -> None:
+        await _guard(
+            self._client(functions.channels.DeleteChannelRequest(await self._chat(chat_id)))
+        )
+
     async def create_supergroup(self, title: str, about: str) -> ChatRef:
         result: Any = await _guard(
             self._client(

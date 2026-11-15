@@ -129,14 +129,23 @@ class Vault:
                 self._sleep(1.0 * (attempt + 1))
         raise ConfigError(f"回读 {self.name}/{item}/{label} 的值与写入不一致")
 
-    def add_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
-        """Merge ``ids`` into a comma-separated id list field (``0`` placeholders dropped)."""
+    def read_ids(self, item: str, field: str) -> list[int]:
+        """A comma-separated id list field (``0`` placeholders dropped); ``[]`` when missing."""
         current = self.read(item, field) or ""
-        merged = {int(p) for p in current.replace(" ", "").split(",") if p not in {"", "0"}}
-        merged.update(ids)
-        result = sorted(merged)
+        return sorted({int(p) for p in current.replace(" ", "").split(",") if p not in {"", "0"}})
+
+    def _write_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
+        result = sorted(set(ids))
         self.set_fields(item, {field: FieldValue(",".join(map(str, result)), concealed=False)})
         return result
+
+    def add_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
+        """Merge ``ids`` into a comma-separated id list field (``0`` placeholders dropped)."""
+        return self._write_ids(item, field, {*self.read_ids(item, field), *ids})
+
+    def remove_ids(self, item: str, field: str, ids: Iterable[int]) -> list[int]:
+        """Remove ``ids`` from a comma-separated id list field; verified like every write."""
+        return self._write_ids(item, field, set(self.read_ids(item, field)) - set(ids))
 
 
 def shred_file(path: Path) -> None:

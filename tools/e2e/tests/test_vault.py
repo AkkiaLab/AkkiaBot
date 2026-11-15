@@ -133,6 +133,17 @@ def test_add_ids_merges_and_drops_placeholder() -> None:
     assert labels(op, "e2e-telegram")["allowed_chat_ids"] == ("STRING", "-1002,-1001")
 
 
+def test_remove_ids_removes_only_given_ids_and_reads_back() -> None:
+    op = FakeOp(
+        {"e2e-telegram": [{"id": "x", "label": "allowed_chat_ids", "value": "-1003,-1002,-1001"}]}
+    )
+    vault = Vault(run=op)
+    assert vault.read_ids("e2e-telegram", "allowed_chat_ids") == [-1003, -1002, -1001]
+    assert vault.remove_ids("e2e-telegram", "allowed_chat_ids", {-1002, -9999}) == [-1003, -1001]
+    assert labels(op, "e2e-telegram")["allowed_chat_ids"] == ("STRING", "-1003,-1001")
+    assert vault.read_ids("e2e-telegram", "missing_field") == []
+
+
 def test_group_registry_records_and_clears_the_pending_operation() -> None:
     op = FakeOp({"e2e-telegram": [{"id": "c", "label": "allowed_chat_ids", "value": "-1001"}]})
     registry = VaultGroupRegistry(Vault(run=op))
