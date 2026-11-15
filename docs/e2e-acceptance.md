@@ -30,12 +30,13 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | 可以自动化 | 需要人工 / 不覆盖 |
 | --- | --- |
 | 测试账号登录后，通过测试环境的 BotFather 创建测试 bot，并把 token 和用户名写回 1Password | 第三方客户端**不能注册新账号**（Telethon 的 `sign_up` 已被 Telegram 禁止）。测试环境账号需要负责人用官方客户端的测试模式注册，首次登录时由负责人输入验证码和两步验证密码 |
-| 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | 真实 Turnstile 挑战的完成及其后的解除禁言：需要真人在浏览器中完成。工具不求解挑战，也不使用 Turnstile 测试站点 key；`m7.captcha` 把它列为“未自动化”，不计入通过 |
+| 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | 真实 Turnstile 挑战的完成及其后的解除禁言：需要真人在浏览器中完成。工具不求解真实挑战；`m7.captcha`（staging 的真实 widget）把它列为“未自动化”，不计入通过。本地 `m7.captcha-test-keys` 用 Cloudflare 官方测试 key 跑通的通过/拒绝链路是另一类证据（6.4 节），不能替代它 |
 | 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 清理历史消息、删除常驻测试群：工具从不执行。唯一例外是 6.3 节按负责人授权的范围每周清理旧的 staging 发版验收群 |
 | 群主在群内发 `/config`，用深链在与 bot 的私聊中打开配置菜单并点击开关按钮；群主回复成员消息执行 `/warn`、`/ban`，检查封禁状态和历史消息删除，然后解除封禁、由群主把成员拉回群 | 开关回调被越权调用（例如伪造按钮数据）：用户账号只能点击自己收到的按钮，由单元测试覆盖 |
 | 检查回复文本和行内代码实体（确认 MarkdownV2 已正确渲染，没有残留反斜杠） | |
 | 成员退群后再入群，检查两条系统消息都被 bot 删除 | |
 | `--serve` 模式下检查 `message_log` 中有对应记录 | |
+| （M7，仅本地 `--serve`，官方 Turnstile 测试 key）同一次入群中：固定失败的 widget 不调用接口、Siteverify 拒绝时返回 `turnstile_failed`，两者都保持禁言；固定通过时解除禁言并关闭 Mini App（6.4 节） | |
 | （M7，staging 发版）成员入群被禁言 → 群内提示 → 私聊深链 → 以成员账号打开 Mini App（Telegram 签发的真实 initData）→ 打开页面 → 带 Mini App 来源调用验证接口，检查 CORS、未通过 Turnstile 时返回 `turnstile_failed` 且成员保持禁言；结束后关闭入群验证并恢复成员 | |
 
 普通 CI 不会连接 Telegram：单元测试全部使用内存中的模拟 transport（`akkiabot_e2e.testing`）。
@@ -168,7 +169,7 @@ uv run akkiabot-e2e list    # 列出所有场景
 - PR 描述中列出“已验证的场景”（附报告）和“未验证、留给 staging 全量”的部分。
 - 报告中未选中的场景记为跳过（`skipped`，原因“未选中（PR 级未改动）”），不计为通过。
 
-PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定测试群（`E2E_CHAT_TITLE`，默认“AkkiaBot E2E 自动验收群”），普通成员常驻群内；`--serve` 与 `--fresh-group` 同用时直接报错退出。`--create-group` 只用于首次配置固定测试群（5.3 节）。在固定群里，只有选中 `m7.captcha` 或 `m2.service-message` 时，成员账号才会通过邀请链接入群。
+PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定测试群（`E2E_CHAT_TITLE`，默认“AkkiaBot E2E 自动验收群”），普通成员常驻群内；`--serve` 与 `--fresh-group` 同用时直接报错退出。`--create-group` 只用于首次配置固定测试群（5.3 节）。在固定群里，只有选中 `m7.captcha` 或 `m2.service-message` 时，成员账号才会通过邀请链接入群（`m7.captcha-test-keys` 由群主拉人触发入群验证，不占用链接入群）。
 
 `just e2e` 的执行步骤：
 
@@ -326,6 +327,33 @@ just e2e-prune-groups --apply    # 真正删除
 - 与 `run` 使用同一把验收锁，不会与正在进行的验收并发。
 
 **Multica autopilot**：由 Leader 在工作区创建（webhook 触发，指派给 Engineer）。任务内容：先执行 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，把两次输出（数量和运行标识）报告到任务中。
+
+### 6.4 本地官方测试 key 入群验证（`m7.captcha-test-keys`）
+
+入群验证有三类证据，互相不能替代，报告和 PR 中分开记录：
+
+| 证据 | 入口 | 证明什么 | 不证明什么 |
+| --- | --- | --- | --- |
+| mock 单测 | `just test`（`apps/server/tests/test_captcha.py`、`test_turnstile.py`，respx 模拟 Siteverify；`apps/webapp/tests`） | 接口校验顺序、各种拒绝原因、解除禁言的业务规则、页面各状态 | 真实 widget、真实 Siteverify、Telegram 中的链路 |
+| 官方测试 key 端到端 | `just e2e-turnstile-test-keys`（本节） | 真实 Turnstile widget（无头 Chromium）→ 本地构建的 Mini App → 本机被测 bot 的接口 → Cloudflare 线上 Siteverify → Telegram 测试环境中解除或保持禁言 | 真实挑战能被真人通过；staging/prod 的 site key、secret key、域名配置是否正确 |
+| staging 真实 widget | `just e2e-staging`（`m7.captcha`，6.2 节）及按需的人工点击 | 部署环境的 Mini App、CORS、真实 key；拒绝路径自动化，真实挑战的通过需要真人 | — |
+
+**运行**（每台机器先执行一次 `just e2e-browser-setup`：下载 Playwright 的 chromium-headless-shell，并用 sudo 安装其系统库）：
+
+```bash
+just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
+```
+
+- 只能与 `--serve` 一起使用，只能按场景名选中：默认全量、`--scenarios m7` 和 staging 发版验收（`just e2e-staging`、`--record-status`）都不包含它，因此不影响 `staging-acceptance` 的“全部场景实际执行”要求。
+- 工具用当前检出的 `apps/webapp` 构建两份 Mini App（`vite build`，构建环境只含 `PATH`、`HOME` 等和两个 `VITE_*` 变量，不含运行密钥）：固定通过的 site key `1x00000000000000000000AA`（作为 bot 的 `WEBAPP_URL`）和固定失败的 `2x00000000000000000000AB`，分别在 `127.0.0.1` 的随机端口上提供；`CORS_ALLOW_ORIGINS` 包含这两个来源。Telegram 测试环境允许 Mini App 使用不带 TLS 的 HTTP 地址。
+- 被测 bot 先用固定失败的 secret key `2x0000000000000000000000000000000AA` 启动。成员由群主拉回群（触发入群验证，不使用邀请链接），在私聊中 `/start`，工具以成员账号取得 Telegram 签发的启动地址（真实 initData），然后在无头 Chromium 中按 Telegram 客户端的方式打开（补上客户端附加的 `tgWebAppThemeParams`，注入记录事件的 `TelegramWebviewProxy`）：
+  1. 固定失败的 site key：widget 报错，页面显示“人机验证组件加载失败”，**没有**调用验证接口，成员保持禁言；
+  2. 固定通过的 site key + 固定失败的 secret key：widget 给出 dummy token，Siteverify 拒绝，接口返回一次 `400 turnstile_failed`，页面显示“人机验证未通过”，成员保持禁言；
+  3. 以固定通过的 secret key `1x0000000000000000000000000000000AA` 重启被测 bot（同一数据库，challenge 仍有效），再打开页面：接口返回 200，页面显示成功并发出 `web_app_close`，成员被解除禁言。
+- 报告中以“官方测试 key（不代表真实挑战通过）”单独列出所用 key、本地来源和浏览器版本；`m7.captcha` 的“未自动化”条目不受影响。
+- 这些 key 是 Cloudflare 公开的测试值，只在本地运行的环境变量和构建产物中出现；不写入 1Password，也不改动 staging/prod 的 Turnstile 配置、Pages 构建变量或发布门禁。
+
+**清理**：场景结束时关闭入群验证、解除禁言并确保成员仍在群内（与 `m7.captcha` 相同）；本地 bot、静态站点和浏览器随运行退出。构建产物、`webapp-build.log`、`server.log` 留在运行目录（`~/.local/state/akkiabot-e2e/runs/<运行 ID>/`，权限 700），与其他报告一样可以直接删除。
 
 ## 7. 安全约束
 

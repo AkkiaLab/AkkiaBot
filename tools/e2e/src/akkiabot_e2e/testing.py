@@ -556,7 +556,12 @@ class FakeAccount:
         mutual = self.user.id in contacts[user_id] and user_id in contacts[self.user.id]
         if user_id in self.world.contacts_only and not mutual:
             return  # Telegram reports it in missing_invitees / USER_NOT_MUTUAL_CONTACT
-        self._chat(chat_id).members.setdefault(user_id, "member")
+        chat = self._chat(chat_id)
+        joined = user_id not in chat.members
+        chat.members.setdefault(user_id, "member")
+        bot = self.world.bot
+        if joined and bot is not None and bot.user.id in chat.members:
+            bot.on_join(self.world, chat, user_id)  # a join like any other (chat_member)
 
     async def ensure_contact(self, user: UserInfo) -> bool:
         self._op("ensure_contact")

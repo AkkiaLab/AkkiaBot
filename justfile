@@ -119,6 +119,17 @@ e2e-bootstrap-bot *args:
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
 
+# Local end-to-end check of the captcha with Cloudflare's official Turnstile test keys:
+# real widget (headless Chromium), local bot and Mini App, Telegram test environment.
+# Needs `just e2e-browser-setup` once per machine. Not a substitute for the staging real-widget run.
+e2e-turnstile-test-keys *args:
+    just e2e --scenarios m7.captcha-test-keys {{ args }}
+
+# Install the headless Chromium for `e2e-turnstile-test-keys` (system libraries via sudo)
+e2e-browser-setup:
+    uv run playwright install chromium-headless-shell
+    sudo "$(uv run which playwright)" install-deps chromium-headless-shell
+
 # Evaluate the antispam prompt on the offline data set (calls the real LLM; LLM_* / ANTISPAM_* from env or .env)
 antispam-eval *args:
     uv run akkiabot-antispam-eval {{ args }}

@@ -5,6 +5,7 @@ description = "AkkiaBot 真实 Telegram 验收工具（MTProto 用户账号 + 1P
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28",
+    "playwright>=1.50",
     "telethon>=1.40",
 ]
 

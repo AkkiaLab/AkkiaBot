@@ -172,6 +172,7 @@ M3、M5 中的纯库部分（`packages/whois`、`packages/antispam`）只依赖 
   - Vitest 测试覆盖提交流程（模拟 fetch）和错误展示；生产构建产物中不包含 mock 代码（CI 中用 grep 检查）。
   - PR 的预览地址可以打开；master 推送后 staging 地址更新；生产只能经提升流程发布已通过 staging 验收的 sha（锁定版本，只替换环境配置）。
   - staging 发版的全量自动化验收包含 Mini App 入群验证链路（`m7.captcha`：入群 → 禁言 → 私聊 → 打开 Mini App → 验证接口）；真实 Turnstile 挑战无法自动化，在报告中如实列出。
+  - 本地补充（BOT-32）：`just e2e-turnstile-test-keys`（`m7.captcha-test-keys`）用 Cloudflare 官方测试 key、真实 widget 和 Telegram 测试环境跑通 widget 失败、Siteverify 拒绝（保持禁言）与验证通过（解除禁言）三条路径；报告单独标注“官方测试 key”，不替代 staging 真实 widget 证据，也不计入 staging 发版验收（`docs/e2e-acceptance.md` §6.4）。
 
 ### M8 · 生产部署环境　`S`
 
