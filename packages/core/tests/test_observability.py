@@ -264,6 +264,24 @@ def test_captcha_metrics() -> None:
     assert sample("captcha_duration_seconds_bucket", le="20.0") >= 1
 
 
+def test_captcha_outcomes_exported_as_zero_from_start() -> None:
+    # Regression: the first-ever "passed" appeared already at 1, so the funnel's
+    # increase() showed 0 for it on staging. Check in a fresh interpreter.
+    import subprocess
+    import sys
+
+    code = (
+        "from akkiabot_core.observability import REGISTRY\n"
+        "from akkiabot_core.observability.metrics import CAPTCHA_RESULTS\n"
+        "print([REGISTRY.get_sample_value('akkiabot_captcha_total', {'result': r})"
+        " for r in CAPTCHA_RESULTS])"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "[0.0, 0.0, 0.0]"
+
+
 def test_captcha_started_counter() -> None:
     started = sample("captcha_started_total")
     count_captcha_started()

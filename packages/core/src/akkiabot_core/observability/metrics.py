@@ -122,6 +122,12 @@ CAPTCHA_TOTAL = Counter(
     namespace=NAMESPACE,
     registry=REGISTRY,
 )
+CAPTCHA_RESULTS = ("passed", "timeout", "failed")
+# Export every outcome as 0 from process start: a series that first appears
+# already at 1 is invisible to increase()/rate(), so the funnel would miss the
+# first pass/timeout/failure after each restart (seen on staging, 2026-11-15).
+for _result in CAPTCHA_RESULTS:
+    CAPTCHA_TOTAL.labels(result=_result)
 CAPTCHA_DURATION_SECONDS = Histogram(
     "captcha_duration_seconds",
     "Time from joining (challenge created) to passing the captcha.",
@@ -180,7 +186,7 @@ def count_telegram_api_error(method: str) -> None:
 
 
 def count_captcha(result: str) -> None:
-    """``result`` is ``passed`` / ``timeout`` / ``failed``."""
+    """``result`` is one of :data:`CAPTCHA_RESULTS`."""
     CAPTCHA_TOTAL.labels(result=result).inc()
 
 
