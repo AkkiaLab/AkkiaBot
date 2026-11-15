@@ -161,7 +161,8 @@ flowchart LR
 | 对外 HTTP 反垃圾 API（token map 鉴权） | llm / Toolbox / telegram | **丢弃** | 已确认没有第三方调用方，反垃圾改为进程内调用 |
 | Sentry / Langfuse | core / llm | **保留**（已确认） | 地址和密钥只通过配置注入，源码中不含任何值 |
 | Grafana 可观测性（日志、指标、埋点） | 无（新增） | **新增**（已确认） | 见 §4 可观测性与 §5.5 |
-| `mock_join`、OnWebApp 回显、加群申请回复、knowledge_base 空壳、`bot_config` 表 | core / llm / telegram | **丢弃** | 调试代码、空实现，或没有被使用 |
+| 加群申请时私聊提示等待管理员批准 | core | **保留**（BOT-16 核对后由负责人决定恢复，BOT-33 / PR #31） | 与旧版相同：只私聊提示申请人，bot 不自行审批 |
+| `mock_join`、OnWebApp 回显、knowledge_base 空壳、`bot_config` 表 | core / llm / telegram | **丢弃** | 调试代码、空实现，或没有被使用 |
 | Toolbox-py、botlab-llm 独立服务 | — | **丢弃** | 合并进主服务 |
 | dynamic_config submodule | telegram | **丢弃** | 改用 pydantic-settings |
 
