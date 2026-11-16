@@ -414,3 +414,121 @@ async def test_target_who_left_can_still_be_banned(
         group.command("/ban", by=OWNER_ID, reply_to=group.said(TARGET_ID))
     )
     assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
+
+
+# ---------------------------------------------------------------- receipts (BOT-48)
+
+
+def _commands(command: str, result: str) -> float:
+    return metric_value("akkiabot_command_total", command=command, result=result)
+
+
+def _bans() -> float:
+    return metric_value("akkiabot_moderation_actions_total", action="ban")
+
+
+def _reply_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    raw = params["reply_parameters"]
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def _vanish_on_ban(api: FakeBotApi, message_id: int) -> None:
+    """Synthetic race: the command message is deleted (by its author, another
+    bot…) while the ban is under way, before the receipt is sent."""
+
+    def ban(_params: dict[str, Any]) -> bool:
+        api.vanish(message_id)
+        return True
+
+    api.respond("banChatMember", ban)
+
+
+async def test_ban_receipt_quotes_the_command(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    update = group.command("/ban", by=OWNER_ID, reply_to=group.said(TARGET_ID))
+    await runtime.application.process_update(update)
+
+    assert update.message is not None
+    receipt = api.calls_to("sendMessage")[-1]
+    assert "已被封禁" in receipt["text"]
+    assert _reply_parameters(receipt)["message_id"] == update.message.message_id
+
+
+async def test_ban_receipt_after_the_command_vanished(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    posted = await _log_messages(runtime, group, 2)
+    api.clear()
+    update = group.command("/ban", by=OWNER_ID, reply_to=posted[-1])
+    assert update.message is not None
+    _vanish_on_ban(api, update.message.message_id)
+    ok, errors, bans = _commands("ban", "ok"), _commands("ban", "error"), _bans()
+
+    await runtime.application.process_update(update)
+
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
+    assert api.sent_texts() == [f"[Sp…ot](tg://user?id={TARGET_ID}) 已被封禁，删除了 2 条消息。"]
+    assert _reply_parameters(api.calls_to("sendMessage")[0])["allow_sending_without_reply"]
+    assert (_commands("ban", "ok"), _commands("ban", "error")) == (ok + 1, errors)
+    assert _bans() == bans + 1
+    async with session_scope(runtime.session_factory) as session:
+        member = await ChatMemberRepository(session).get(CHAT, TARGET_ID)
+        assert member is not None
+        assert member.restriction == Restriction.ADMIN_BAN
+
+
+async def test_failed_receipt_keeps_the_ban_successful(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    api.fail("sendMessage", "Bad Request: not enough rights to send text messages to the chat")
+    ok, errors, bans = _commands("ban", "ok"), _commands("ban", "error"), _bans()
+
+    await runtime.application.process_update(
+        group.command("/ban", by=OWNER_ID, reply_to=group.said(TARGET_ID))
+    )
+
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
+    assert len(api.calls_to("sendMessage")) == 1  # the receipt is not retried
+    assert (_commands("ban", "ok"), _commands("ban", "error")) == (ok + 1, errors)
+    assert _bans() == bans + 1
+
+
+async def test_warn_ban_receipt_after_the_command_vanished(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    await _enable_warn(runtime, group)
+    target = group.said(TARGET_ID)
+    for _ in range(2):
+        await runtime.application.process_update(
+            group.command("/warn", by=ADMIN_ID, reply_to=target)
+        )
+    api.clear()
+    update = group.command("/warn", by=ADMIN_ID, reply_to=target)
+    assert update.message is not None
+    _vanish_on_ban(api, update.message.message_id)
+    errors = _commands("warn", "error")
+
+    await runtime.application.process_update(update)
+
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
+    assert api.sent_texts()[-1].endswith("警告次数已达上限，已被封禁。\n删除了 0 条消息。")
+    assert _commands("warn", "error") == errors
+    async with session_scope(runtime.session_factory) as session:
+        member = await ChatMemberRepository(session).get(CHAT, TARGET_ID)
+        assert member is not None
+        assert (member.warn_count, member.restriction) == (0, Restriction.WARN_BAN)
+
+
+async def test_rejection_after_the_command_vanished(
+    runtime: Runtime, api: FakeBotApi, group: Group, members: dict[int, dict[str, Any]]
+) -> None:
+    update = group.command("/ban", by=MEMBER_ID, reply_to=group.said(TARGET_ID))
+    assert update.message is not None
+    api.vanish(update.message.message_id)
+
+    await runtime.application.process_update(update)
+
+    assert api.calls_to("banChatMember") == []
+    assert api.sent_texts() == ["你没有权限封禁成员：仅群主或具有封禁成员权限的管理员可用。"]
+    assert _reply_parameters(api.calls_to("sendMessage")[0])["allow_sending_without_reply"]

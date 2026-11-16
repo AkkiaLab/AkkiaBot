@@ -428,6 +428,38 @@ async def test_admin_report_bans_directly(
 
 
 @pytest.mark.usefixtures("members", "profiles")
+async def test_admin_report_receipt_after_the_command_vanished(
+    runtime: Runtime, api: FakeBotApi, group: Group
+) -> None:
+    """BOT-48: the /spam message disappears while the ban runs; the ban happens
+    once, is counted as done and the receipt still reaches the chat."""
+    target = await group.say(SPAMMER_ID, "buy now")
+    api.clear()
+    report = group.updates.message(
+        "/spam", chat=group.chat, from_user=group.user(OWNER_ID), reply_to=target
+    )
+    assert report.message is not None
+    report_id = report.message.message_id
+
+    def ban(_params: dict[str, Any]) -> bool:
+        api.vanish(report_id)
+        return True
+
+    api.respond("banChatMember", ban)
+    done = metric_value("akkiabot_command_total", command="spam", result="admin_ban")
+    errors = metric_value("akkiabot_command_total", command="spam", result="error")
+
+    await group.process(report)
+
+    assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [SPAMMER_ID]
+    assert api.sent_texts() == [
+        f"[Sp…ot](tg://user?id={SPAMMER_ID}) 已被封禁（垃圾信息），删除了 1 条消息。"
+    ]
+    assert metric_value("akkiabot_command_total", command="spam", result="admin_ban") == done + 1
+    assert metric_value("akkiabot_command_total", command="spam", result="error") == errors
+
+
+@pytest.mark.usefixtures("members", "profiles")
 async def test_member_report_judged_spam_bans(
     runtime: Runtime, api: FakeBotApi, llm: FakeLlm, tracer: RecordingTracer, group: Group
 ) -> None:

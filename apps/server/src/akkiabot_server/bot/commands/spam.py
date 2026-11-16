@@ -15,7 +15,7 @@ import math
 from telegram import Update
 
 from akkiabot_core.observability import track_handler
-from akkiabot_server.bot.commands.moderation import execute_ban, resolve
+from akkiabot_server.bot.commands.moderation import execute_ban, reply, resolve
 from akkiabot_server.bot.deps import BotDeps, get_deps
 from akkiabot_server.bot.moderation_api import PtbAntiSpamApi
 from akkiabot_server.bot.types import Context
@@ -50,21 +50,21 @@ async def spam_command(update: Update, context: Context) -> str | None:
         return request
     message = request.message
     if request.target_info.is_admin:
-        await message.reply_text(PROTECTED)
+        await reply(message, PROTECTED)
         return "protected"
     if request.actor_info.can_moderate:
         return await execute_ban(request, context, note="（垃圾信息）") or "admin_ban"
     if request.target.id == request.actor.id:
-        await message.reply_text(SELF_REPORT)
+        await reply(message, SELF_REPORT)
         return "self"
 
     deps = get_deps(context)
     wait = deps.spam_reports.acquire(request.actor.id)
     if wait > 0:
-        await message.reply_text(f"举报过于频繁，请 {math.ceil(wait)} 秒后再试。")
+        await reply(message, f"举报过于频繁，请 {math.ceil(wait)} 秒后再试。")
         return "rate_limited"
     target_message = request.target_message
-    status = await message.reply_text(RECEIVED)
+    status = await reply(message, RECEIVED)
     report = SpamReport(
         chat_id=request.chat_id,
         reporter_id=request.actor.id,
