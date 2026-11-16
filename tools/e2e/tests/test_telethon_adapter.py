@@ -8,7 +8,7 @@ import pytest
 from telethon import errors, types
 
 from akkiabot_e2e.errors import FloodWait
-from akkiabot_e2e.telethon_transport import _guard, _msg, _service_message_id
+from akkiabot_e2e.telethon_transport import _guard, _msg, _role, _service_message_id
 from akkiabot_e2e.transport import code_spans
 
 NOW = datetime(2026, 11, 14, tzinfo=UTC)
@@ -121,3 +121,25 @@ def test_web_app_button_is_marked() -> None:
     )
     (button,) = _msg(5, message).buttons
     assert (button.url, button.web_app) == ("https://w.example/captcha?challenge=x", True)
+
+
+def _banned(*, left: bool, view_messages: bool) -> types.ChannelParticipantBanned:
+    return types.ChannelParticipantBanned(
+        peer=types.PeerUser(777),
+        kicked_by=1,
+        date=NOW,
+        banned_rights=types.ChatBannedRights(
+            until_date=None, view_messages=view_messages, send_messages=True
+        ),
+        left=left,
+    )
+
+
+def test_muted_member_is_still_a_member() -> None:
+    # A spam mute arriving late made restore_member think the member had left
+    # and try to add it again (BOT-47, RC2 of BOT-40).
+    assert _role(_banned(left=False, view_messages=False)) == "member"
+    assert _role(_banned(left=False, view_messages=True)) is None  # banned
+    assert _role(_banned(left=True, view_messages=False)) is None  # muted, then left
+    assert _role(types.ChannelParticipant(user_id=777, date=NOW)) == "member"
+    assert _role(None) is None

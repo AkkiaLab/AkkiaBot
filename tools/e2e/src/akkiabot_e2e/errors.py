@@ -49,3 +49,11 @@ class InviteFailed(E2EError):  # noqa: N818 - reads better in reports
 
     Never answered by falling back to an invite link: the caller reports it and stops.
     """
+
+
+class SideEffectsUnsettled(E2EError):  # noqa: N818 - reads better in reports
+    """A scenario could not confirm that the bot's asynchronous actions are over.
+
+    E.g. spam was removed but the delayed history purge never showed up. Later
+    scenarios would run next to unfinished side effects, so the caller stops.
+    """

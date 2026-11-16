@@ -137,6 +137,27 @@ def _user(entity: Any) -> UserInfo:
     )
 
 
+def _role(participant: Any | None) -> Role | None:
+    """Role of a ``channels.getParticipant`` result; ``None`` when not in the group.
+
+    A muted member comes back as ``ChannelParticipantBanned`` too, but with
+    ``left`` unset and ``view_messages`` allowed: still a member (BOT-47).
+    """
+    if isinstance(participant, types.ChannelParticipantCreator):
+        return "creator"
+    if isinstance(participant, types.ChannelParticipantAdmin):
+        return "admin"
+    if isinstance(participant, types.ChannelParticipant | types.ChannelParticipantSelf):
+        return "member"
+    if (
+        isinstance(participant, types.ChannelParticipantBanned)
+        and not participant.left
+        and not participant.banned_rights.view_messages
+    ):
+        return "member"
+    return None
+
+
 def _service_message_id(updates: Any) -> int | None:
     # Some methods (e.g. messages.importChatInvite on current layers) wrap the
     # ``Updates`` in another object whose ``.updates`` is itself an ``Updates``.
@@ -307,14 +328,7 @@ class TelethonAccount:
         return result.participant
 
     async def participant_role(self, chat_id: int, user_id: int) -> Role | None:
-        participant = await self._participant(chat_id, user_id)
-        if isinstance(participant, types.ChannelParticipantCreator):
-            return "creator"
-        if isinstance(participant, types.ChannelParticipantAdmin):
-            return "admin"
-        if isinstance(participant, types.ChannelParticipant | types.ChannelParticipantSelf):
-            return "member"
-        return None
+        return _role(await self._participant(chat_id, user_id))
 
     async def admin_rights(self, chat_id: int, user_id: int) -> frozenset[str]:
         participant = await self._participant(chat_id, user_id)

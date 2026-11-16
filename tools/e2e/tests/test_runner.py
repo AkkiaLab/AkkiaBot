@@ -4,6 +4,7 @@ from typing import ClassVar
 
 import pytest
 
+from akkiabot_e2e import scenarios
 from akkiabot_e2e.config import E2EConfig, load_config
 from akkiabot_e2e.errors import FloodWait
 from akkiabot_e2e.group import operation_marker
@@ -11,7 +12,13 @@ from akkiabot_e2e.pacing import Pacer
 from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import run_acceptance
-from akkiabot_e2e.scenarios import SCENARIOS, Scenario, ScenarioContext, select_scenarios
+from akkiabot_e2e.scenarios import (
+    SCENARIOS,
+    Scenario,
+    ScenarioContext,
+    restore_member,
+    select_scenarios,
+)
 from akkiabot_e2e.testing import (
     ADMIN,
     BOT,
@@ -25,7 +32,7 @@ from akkiabot_e2e.testing import (
     FakeWeb,
     live_env,
 )
-from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, UserInfo
+from akkiabot_e2e.transport import BOT_ADMIN_RIGHTS, ChatRef, UserInfo
 
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_LEAKY_BOT_TOKEN = "123456:bot-token-must-not-leak"
@@ -576,3 +583,166 @@ async def test_member_left_muted_by_an_interrupted_run_is_restored(world: FakeTe
     assert report.status == "passed", report.to_markdown(Redactor())
     assert any("解除普通成员账号的禁言" in step for step in report.setup)
     assert chat.restricted == set()
+
+
+# ------------------------------------------------- M5: asynchronous side effects (BOT-47)
+#
+# The real guard acts in the background: the LLM verdict may take up to
+# ANTISPAM_TIMEOUT (45 s), and the spammer's history is purged
+# ANTISPAM_PURGE_DELAY (5 s) after the mute. The fake bot defers those side
+# effects by a number of account operations (``spam_lag`` / ``purge_lag``), so
+# these runs are deterministic. Scenarios run in catalog order: m5.spam first,
+# then m4.warn, as in the staging release acceptance of BOT-40.
+
+SPAM_THEN_WARN = ["m5.spam", "m4.warn"]
+
+
+def _report(report: Report) -> str:
+    return report.to_markdown(Redactor())
+
+
+async def test_m5_late_purge_waits_and_does_not_hit_the_next_scenario(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
+    # RC1: the purge came after m5.spam had passed and deleted m4.warn's messages.
+    assert world.bot is not None
+    world.bot.purge_lag = 12  # lands in the middle of m4.warn without the wait
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "passed", "m4.warn": "passed"}, _report(report)
+    assert world.pending_side_effects == 0
+    steps = [e["step"] for e in report.results[0].evidence]
+    assert any("反垃圾清理历史" in step for step in steps)
+
+
+async def test_m5_slow_verdict_within_budget_is_awaited(world: FakeTelegram) -> None:
+    # RC2: the verdict took longer than E2E_REPLY_TIMEOUT but stayed within the
+    # bot's classification budget; m5.spam gave up and the late mute and purge
+    # hit m4.warn.
+    assert world.bot is not None
+    # More polls than fit in E2E_REPLY_TIMEOUT (0.3 s / 0.01 s), far fewer than
+    # fit in E2E_ANTISPAM_TIMEOUT.
+    world.bot.spam_lag = 50
+    world.bot.purge_lag = 12
+    config = load_config(live_env(E2E_ANTISPAM_TIMEOUT="10"))
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "passed", "m4.warn": "passed"}, _report(report)
+    assert world.pending_side_effects == 0
+    (latency,) = [e for e in report.results[0].evidence if e["step"] == "广告处理耗时"]
+    assert latency["seconds"] > config.reply_timeout  # kept as evidence of the delay
+    chat = world.chats[_group_chat(world)]
+    assert chat.restricted == set()
+    assert chat.members[MEMBER.id] == "member"
+
+
+async def test_m5_verdict_beyond_budget_fails_without_leaking(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
+    # The LLM gives up (fail open): the ad stays. m5.spam fails, nothing happens
+    # later by the bot's own budget, and the next scenario runs normally.
+    assert world.bot is not None
+    world.bot.antispam_times_out = True
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "passed"}, _report(report)
+    assert "没有被删除" in report.results[0].detail
+    steps = [e["step"] for e in report.results[0].evidence]
+    assert any("没有处理广告" in step for step in steps)
+
+
+async def test_m5_unconfirmed_cleanup_stops_the_run(world: FakeTelegram, config: E2EConfig) -> None:
+    # The history purge never shows up: m5.spam cannot prove its side effects are
+    # over, so it fails and later scenarios are not run (no success can be recorded).
+    assert world.bot is not None
+    world.bot.antispam_no_purge = True
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "skipped"}, _report(report)
+    spam, warn = report.results
+    assert "未确认结束" in spam.detail
+    assert "没有被删除" in spam.detail  # the original failure is kept
+    assert warn.skip_reason == "aborted"
+    assert "异步副作用未确认结束" in warn.detail
+    assert report.status == "failed"
+    assert world.chats[_group_chat(world)].restricted == set()  # still unmuted
+
+
+async def test_restore_member_lifts_a_mute(world: FakeTelegram) -> None:
+    # A muted member is still in the group (RC2: a late spam mute during m4.warn).
+    # Restoring lifts the mute instead of trying to add the member again.
+    chat = world.add_chat("AkkiaBot E2E 自动验收群", ADMIN)
+    chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
+    chat.restricted.add(MEMBER.id)
+    ctx = ScenarioContext(
+        admin=world.account(ADMIN),
+        member=world.account(MEMBER),
+        admin_user=ADMIN,
+        member_user=MEMBER,
+        bot=BOT,
+        chat=ChatRef(chat.id, chat.title),
+        run_id="test-run",
+    )
+    await restore_member(ctx)
+    assert chat.restricted == set()
+    assert chat.members[MEMBER.id] == "member"
+    assert "invite" not in world.calls
+
+
+async def test_failed_restore_keeps_the_scenario_failure(world: FakeTelegram) -> None:
+    # The run stops when the member cannot be added back, but the report still
+    # says why the scenario itself failed first.
+    assert world.bot is not None
+    world.bot.no_purge = True
+    chat = world.add_chat("AkkiaBot E2E 自动验收群", ADMIN)
+    chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
+    chat.rights[BOT.id] = BOT_ADMIN_RIGHTS
+    world.invite_errors[MEMBER.id] = "USER_PRIVACY_RESTRICTED"
+    config = load_config(live_env(E2E_ALLOWED_CHAT_IDS=str(chat.id)))
+    report = await run(
+        world,
+        config,
+        allow_create=False,
+        scenarios=select_scenarios(["m4.ban", "m5.spam-command"]),
+    )
+    ban, spam_command = report.results
+    assert ban.status == "failed", _report(report)
+    assert "恢复成员失败" in ban.detail
+    assert "只删除了 0 条消息" in ban.detail
+    assert spam_command.skip_reason == "aborted"
+
+
+async def _broken_read(*_: object) -> None:
+    raise OSError("network down")
+
+
+async def test_m5_read_error_while_settling_stops_the_run(
+    world: FakeTelegram, config: E2EConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Confirming the end of the bot's handling fails with a network error: that
+    # is "not confirmed" too, never a plain error followed by the next scenario.
+    assert world.bot is not None
+    world.bot.antispam_no_purge = True
+    monkeypatch.setattr(scenarios, "settle_spam", _broken_read)
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "skipped"}, _report(report)
+    spam, warn = report.results
+    assert "未确认结束" in spam.detail
+    assert "OSError: network down" in spam.detail
+    assert "没有被删除" in spam.detail  # the scenario's own failure is kept
+    assert warn.skip_reason == "aborted"
+
+
+@pytest.mark.parametrize("purge", [True, False])
+async def test_m5_failed_unmute_stops_the_run(
+    world: FakeTelegram, config: E2EConfig, monkeypatch: pytest.MonkeyPatch, purge: bool
+) -> None:
+    # The member may still be muted: whether or not the side effects were settled,
+    # a failed unmute stops the run, and does not hide an earlier abort reason.
+    assert world.bot is not None
+    world.bot.antispam_no_purge = not purge
+    monkeypatch.setattr(scenarios, "restore_unmuted", _broken_read)
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "skipped"}, _report(report)
+    spam, warn = report.results
+    assert "无法确认成员已解除禁言" in spam.detail
+    assert "OSError: network down" in spam.detail
+    if not purge:
+        assert "没有看到成员历史消息" in spam.detail  # the purge problem is kept
+    assert warn.skip_reason == "aborted"

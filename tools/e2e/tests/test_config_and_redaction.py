@@ -22,6 +22,16 @@ def test_load_config_parses_values() -> None:
     assert MOCK_ADMIN_SESSION not in repr(config)
 
 
+def test_antispam_waits_default_to_the_bot_budget() -> None:
+    env = live_env()
+    del env["E2E_ANTISPAM_TIMEOUT"], env["E2E_ANTISPAM_PURGE_DELAY"]
+    config = load_config(env)
+    # The bot's ANTISPAM_TIMEOUT (45) plus margin, and its ANTISPAM_PURGE_DELAY.
+    assert (config.antispam_timeout, config.antispam_purge_delay) == (60.0, 5.0)
+    config = load_config(live_env(E2E_ANTISPAM_TIMEOUT="90", E2E_ANTISPAM_PURGE_DELAY="8"))
+    assert (config.antispam_timeout, config.antispam_purge_delay) == (90.0, 8.0)
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [

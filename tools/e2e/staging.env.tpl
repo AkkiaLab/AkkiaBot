@@ -33,3 +33,8 @@ OBSERVABILITY_SENTRY_ENVIRONMENT=staging
 # E2E_SEND_INTERVAL=2
 # Seconds M5 waits to be sure a message is NOT deleted (switch off / exempt member)
 # E2E_ANTISPAM_WAIT=20
+# Seconds m5.spam waits for the bot to act on the ad: the bot's ANTISPAM_TIMEOUT
+# (45) plus Telegram calls; raise it together with ANTISPAM_TIMEOUT
+# E2E_ANTISPAM_TIMEOUT=60
+# The bot's ANTISPAM_PURGE_DELAY (history purge after the mute)
+# E2E_ANTISPAM_PURGE_DELAY=5
