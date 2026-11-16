@@ -15,11 +15,11 @@ OP_SERVICE_ACCOUNT_TOKEN="$(cat "$token_file")"
 export OP_SERVICE_ACCOUNT_TOKEN
 
 app_id="$(op read 'op://AkkiaBot/release-app/app_id')"
-keyfile="$(mktemp)"
-trap 'rm -f "$keyfile"' EXIT
-chmod 600 "$keyfile"
-# The 1Password hidden field folds the PEM's line breaks into spaces: rebuild it.
-op read 'op://AkkiaBot/release-app/private_key' | python3 -I -c '
+# The key never touches the disk: it stays in a shell variable and reaches
+# openssl through a pipe (process substitution), so no file can be left behind
+# on any exit path. The 1Password hidden field folds the PEM's line breaks into
+# spaces: rebuild a standard PEM first.
+key="$(op read 'op://AkkiaBot/release-app/private_key' | python3 -I -c '
 import re, sys
 m = re.match(r"(-----BEGIN [A-Z ]+-----)(.*?)(-----END [A-Z ]+-----)", sys.stdin.read().strip(), re.S)
 if not m:
@@ -29,21 +29,29 @@ print(m.group(1))
 for i in range(0, len(body), 64):
     print(body[i:i + 64])
 print(m.group(3))
-' >"$keyfile"
+')"
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 now=$(date +%s)
 header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$app_id" | b64url)
-signature=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$keyfile" -binary | b64url)
+signature=$(printf '%s.%s' "$header" "$payload" |
+  openssl dgst -sha256 -sign <(printf '%s\n' "$key") -binary | b64url)
+unset key
 jwt="$header.$payload.$signature"
 
-api() { curl -sSf -H "Authorization: Bearer $jwt" -H 'Accept: application/vnd.github+json' "$@"; }
+# The JWT goes to curl as a config on stdin (`-K -`), never as an argument.
+api() {
+  printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+    curl -sSf -K - -H 'Accept: application/vnd.github+json' "$@"
+}
 installation=$(api "https://api.github.com/repos/$repo/installation" | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["id"])')
 token=$(api -X POST -d "{\"repositories\":[\"${repo#*/}\"]}" \
   "https://api.github.com/app/installations/$installation/access_tokens" |
   python3 -I -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+unset jwt
 
+unset OP_SERVICE_ACCOUNT_TOKEN  # only op needs it, not the wrapped command
 auth=$(printf 'x-access-token:%s' "$token" | base64 -w0)
 export GH_TOKEN="$token" GITHUB_REPOSITORY="$repo"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
