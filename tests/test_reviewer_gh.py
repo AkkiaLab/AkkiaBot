@@ -76,7 +76,7 @@ class FakeGitHub:
     def __call__(self, method: str, url: str, bearer: str, body: dict[str, Any] | None) -> Any:
         self.calls.append((method, url, bearer, body))
         path = url.removeprefix(API)
-        if path == f"/repos/{REPO}/installation":
+        if path.startswith("/repos/") and path.endswith("/installation"):
             return {"id": 7}
         if path == "/app/installations/7/access_tokens":
             self.minted += 1
@@ -225,7 +225,8 @@ def test_check_passes_and_never_prints_tokens(
     ("tweak", "fragment"),
     [
         (lambda g: setattr(g, "selection", "all"), "安装范围"),
-        (lambda g: g.repos.append("AkkiaLab/other"), "安装范围"),
+        (lambda g: g.repos.append("AkkiaLab/other"), "未授权仓库"),
+        (lambda g: g.repos.remove(REPO), "不包含目标仓库"),
         (lambda g: g.permissions.update(contents="read"), "contents"),
         (lambda g: g.permissions.update(administration="write"), "多余权限"),
         (lambda g: g.events.append("push"), "webhook"),
@@ -236,6 +237,33 @@ def test_check_reports_misconfiguration(paths: Paths, tweak: Any, fragment: str)
     tweak(gh)
     problems = check_installation(paths, REPO, gh, refresh=False)
     assert any(fragment in p for p in problems), problems
+
+
+def test_check_accepts_authorized_subset_and_reports_missing(
+    paths: Paths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGitHub(repos=[REPO, "AkkiaLab/akkiabot-release-drill"])
+    assert check_installation(paths, REPO, gh, refresh=False) == []
+    out = capsys.readouterr().out
+    assert "已授权但未安装" in out
+    assert "AkkiaLab/botlab-core" in out
+
+
+def test_check_for_another_authorized_repo_mints_token_for_it(paths: Paths) -> None:
+    legacy = "AkkiaLab/botlab-core"
+    gh = FakeGitHub(repos=[REPO, legacy])
+    assert check_installation(paths, legacy, gh, refresh=False) == []
+    mint = next(c for c in gh.calls if c[1].endswith("/access_tokens"))
+    assert mint[3] == {"repositories": ["botlab-core"]}
+
+
+def test_unauthorized_target_repo_is_refused_before_any_call(paths: Paths) -> None:
+    gh = FakeGitHub(repos=[REPO, "AkkiaLab/other"])
+    with pytest.raises(ReviewerGhError, match="不在已授权范围"):
+        get_token(paths, "AkkiaLab/other", gh)
+    with pytest.raises(ReviewerGhError, match="不在已授权范围"):
+        check_installation(paths, "AkkiaLab/other", gh, refresh=False)
+    assert gh.calls == []
 
 
 # ---------------------------------------------------------------- CLI
