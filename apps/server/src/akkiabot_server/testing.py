@@ -67,6 +67,7 @@ class FakeBotApi(BaseRequest):
         self.calls: list[ApiCall] = []
         self.responders: dict[str, Responder] = {}
         self._message_ids = itertools.count(10_000)
+        self.vanished: set[int] = set()
 
     # -- configuration -----------------------------------------------------
     def respond(self, method: str, responder: Responder) -> None:
@@ -80,6 +81,12 @@ class FakeBotApi(BaseRequest):
             raise ApiError(description, status=status)
 
         self.respond(method, raise_error)
+
+    def vanish(self, *message_ids: int) -> None:
+        """Delete messages behind the bot's back (by their author, an admin or
+        another bot): like Telegram, ``sendMessage`` then refuses to quote them
+        unless ``allow_sending_without_reply`` is set."""
+        self.vanished.update(message_ids)
 
     # -- inspection --------------------------------------------------------
     def calls_to(self, method: str) -> list[dict[str, Any]]:
@@ -129,6 +136,7 @@ class FakeBotApi(BaseRequest):
             elif endpoint == "getMe":
                 result = BOT_USER
             elif endpoint == "sendMessage":
+                self._check_reply_target(params)
                 result = self._sent(params)
             else:
                 result = True  # deleteMessage, setMyCommands, setWebhook…
@@ -142,6 +150,16 @@ class FakeBotApi(BaseRequest):
                 body["parameters"] = {"retry_after": exc.retry_after}
             return exc.status, json.dumps(body).encode()
         return 200, json.dumps({"ok": True, "result": result}).encode()
+
+    def _check_reply_target(self, params: dict[str, Any]) -> None:
+        raw = params.get("reply_parameters")
+        reply = json.loads(raw) if isinstance(raw, str) else raw
+        if (
+            reply
+            and reply["message_id"] in self.vanished
+            and not reply.get("allow_sending_without_reply")
+        ):
+            raise ApiError("Bad Request: message to be replied not found")
 
     def _sent(self, params: dict[str, Any]) -> dict[str, Any]:
         """A plausible ``Message`` for send* methods."""
