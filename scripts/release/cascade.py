@@ -166,10 +166,14 @@ def run_cascade(
         _close_resolved(git, gh, state, sealed, report, dry_run=dry_run)
         actionable = []
         for hop in hops:
+            if hop.key in report.paused:
+                # Paused earlier in this run: the issue listing may lag behind the
+                # issue just created (eventually consistent), so do not ask it again.
+                continue
             issue = gh.find_issue(hop.marker)
             if issue is None:
                 actionable.append(hop)
-            elif hop.key not in report.paused:
+            else:
                 report.paused.append(hop.key)
         if not actionable:
             return report

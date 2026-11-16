@@ -217,3 +217,19 @@ def test_land_forward_pr_refuses_sealed_target(repo: Repo, gh: FakeGitHub) -> No
     )
     with pytest.raises(ReleaseError, match="封版"):
         land_forward_pr(repo.git, gh, 8)
+
+
+def test_conflict_not_duplicated_when_issue_listing_lags(repo: Repo, gh: FakeGitHub) -> None:
+    """GitHub's issue listing is eventually consistent: a run that just created the
+    conflict issue must not create it again when it re-plans (BOT-40 drill)."""
+    _bootstrap(repo)
+    run_cascade(repo.git, gh, trigger="sync")
+    repo.commit("releases/v1.0.1", "README.md", "patch line\n", "BOT-91: patch")
+    repo.commit("releases/v1.1.0", "README.md", "regular line\n", "BOT-92: regular")
+    gh.find_issue = lambda marker: None  # type: ignore[method-assign]  # listing not caught up
+
+    report = run_cascade(repo.git, gh, trigger="PR #11")
+
+    assert report.paused == [Hop(V("v1.0.1"), V("v1.1.0")).key]
+    assert len(gh.issues) == 1
+    assert len(gh.notified) == 1

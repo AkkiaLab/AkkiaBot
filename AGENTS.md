@@ -15,7 +15,7 @@
 
 ## 版本分支与发布
 
-- 按版本开发（负责人于 2026-11-15 确认，BOT-38；实现见 `docs/release.md`）：任务分支从目标 `releases/vX.Y.Z` 创建，PR 提向该 release，不再默认基于 master 或提向 master；不跟本期上线的任务提向下一个 release，缺失的版本分支由 Platform 创建（`just release create`）。常规版本从最新 master 创建，小版本从上一个正式 tag 创建。
+- 按版本开发（负责人于 2026-11-15 确认，BOT-38；实现见 `docs/release.md`）：任务分支从目标 `releases/vX.Y.Z` 创建，PR 提向该 release，不再默认基于 master 或提向 master；不跟本期上线的任务提向下一个 release，缺失的版本分支由 Platform 创建（`just release-app create`）。常规版本从最新 master 创建，小版本从上一个正式 tag 创建。
 - 原始实现 PR 由 Reviewer squash 合并；release 之间及到 master 的逐级上合由流水线以 merge commit 完成并保留 merge 关系，冲突时自动建任务，按 `docs/release.md` §3.3 用带 `release-forward` 标签的 PR 解决（不 squash）。
 - 发布日 18:00（UTC+8）当前常规版本冻结新增功能：修复 PR 加 `release:fix` 标签，功能下车到下一个 release。`release-guard` 检查 PR 的目标、冻结与基分支。
 - 已封版分支不接收任何 PR、推送或上合；正式 tag `vX.Y.Z` 与 RC tag 永不移动或删除。正式 tag 不等于生产部署成功，生产以部署记录为准，生产切换仍需负责人审批。
