@@ -46,6 +46,8 @@ def live_env(**overrides: str) -> dict[str, str]:
         "E2E_REPLY_TIMEOUT": "0.3",
         "E2E_SEND_INTERVAL": "0.001",
         "E2E_ANTISPAM_WAIT": "0.01",
+        "E2E_ANTISPAM_TIMEOUT": "1.5",
+        "E2E_ANTISPAM_PURGE_DELAY": "0.05",
         "LLM_API_KEY": MOCK_LLM_API_KEY,
         "LLM_MODEL": "fake-model",
         "E2E_API_BASE_URL": "https://api.example.test",
@@ -135,6 +137,18 @@ class FakeBot:
     """Check long-standing members too."""
     antispam_no_mute: bool = False
     """Delete spam but never mute."""
+    antispam_no_purge: bool = False
+    """Never delete the spammer's history (the real bot purges ``ANTISPAM_PURGE_DELAY`` later)."""
+    antispam_times_out: bool = False
+    """The LLM never answers in time: the guard fails open and leaves the ad alone."""
+    spam_lag: int = 0
+    """Account operations (anyone's) before a spam verdict is acted on: a slow LLM.
+
+    Counted in operations, not seconds, so tests are deterministic: the polls of a
+    waiting scenario are operations too.
+    """
+    purge_lag: int = 0
+    """Further operations between acting on spam and purging the spammer's history."""
     # -- M7 knobs --
     webapp_origin: str = field(default="https://webapp.example.test", init=False)
     captcha_no_mute: bool = False
@@ -330,8 +344,13 @@ class FakeBot:
             return
         if count > 3 and not self.antispam_no_exemption:
             return
-        if "彩金" not in msg.text:
+        if "彩金" not in msg.text or self.antispam_times_out:
             return
+        world.after_ops(self.spam_lag, lambda: self._remove_spam(world, chat, msg))
+
+    def _remove_spam(self, world: FakeTelegram, chat: FakeChat, msg: Msg) -> None:
+        """Like ``AntiSpamGuard._remove``: delete, mute, notice; purge the history later."""
+        sender = msg.sender_id or 0
         chat.messages.pop(msg.id, None)
         if not self.antispam_no_mute:
             chat.restricted.add(sender)
@@ -344,6 +363,15 @@ class FakeBot:
             notice,
             entities=tuple(Entity(e.kind, e.offset + offset, e.length) for e in entities),
         )
+        if not self.antispam_no_purge:
+            world.after_ops(self.purge_lag, lambda: self._purge(chat, sender))
+
+    @staticmethod
+    def _purge(chat: FakeChat, user_id: int) -> None:
+        """Delete every message of ``user_id`` logged so far, including later ones."""
+        doomed = [i for i, m in chat.messages.items() if m.sender_id == user_id and not m.service]
+        for message_id in doomed:
+            del chat.messages[message_id]
 
     def respond(self, world: FakeTelegram, chat: FakeChat, msg: Msg) -> None:
         if chat.id == self.user.id:
@@ -453,6 +481,26 @@ class FakeTelegram:
         """User id → the user ids in its contact list."""
         self.private_bots: dict[int, Callable[[str], str]] = {}
         self._next_chat = 1_000_000
+        self._deferred: list[tuple[int, Callable[[], None]]] = []
+        """(operation count, action): side effects the bot applies later (asynchronously)."""
+
+    def after_ops(self, ops: int, action: Callable[[], None]) -> None:
+        """Run ``action`` once ``ops`` more account operations happened (now if ``ops <= 0``)."""
+        if ops <= 0:
+            action()
+        else:
+            self._deferred.append((len(self.calls) + ops, action))
+
+    def tick(self) -> None:
+        """Apply the deferred side effects that are due (called on every account operation)."""
+        due = [item for item in self._deferred if item[0] <= len(self.calls)]
+        self._deferred = [item for item in self._deferred if item[0] > len(self.calls)]
+        for _, action in due:
+            action()
+
+    @property
+    def pending_side_effects(self) -> int:
+        return len(self._deferred)
 
     def add_user(self, user: UserInfo) -> UserInfo:
         self.users[user.id] = user
@@ -519,6 +567,7 @@ class FakeAccount:
 
     def _op(self, name: str) -> None:
         self.world.calls.append(name)
+        self.world.tick()
         pending = self.world.floods.get(name)
         if pending:
             raise FloodWait(pending.pop(0))
