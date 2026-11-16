@@ -25,7 +25,8 @@ flowchart LR
 - x 只在重大迭代时变化；每个常规版本占用一个 y（`vX.Y.0`）；z 用于修复发版、加车等小版本。
 - 常规版本 `vX.Y.0` 从**最新 master** 创建；小版本 `vX.Y.Z`（Z>0）从**上一个正式 tag** `vX.Y.(Z-1)` 创建（v1.2.0 → v1.2.1 → v1.2.2），上一个正式 tag 不存在时拒绝创建。
 - 版本号严格校验（`v` 前缀、无前导零），已存在的版本（分支或 tag）不能复用，常规版本不能低于已存在的常规版本。版本按语义排序（v1.10.0 > v1.9.0）。
-- 创建：`just release create vX.Y.Z`；`just release create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 Platform 创建。
+- 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 Platform 创建。
+- 只有发布 App 能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app` 换取安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
 
 ## 2. 日常开发
 
@@ -151,9 +152,11 @@ flowchart LR
 - 准备：当前常规版本相对此前所有正式 tag 没有新提交时跳过本窗口；确保下一个常规版本存在（下车目标）。
 - 冻结：下车（§2），然后为当前版本出 RC 并触发 `release-rc.yml`（已有对应 HEAD 的 RC 时沿用）。
 - 发布：没有 RC、RC 过期或未通过验收时**停止并报错**，不封版；通过时触发 `release-seal.yml`，随后进入生产审批。已有正式 tag 时跳过。
-- 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。Leader 汇总发布范围与加车理由；生产切换仍需负责人审批。
+- 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release-app create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。Leader 汇总发布范围与加车理由；生产切换仍需负责人审批。
 
-## 6. 首次引导（当前状态与建议）
+## 6. 首次引导（已完成）
+
+2026-11-16（BOT-40）已按负责人确认的方案（BOT-38）引导：`releases/v1.0.0` 从 master `3c0ed15` 创建，首个 RC `v1.0.0-rc.1` 的差异基线为 `5f5227a`。此后 master 不再接收实现 PR（`release-guard` 是 master 的必需检查）。以下为引导前的记录。
 
 2026-11-15 核对（只读）：
 
@@ -166,7 +169,7 @@ flowchart LR
 
 引导步骤（BOT-40，平台接入完成后执行）：
 
-1. `just release create v1.0.0`；之后新任务提向 `releases/v1.0.0`，存量的 master PR 由各自实现者改提（`gh pr edit <号> --base releases/v1.0.0` 并按 §2 变基），不批量中断。
+1. `just release-app create v1.0.0`；之后新任务提向 `releases/v1.0.0`，存量的 master PR 由各自实现者改提（`gh pr edit <号> --base releases/v1.0.0` 并按 §2 变基），不批量中断。
 2. 首个 RC 的差异基线自动选到 `5f5227a`（祖先中最近的已验收 commit）。
 3. 首次封版、生产审批与部署按 §4 执行。
 
@@ -177,14 +180,14 @@ flowchart LR
 | 发布 GitHub App（例如 `akkiabot-release`） | 仓库权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；只安装到本仓库；不开 webhook | 新增 App 与权限需负责人确认。私钥只放仓库 secret |
 | 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY` | App ID 与私钥（经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功 |
 | 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：发布 App | App 绕过用于上合 merge 与冲突解决的快进落地 |
-| master 规则集 | 现有规则保留；绕过者加入发布 App | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容 |
+| master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入发布 App | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
 | 规则集 `releases 封版` | 目标 branch，include 初始为空（工具维护），规则 `update`、`deletion`、`non_fast_forward`，**无绕过者** | 名称须完全一致 |
-| tag 规则集（`refs/tags/v*`） | 禁止更新、删除；限制创建，绕过者仅发布 App | 正式 tag 与 RC tag 不可移动 |
+| tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅发布 App；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
 | secret `MULTICA_RELEASE_WEBHOOK_URL` | Multica autopilot webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`；autopilot 以开发小队为负责人建任务。未配置时只在运行摘要中提示 |
 | 运行机 ssh | `~/.ssh/config` 中 `Host greencloud-tyo-01`（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥取自 1Password `AkkiaBot/shared-ssh`） | `just release-deploy production` 的默认目标；也可 `--ssh/--dir` 覆盖 |
 | 标签 | `release:fix`、`release-forward`、`release-forward-conflict` | 不存在时 GitHub 在首次使用时会报错，先创建 |
-| Renovate | 引导后把 `renovate.json` 的 `baseBranches` 指向当前常规 release（或保持 master 并由维护者改提） | 否则依赖 PR 会被 `release-guard` 拦在 master |
+| Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由 Platform 另行确定接入方式（BOT-40 遗留项） |
 
 ## 8. 测试与已知限制
 
