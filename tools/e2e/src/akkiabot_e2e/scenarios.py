@@ -704,11 +704,39 @@ async def spam_scenario(ctx: ScenarioContext) -> None:
         )
         check_name_hidden(notice, ctx)
     finally:
+        await finish_spam(ctx, ad, probe, deadline, settled=settled)
+
+
+async def finish_spam(
+    ctx: ScenarioContext, ad: Msg | None, probe: Msg, deadline: float, *, settled: bool
+) -> None:
+    """Cleanup of ``m5.spam``: settle the bot's side effects, then lift the mute.
+
+    Anything that keeps us from confirming both — a missing purge, but also a
+    failed read while checking or a failed unmute — raises
+    :class:`SideEffectsUnsettled`, so the run stops instead of running the next
+    scenario next to a muted member or a pending purge (BOT-47).
+    """
+    problems: list[str] = []
+    unsettled: SideEffectsUnsettled | None = None
+    if ad is not None and not settled:
         try:
-            if ad is not None and not settled:
-                await settle_spam(ctx, ad, probe, deadline)
-        finally:
-            await restore_unmuted(ctx)
+            await settle_spam(ctx, ad, probe, deadline)
+        except SideEffectsUnsettled as exc:
+            unsettled = exc
+        except Exception as exc:
+            problems.append(f"确认 bot 的处理是否结束时出错（{type(exc).__name__}: {exc}）")
+    try:
+        await restore_unmuted(ctx)
+    except Exception as exc:
+        problems.append(f"无法确认成员已解除禁言（{type(exc).__name__}: {exc}）")
+    if problems:
+        prefix = f"{unsettled}；" if unsettled is not None else "反垃圾的异步副作用未确认结束："
+        unsettled = SideEffectsUnsettled(prefix + "；".join(problems))
+    if unsettled is not None:
+        # Raised here, outside the handlers above, so that ``__context__`` stays
+        # the scenario's own failure (if any) and the report keeps it.
+        raise unsettled
 
 
 def purge_window(ctx: ScenarioContext) -> float:

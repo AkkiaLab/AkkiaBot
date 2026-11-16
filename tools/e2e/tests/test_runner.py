@@ -4,6 +4,7 @@ from typing import ClassVar
 
 import pytest
 
+from akkiabot_e2e import scenarios
 from akkiabot_e2e.config import E2EConfig, load_config
 from akkiabot_e2e.errors import FloodWait
 from akkiabot_e2e.group import operation_marker
@@ -705,3 +706,43 @@ async def test_failed_restore_keeps_the_scenario_failure(world: FakeTelegram) ->
     assert "恢复成员失败" in ban.detail
     assert "只删除了 0 条消息" in ban.detail
     assert spam_command.skip_reason == "aborted"
+
+
+async def _broken_read(*_: object) -> None:
+    raise OSError("network down")
+
+
+async def test_m5_read_error_while_settling_stops_the_run(
+    world: FakeTelegram, config: E2EConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Confirming the end of the bot's handling fails with a network error: that
+    # is "not confirmed" too, never a plain error followed by the next scenario.
+    assert world.bot is not None
+    world.bot.antispam_no_purge = True
+    monkeypatch.setattr(scenarios, "settle_spam", _broken_read)
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "skipped"}, _report(report)
+    spam, warn = report.results
+    assert "未确认结束" in spam.detail
+    assert "OSError: network down" in spam.detail
+    assert "没有被删除" in spam.detail  # the scenario's own failure is kept
+    assert warn.skip_reason == "aborted"
+
+
+@pytest.mark.parametrize("purge", [True, False])
+async def test_m5_failed_unmute_stops_the_run(
+    world: FakeTelegram, config: E2EConfig, monkeypatch: pytest.MonkeyPatch, purge: bool
+) -> None:
+    # The member may still be muted: whether or not the side effects were settled,
+    # a failed unmute stops the run, and does not hide an earlier abort reason.
+    assert world.bot is not None
+    world.bot.antispam_no_purge = not purge
+    monkeypatch.setattr(scenarios, "restore_unmuted", _broken_read)
+    report = await run(world, config, scenarios=select_scenarios(SPAM_THEN_WARN))
+    assert statuses(report) == {"m5.spam": "failed", "m4.warn": "skipped"}, _report(report)
+    spam, warn = report.results
+    assert "无法确认成员已解除禁言" in spam.detail
+    assert "OSError: network down" in spam.detail
+    if not purge:
+        assert "没有看到成员历史消息" in spam.detail  # the purge problem is kept
+    assert warn.skip_reason == "aborted"

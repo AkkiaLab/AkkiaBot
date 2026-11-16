@@ -253,16 +253,17 @@ async def _run_scenarios(
         result.evidence = ctx.evidence
 
 
-def _first_failure(exc: BaseException) -> str:
+def _first_failure(exc: BaseException, depth: int = 0) -> str:
     """The failure a scenario's cleanup (``finally``) interrupted, if any.
 
     Cleanup errors stop the run, but the report must still say why the scenario
-    itself failed first.
+    itself failed first (assertions, but also crashes such as network errors).
     """
     first = exc.__context__
-    if isinstance(first, CheckFailed | SideEffectsUnsettled) and first is not exc:
-        return f"（场景本身先失败：{first}{_first_failure(first)}）"
-    return ""
+    if first is None or first is exc or depth >= 3 or not isinstance(first, Exception):
+        return ""
+    text = str(first) if isinstance(first, E2EError) else f"{type(first).__name__}: {first}"
+    return f"（场景本身先失败：{text}{_first_failure(first, depth + 1)}）"
 
 
 async def _check_message_log(ctx: ScenarioContext, probe: MessageLogProbe) -> ScenarioResult:
