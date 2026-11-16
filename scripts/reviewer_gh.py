@@ -32,7 +32,12 @@ Files (override with environment variables):
   ``app.json`` (``{"app_id": ..., "client_id": ...}``) and ``private-key.pem``.
 * ``$AKKIABOT_REVIEWER_CACHE_DIR`` (default ``~/.cache/akkiabot/reviewer-app``):
   ``token.json``.
-* ``$AKKIABOT_REVIEWER_REPO`` (default ``AkkiaLab/AkkiaBot``).
+* ``$AKKIABOT_REVIEWER_REPO`` (default ``AkkiaLab/AkkiaBot``): the repository
+  the token is restricted to. It must be listed in ``AUTHORIZED_REPOS``.
+
+The set of repositories the App may be installed on is ``AUTHORIZED_REPOS``
+below, changed only through a reviewed PR together with the owner's approval
+of the installation scope (docs/reviewer-github-app.md).
 """
 
 from __future__ import annotations
@@ -61,6 +66,20 @@ DEFAULT_REPO = "AkkiaLab/AkkiaBot"
 # Reuse a cached token only while it has at least this many seconds left, so
 # a long review never runs with a token that expires half way through.
 MIN_REMAINING = 15 * 60
+# Repositories the owner explicitly authorised for the App installation, with
+# the issue that recorded the decision. ``check`` fails if the installation
+# reaches any repository outside this set; an authorised repository that is not
+# (yet) installed is only reported. Tokens are minted for listed repos only.
+AUTHORIZED_REPOS: Mapping[str, str] = {
+    "AkkiaLab/AkkiaBot": "BOT-3",
+    "AkkiaLab/akkiabot-release-drill": "BOT-40",
+    # Legacy repositories: migration notice README PRs before archiving (BOT-16).
+    "AkkiaLab/botlab-core": "BOT-16",
+    "AkkiaLab/botlab-telegram": "BOT-16",
+    "AkkiaLab/botlab-llm": "BOT-16",
+    "AkkiaLab/botlab-fe": "BOT-16",
+    "AkkiaLab/Toolbox-py": "BOT-16",
+}
 # Permissions the App is expected to hold on the installation (BOT-3).
 EXPECTED_PERMISSIONS: Mapping[str, str] = {
     "actions": "read",
@@ -228,6 +247,13 @@ def write_cache(path: Path, record: dict[str, Any]) -> None:
         raise
 
 
+def require_authorized(repo: str) -> None:
+    if repo not in AUTHORIZED_REPOS:
+        raise ReviewerGhError(
+            f"目标仓库 {repo} 不在已授权范围内（AUTHORIZED_REPOS），拒绝签发 token"
+        )
+
+
 def mint_token(paths: Paths, repo: str, http: Http, now: float) -> dict[str, Any]:
     jwt = make_jwt(load_app_issuer(paths), paths.private_key, int(now))
     installation = http("GET", f"{API}/repos/{repo}/installation", jwt, None)
@@ -257,6 +283,7 @@ def get_token(
     now: Callable[[], float] = time.time,
 ) -> tuple[dict[str, Any], bool]:
     """Return ``(record, from_cache)``; mint and cache a new token when needed."""
+    require_authorized(repo)
     if not refresh:
         cached = read_cache(paths.token_cache, repo, now())
         if cached is not None:
@@ -304,9 +331,18 @@ def check_installation(paths: Paths, repo: str, http: Http, *, refresh: bool) ->
     print(f"权限:             {json.dumps(permissions, sort_keys=True)}")
     print(f"token 过期时间:   {record['expires_at']}（{'复用缓存' if from_cache else '新签发'}）")
 
+    missing = sorted(set(AUTHORIZED_REPOS) - set(repo_names))
+    if missing:
+        print(f"已授权但未安装:   {', '.join(missing)}")
+
     problems: list[str] = []
-    if installation.get("repository_selection") != "selected" or repo_names != [repo]:
-        problems.append(f"安装范围应只包含 {repo}，实际为 {repo_names}")
+    if installation.get("repository_selection") != "selected":
+        problems.append(f"安装范围应为 selected，实际为 {installation.get('repository_selection')}")
+    unauthorized = sorted(set(repo_names) - set(AUTHORIZED_REPOS))
+    if unauthorized:
+        problems.append(f"安装范围包含未授权仓库：{unauthorized}")
+    if repo not in repo_names:
+        problems.append(f"安装范围不包含目标仓库 {repo}")
     for name, level in EXPECTED_PERMISSIONS.items():
         if permissions.get(name) != level:
             problems.append(f"权限 {name} 应为 {level}，实际为 {permissions.get(name)}")
