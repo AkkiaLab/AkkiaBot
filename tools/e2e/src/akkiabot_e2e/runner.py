@@ -17,6 +17,7 @@ from akkiabot_e2e.errors import (
     RateLimitExceeded,
     SafetyError,
     ScenarioSkipped,
+    SideEffectsUnsettled,
 )
 from akkiabot_e2e.group import GroupRegistry, fresh_group_title, prepare_group
 from akkiabot_e2e.langfuse import LangfuseProbe
@@ -150,6 +151,8 @@ async def run_acceptance(
             poll_interval=poll_interval,
             antispam=config.antispam,
             antispam_wait=config.antispam_wait,
+            antispam_timeout=config.antispam_timeout,
+            antispam_purge_delay=config.antispam_purge_delay,
             web=web,
             api_base_url=config.api_base_url,
             webapp_url=config.webapp_url,
@@ -236,13 +239,31 @@ async def _run_scenarios(
         except InviteFailed as exc:
             # The member is not back in the group: later scenarios cannot run, and
             # joining through a link instead would hide the failure (no fallback).
-            result.status, result.detail = "failed", f"恢复成员失败：{exc}"
+            result.status, result.detail = "failed", f"恢复成员失败：{exc}{_first_failure(exc)}"
             aborted = ("aborted", "群主拉人失败，运行中止，未执行")
+        except SideEffectsUnsettled as exc:
+            # The bot may still act on the member (mute, history purge): whatever
+            # runs next could be hit by it, so nothing else runs (BOT-47).
+            result.status, result.detail = "failed", f"{exc}{_first_failure(exc)}"
+            aborted = ("aborted", "前一场景的异步副作用未确认结束，运行中止，未执行")
         except Exception as exc:
             logger.exception("scenario %s crashed", scenario.name)
             result.status, result.detail = "error", f"{type(exc).__name__}: {exc}"
         result.duration = round(time.monotonic() - started, 2)
         result.evidence = ctx.evidence
+
+
+def _first_failure(exc: BaseException, depth: int = 0) -> str:
+    """The failure a scenario's cleanup (``finally``) interrupted, if any.
+
+    Cleanup errors stop the run, but the report must still say why the scenario
+    itself failed first (assertions, but also crashes such as network errors).
+    """
+    first = exc.__context__
+    if first is None or first is exc or depth >= 3 or not isinstance(first, Exception):
+        return ""
+    text = str(first) if isinstance(first, E2EError) else f"{type(first).__name__}: {first}"
+    return f"（场景本身先失败：{text}{_first_failure(first, depth + 1)}）"
 
 
 async def _check_message_log(ctx: ScenarioContext, probe: MessageLogProbe) -> ScenarioResult:

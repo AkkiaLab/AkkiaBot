@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from akkiabot_e2e.errors import CheckFailed, ScenarioSkipped
+from akkiabot_e2e.errors import CheckFailed, ScenarioSkipped, SideEffectsUnsettled
 from akkiabot_e2e.group import owner_add_member
 from akkiabot_e2e.transport import Account, ChatRef, Msg, UserInfo, code_spans
 
@@ -108,6 +108,10 @@ class ScenarioContext:
     antispam: bool = False
     """The bot under test has an LLM configured (M5)."""
     antispam_wait: float = 20.0
+    antispam_timeout: float = 60.0
+    """How long the bot may take to act on spam (its classification budget + margin)."""
+    antispam_purge_delay: float = 5.0
+    """The bot's delay between muting a spammer and purging their history."""
     traces: TraceProbe | None = None
     classified_markers: list[str] = field(default_factory=list)
     """Markers of messages the bot must have classified (checked in Langfuse)."""
@@ -431,16 +435,20 @@ async def enable_warn(ctx: ScenarioContext) -> None:
         await toggle(ctx, menu, WARN_LABEL)
 
 
-async def wait_deleted(ctx: ScenarioContext, message_ids: list[int], what: str) -> None:
+async def wait_deleted(
+    ctx: ScenarioContext, message_ids: list[int], what: str, *, within: float | None = None
+) -> None:
+    """Poll until the messages are gone; fail after ``within`` seconds (default ``reply_timeout``)."""
+    timeout = ctx.reply_timeout if within is None else within
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + ctx.reply_timeout
+    deadline = loop.time() + timeout
     remaining = list(message_ids)
     while remaining:
         remaining = [i for i in remaining if await ctx.admin.get_message(ctx.chat.id, i)]
         if not remaining:
             break
         if loop.time() >= deadline:
-            raise CheckFailed(f"{what} {remaining} 在 {ctx.reply_timeout:g} 秒内没有被删除")
+            raise CheckFailed(f"{what} {remaining} 在 {timeout:g} 秒内没有被删除")
         await asyncio.sleep(ctx.poll_interval)
     ctx.record(f"{what}已全部删除", message_ids=message_ids)
 
@@ -451,10 +459,16 @@ async def restore_member(ctx: ScenarioContext) -> None:
     Not through an invite link: Telegram rate-limits an account's joins by link,
     and only m7.captcha / m2.service-message need a real join. A failed add
     (``InviteFailed``) stops the run; it never falls back to a link.
+
+    A muted member is still in the group: the mute is lifted (same call as an
+    unban), never answered by adding the member again.
     """
     if await ctx.admin.is_banned(ctx.chat.id, ctx.member_user.id):
         await ctx.admin.unban(ctx.chat.id, ctx.member_user.id)
         ctx.record("群主解除成员封禁")
+    elif await ctx.admin.is_restricted(ctx.chat.id, ctx.member_user.id):
+        await ctx.admin.unban(ctx.chat.id, ctx.member_user.id)
+        ctx.record("群主解除成员禁言")
     if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is None:
         await owner_add_member(ctx.admin, ctx.chat.id, ctx.member_user.id)
         ctx.record("群主把成员拉回群")
@@ -576,6 +590,8 @@ SPAM_TEXT = (
     "【限时福利】国际正规博彩平台，注册即送888彩金，百家乐、体育、电子随便玩，"
     "提款秒到账，私聊我领取 USDT 返利"
 )
+#: Posted before the ad; purged with the member's history once the ad is caught.
+PURGE_PROBE_TEXT = "E2E 反垃圾清理探针，普通消息"
 HAM_TEXTS = ("今天天气真好啊", "周末有人一起去爬山吗", "这个版本的更新日志我看了，修了不少问题")
 
 
@@ -645,15 +661,42 @@ async def restore_unmuted(ctx: ScenarioContext) -> None:
 
 
 async def spam_scenario(ctx: ScenarioContext) -> None:
-    """Switch on: an obvious ad from a new member is deleted, the member muted, a notice posted."""
+    """Switch on: an obvious ad from a new member is deleted, the member muted, a notice
+    posted, and the member's earlier messages purged.
+
+    The bot handles spam in the background: the verdict may take up to its
+    classification budget, and the history purge follows ``ANTISPAM_PURGE_DELAY``
+    after the mute. A message the member posted before the ad (the probe) must be
+    purged too; its deletion is the last side effect, so once it is gone nothing
+    more happens to the member. Whatever fails, the scenario only ends when that
+    is settled (:func:`settle_spam`), so later scenarios never meet a late mute or
+    purge (BOT-47).
+    """
     require_antispam(ctx)
+    probe = await member_posts(ctx, PURGE_PROBE_TEXT, "probe")
     await set_antispam(ctx, True)
+    loop = asyncio.get_running_loop()
+    ad: Msg | None = None
+    deadline = 0.0
+    settled = False
     try:
         ad = await member_posts(ctx, SPAM_TEXT, "spam")
+        sent_at = loop.time()
+        deadline = sent_at + ctx.antispam_timeout
         ctx.classified_markers.append(marker_of(ctx, "spam"))
-        await wait_deleted(ctx, [ad.id], "广告消息")
+        await wait_deleted(ctx, [ad.id], "广告消息", within=ctx.antispam_timeout)
+        ctx.record(
+            "广告处理耗时",
+            seconds=round(loop.time() - sent_at, 1),
+            reply_timeout=ctx.reply_timeout,
+            antispam_timeout=ctx.antispam_timeout,
+        )
         await wait_restricted(ctx)
         notice = await wait_notice(ctx, ad.id)
+        await wait_deleted(
+            ctx, [probe.id], "成员此前的消息（反垃圾清理历史）", within=purge_window(ctx)
+        )
+        settled = True
         check_rendered(notice)
         check(
             any(e.kind == "mention_name" for e in notice.entities),
@@ -661,7 +704,79 @@ async def spam_scenario(ctx: ScenarioContext) -> None:
         )
         check_name_hidden(notice, ctx)
     finally:
+        await finish_spam(ctx, ad, probe, deadline, settled=settled)
+
+
+async def finish_spam(
+    ctx: ScenarioContext, ad: Msg | None, probe: Msg, deadline: float, *, settled: bool
+) -> None:
+    """Cleanup of ``m5.spam``: settle the bot's side effects, then lift the mute.
+
+    Anything that keeps us from confirming both — a missing purge, but also a
+    failed read while checking or a failed unmute — raises
+    :class:`SideEffectsUnsettled`, so the run stops instead of running the next
+    scenario next to a muted member or a pending purge (BOT-47).
+    """
+    problems: list[str] = []
+    unsettled: SideEffectsUnsettled | None = None
+    if ad is not None and not settled:
+        try:
+            await settle_spam(ctx, ad, probe, deadline)
+        except SideEffectsUnsettled as exc:
+            unsettled = exc
+        except Exception as exc:
+            problems.append(f"确认 bot 的处理是否结束时出错（{type(exc).__name__}: {exc}）")
+    try:
         await restore_unmuted(ctx)
+    except Exception as exc:
+        problems.append(f"无法确认成员已解除禁言（{type(exc).__name__}: {exc}）")
+    if problems:
+        prefix = f"{unsettled}；" if unsettled is not None else "反垃圾的异步副作用未确认结束："
+        unsettled = SideEffectsUnsettled(prefix + "；".join(problems))
+    if unsettled is not None:
+        # Raised here, outside the handlers above, so that ``__context__`` stays
+        # the scenario's own failure (if any) and the report keeps it.
+        raise unsettled
+
+
+def purge_window(ctx: ScenarioContext) -> float:
+    """How long after the mute the history purge may take to show up."""
+    return ctx.antispam_purge_delay + ctx.reply_timeout
+
+
+async def settle_spam(ctx: ScenarioContext, ad: Msg, probe: Msg, deadline: float) -> None:
+    """After a failed ``m5.spam``: make sure the bot will not act on the member later.
+
+    Settled when either the bot never acted on the ad within its budget
+    (``deadline``; it then lets the message pass), or it acted and the history
+    purge (the probe's deletion) followed. Otherwise raise
+    :class:`SideEffectsUnsettled` so that the run stops.
+    """
+    loop = asyncio.get_running_loop()
+    member = ctx.member_user.id
+    while True:
+        deleted = await ctx.admin.get_message(ctx.chat.id, ad.id) is None
+        acted = deleted or await ctx.admin.is_restricted(ctx.chat.id, member)
+        if acted or loop.time() >= deadline:
+            break
+        await asyncio.sleep(ctx.poll_interval)
+    if not acted:
+        ctx.record(
+            f"等待 {ctx.antispam_timeout:g} 秒（被测 bot 的判定预算）后，bot 没有处理广告；"
+            "超出预算的判定按放行处理，不会再有迟到的删除、禁言或清理",
+            ad_kept=True,
+        )
+        return
+    ctx.record("bot 已处理广告（迟到或不完整），等待其后续清理结束", ad_deleted=deleted)
+    purge_deadline = loop.time() + purge_window(ctx)
+    while await ctx.admin.get_message(ctx.chat.id, probe.id) is not None:
+        if loop.time() >= purge_deadline:
+            raise SideEffectsUnsettled(
+                f"反垃圾的异步副作用未确认结束：bot 已处理广告，但 {purge_window(ctx):g} 秒内"
+                f"没有看到成员历史消息 {probe.id} 被清理，后续场景可能被迟到的清理影响"
+            )
+        await asyncio.sleep(ctx.poll_interval)
+    ctx.record("反垃圾的迟到处理已结束（成员历史消息已清理）", message_id=probe.id)
 
 
 async def disabled_scenario(ctx: ScenarioContext) -> None:

@@ -69,6 +69,12 @@ class E2EConfig:
     langfuse: LangfuseCredentials | None = None
     antispam_wait: float = 20.0
     """How long M5 waits to be sure a message is *not* acted upon."""
+    antispam_timeout: float = 60.0
+    """How long ``m5.spam`` waits for the bot to act on the ad: the bot's
+    classification budget (``ANTISPAM_TIMEOUT``, 45 s) plus the Telegram calls
+    after the verdict. After that the bot has let the message pass (fail open)."""
+    antispam_purge_delay: float = 5.0
+    """The bot's ``ANTISPAM_PURGE_DELAY``: the history purge comes this long after the mute."""
     api_base_url: str | None = None
     """Public API of the bot under test (``E2E_API_BASE_URL``); M7 calls the captcha endpoint."""
     webapp_url: str | None = None
@@ -136,6 +142,8 @@ def load_config(env: Mapping[str, str]) -> E2EConfig:
         antispam=not missing_variables(env, ("LLM_API_KEY", "LLM_MODEL")),
         langfuse=load_langfuse(env),
         antispam_wait=env_float(env, "E2E_ANTISPAM_WAIT", 20.0),
+        antispam_timeout=env_float(env, "E2E_ANTISPAM_TIMEOUT", 60.0),
+        antispam_purge_delay=env_float(env, "E2E_ANTISPAM_PURGE_DELAY", 5.0),
         api_base_url=_url(env, "E2E_API_BASE_URL"),
         webapp_url=_url(env, "E2E_WEBAPP_URL"),
     )
