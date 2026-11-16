@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from telegram import Message, Update, User
+from telegram import Message, ReplyParameters, Update, User
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
 from akkiabot_core.telegram import escape_markdown_v2, public_name
 from akkiabot_server.bot.commands.basic import replied_message
@@ -45,6 +46,32 @@ LOOKUP_FAILED = "获取成员信息失败，请稍后再试。"
 WARN_DISABLED = "请先通过 /config 开启警告功能。"
 
 
+async def reply(message: Message, text: str, *, parse_mode: str | None = None) -> Message:
+    """Reply to ``message``, or send plainly to its chat if it is gone by now.
+
+    The command message can disappear while the command runs (deleted by its
+    author, another bot or an admin); quoting it would then fail with
+    "Message to be replied not found" (BOT-48).
+    """
+    return await message.reply_text(
+        text,
+        parse_mode=parse_mode,
+        reply_parameters=ReplyParameters(message.message_id, allow_sending_without_reply=True),
+    )
+
+
+async def report_done(message: Message, text: str) -> None:
+    """Send the receipt of an action that already took effect.
+
+    A failed receipt must not turn the finished action into a failed command:
+    that would report an error and invite a retry (a second ban).
+    """
+    try:
+        await reply(message, text, parse_mode=ParseMode.MARKDOWN_V2)
+    except TelegramError:
+        logger.warning("moderation: failed to send the receipt", exc_info=True)
+
+
 @dataclass(frozen=True, slots=True)
 class Request:
     message: Message
@@ -65,23 +92,21 @@ async def resolve(update: Update, context: Context, verb: str, usage: str) -> Re
     if message is None or chat is None or actor is None:
         return "ignored"
     if chat.type not in GROUP_TYPES:
-        await message.reply_text(GROUP_ONLY)
+        await reply(message, GROUP_ONLY)
         return "private"
     target_message = replied_message(message)
     if target_message is None:
-        await message.reply_text(
-            f"此命令需要以回复的方式使用，将{verb}被回复的成员。\n用法：{usage}"
-        )
+        await reply(message, f"此命令需要以回复的方式使用，将{verb}被回复的成员。\n用法：{usage}")
         return "usage"
     if message.sender_chat is not None:
-        await message.reply_text(ANONYMOUS_ACTOR)
+        await reply(message, ANONYMOUS_ACTOR)
         return "anonymous"
     target = target_message.from_user
     if target_message.sender_chat is not None or target is None:
-        await message.reply_text(UNSUPPORTED_TARGET)
+        await reply(message, UNSUPPORTED_TARGET)
         return "unsupported_target"
     if target.id == context.bot.id:
-        await message.reply_text(SELF_TARGET)
+        await reply(message, SELF_TARGET)
         return "protected"
 
     api = PtbModerationApi(context.bot)
@@ -92,7 +117,7 @@ async def resolve(update: Update, context: Context, verb: str, usage: str) -> Re
         target_info = await api.get_member(chat.id, target.id)
     except (ModerationApiError, RateLimitedError):
         logger.warning("moderation: member lookup failed", exc_info=True)
-        await message.reply_text(LOOKUP_FAILED)
+        await reply(message, LOOKUP_FAILED)
         return "failed"
 
     return Request(message, chat.id, actor, target, target_message, actor_info, target_info)
@@ -106,12 +131,10 @@ async def _prepare(update: Update, context: Context, verb: str, usage: str) -> R
     message = request.message
     match authorize(request.actor_info, request.target_info):
         case Authorization.ACTOR_FORBIDDEN:
-            await message.reply_text(
-                f"你没有权限{verb}成员：仅群主或具有封禁成员权限的管理员可用。"
-            )
+            await reply(message, f"你没有权限{verb}成员：仅群主或具有封禁成员权限的管理员可用。")
             return "forbidden"
         case Authorization.TARGET_PROTECTED:
-            await message.reply_text(f"无法{verb}管理员或群主。")
+            await reply(message, f"无法{verb}管理员或群主。")
             return "protected"
         case Authorization.ALLOWED:
             return request
@@ -141,12 +164,12 @@ async def execute_ban(request: Request, context: Context, *, note: str = "") -> 
         )
     except (ModerationApiError, RateLimitedError):
         logger.warning("ban failed", exc_info=True)
-        await request.message.reply_text("封禁失败，请确认机器人具有封禁成员权限。")
+        await reply(request.message, "封禁失败，请确认机器人具有封禁成员权限。")
         return "failed"
     text = mention(request.target) + _e(f" 已被封禁{note}，删除了 {result.purge.deleted} 条消息。")
     if result.purge.failed:
         text += _e(f"\n另有 {result.purge.failed} 条消息删除失败。")
-    await request.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+    await report_done(request.message, text)
     return None
 
 
@@ -159,7 +182,7 @@ async def warn_command(update: Update, context: Context) -> str | None:
         and chat.type in GROUP_TYPES
         and not (await get_deps(context).chat_settings.get(chat.id)).warn
     ):
-        await message.reply_text(WARN_DISABLED)
+        await reply(message, WARN_DISABLED)
         return "disabled"
     request = await _prepare(update, context, "警告", WARN_USAGE)
     if isinstance(request, str):
@@ -169,20 +192,20 @@ async def warn_command(update: Update, context: Context) -> str | None:
             PtbModerationApi(context.bot), request.chat_id, request.target.id, by=request.actor.id
         )
     except WarnDisabledError:
-        await request.message.reply_text(WARN_DISABLED)
+        await reply(request.message, WARN_DISABLED)
         return "disabled"
     except (ModerationApiError, RateLimitedError):
         logger.warning("ban after warning limit failed", exc_info=True)
-        await request.message.reply_text(
-            "对方的警告次数已达上限，但封禁失败，请确认机器人具有封禁成员权限。"
+        await reply(
+            request.message, "对方的警告次数已达上限，但封禁失败，请确认机器人具有封禁成员权限。"
         )
         return "failed"
     text = mention(request.target) + _e(f" 你已被警告 {result.count}/{result.limit} 次")
     if not result.banned:
-        await request.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+        await report_done(request.message, text)
         return None
     text += _e("，警告次数已达上限，已被封禁。")
     if result.purge is not None:
         text += _e(f"\n删除了 {result.purge.deleted} 条消息。")
-    await request.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+    await report_done(request.message, text)
     return "banned"
