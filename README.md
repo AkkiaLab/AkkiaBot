@@ -107,7 +107,7 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
 - `release.yml`：master 推送后构建并推送 `ghcr.io/akkialab/akkiabot:<sha>` 与 `:latest`；RC 与正式发布流水线按确定 sha 调用它（只打 sha 标签）。
 - `webapp-deploy.yml` / `webapp-promote.yml`：构建 Mini App，检查产物不包含开发用的 Telegram 模拟代码，再用 `wrangler pages deploy` 发布到 Cloudflare Pages。PR 发布到预览地址；持 staging 租约的 RC 发布到 staging（`staging.akkiabot-webapp.pages.dev`，master 推送不再覆盖）；生产（`bot.akkia.moe`）只能通过 `webapp-promote.yml` 提升已通过 staging 发版验收的 sha，并且需要审批。详见 [docs/webapp.md](docs/webapp.md)。
 - 前后端契约：pytest 校验 `apps/webapp/openapi.json` 与后端一致，前端 job 校验 `src/api/schema.d.ts` 与 `openapi.json` 一致；接口变更后运行 `just gen-api` 并提交两者。openapi-typescript 依赖 TypeScript 5 的编译器 API，而前端使用的 TypeScript 7 不再提供，因此它单独放在 `tools/api-types` 这个 pnpm 包里，自带 TypeScript 5。
-- `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。
+- `pr-title.yml`：PR 标题必须形如 `BOT-<编号>: <摘要>`，正文必须含有同编号的 `Closes BOT-<编号>`，否则检查失败。脚本从 `GITHUB_EVENT_PATH` 事件文件读取标题与正文，失败提示只说明规则。工作流不得把 PR 标题、正文等不可信文本经步骤 `env`、`with` 或 `run` 中的 `${{ }}` 传入：Actions 会在公开日志中打印步骤的 `env`，`run` 中展开还可能被注入。
 - 依赖升级由 Renovate 按 `renovate.json` 每周一提交 PR。
 
 ## License
