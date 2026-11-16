@@ -15,8 +15,7 @@ jobs:
         with:
           sparse-checkout: scripts
       - name: Check title and "Closes BOT-<n>"
-        # Untrusted text goes through env, never interpolated into the script.
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+        # The script reads title/body from the event file at GITHUB_EVENT_PATH.
+        # Never pass PR text through `env`, `with` or `run`: Actions prints a
+        # step's env into the public log, and `${{ }}` in `run` is injectable.
         run: python3 scripts/check_pr_meta.py
