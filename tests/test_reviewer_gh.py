@@ -25,6 +25,7 @@ from scripts.reviewer_gh import (
 )
 
 REPO = "AkkiaLab/AkkiaBot"
+DRILL_REPO = "AkkiaLab/akkiabot-release-drill"
 MOCK_GH_TOKEN = "ghs_fake-token-value"  # mock: 人工构造的不可用测试值，不是凭据
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="需要 openssl")
@@ -236,6 +237,33 @@ def test_check_reports_misconfiguration(paths: Paths, tweak: Any, fragment: str)
     tweak(gh)
     problems = check_installation(paths, REPO, gh, refresh=False)
     assert any(fragment in p for p in problems), problems
+
+
+def test_check_accepts_the_drill_repository_alongside_the_product_repo(paths: Paths) -> None:
+    # BOT-40: the App is also installed on the release-flow drill repository.
+    gh = FakeGitHub(repos=[REPO, DRILL_REPO])
+    assert check_installation(paths, REPO, gh, refresh=False) == []
+
+
+def test_check_requires_the_target_repo_in_the_installation(paths: Paths) -> None:
+    gh = FakeGitHub(repos=[DRILL_REPO])
+    problems = check_installation(paths, REPO, gh, refresh=False)
+    assert any("安装范围" in p for p in problems), problems
+
+
+def test_cli_refuses_repositories_outside_the_allow_list(
+    paths: Paths, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AKKIABOT_REVIEWER_APP_DIR", str(paths.app_dir))
+    monkeypatch.setenv("AKKIABOT_REVIEWER_CACHE_DIR", str(paths.cache_dir))
+    monkeypatch.setenv("AKKIABOT_REVIEWER_REPO", "AkkiaLab/other")
+
+    def no_network(*_: Any) -> Any:
+        raise AssertionError("must not call GitHub")
+
+    monkeypatch.setattr(reviewer_gh, "urllib_http", no_network)
+    assert main(["gh", "pr", "view", "1"]) == 2
+    assert "AKKIABOT_REVIEWER_REPO" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------- CLI

@@ -7,7 +7,7 @@
 | 项 | 位置 | 说明 |
 | --- | --- | --- |
 | App | AkkiaLab 组织 → Settings → Developer settings → GitHub Apps → `akkiabot-reviewer` | 私有 App，不开启 webhook |
-| 安装 | 仅 `AkkiaLab/AkkiaBot`（Only select repositories） | |
+| 安装 | 仅 `AkkiaLab/AkkiaBot` 与发布演练仓库 `AkkiaLab/akkiabot-release-drill`（Only select repositories） | 演练仓库由负责人于 BOT-40 加入，用于冲突解决 PR 的独立评审；其他仓库一律拒绝 |
 | 权限 | Contents R/W，Pull requests R/W，Checks / Commit statuses / Actions R，Metadata R | Contents 写权限用于合并和删除分支 |
 | App 配置 | 运行机 `~/.config/akkiabot/reviewer-app/app.json` | `app_id`、`client_id`、`slug`，不是密钥 |
 | 私钥 | 运行机 `~/.config/akkiabot/reviewer-app/private-key.pem` | 目录 `0700`、文件 `0600`；**不进仓库、不进 issue / 评论 / 日志** |
@@ -19,7 +19,7 @@
 `reviewer-gh` 在每次调用时执行以下步骤：
 
 1. 若缓存的 token 剩余有效期不少于 15 分钟，直接复用。
-2. 否则调用 `openssl` 用私钥签名 RS256 JWT（有效期 9 分钟），私钥不经过 Python 进程。然后查询 App 在仓库上的 installation，换取**只限 `AkkiaBot` 仓库**的 installation token，写入缓存。
+2. 否则调用 `openssl` 用私钥签名 RS256 JWT（有效期 9 分钟），私钥不经过 Python 进程。然后查询 App 在仓库上的 installation，换取**只限目标仓库**的 installation token，写入缓存。目标仓库默认 `AkkiaLab/AkkiaBot`，评审演练仓库时设置 `AKKIABOT_REVIEWER_REPO=AkkiaLab/akkiabot-release-drill`；不在上表两个仓库之内的值直接拒绝，不访问 GitHub。
 3. 通过环境变量 `GH_TOKEN` 把 token 交给 `gh`（`exec`），同时清除 `GITHUB_TOKEN`。
 
 token 只通过环境变量传给 `gh`。脚本**没有**任何输出 token 的命令，因为智能体运行时会把 stdout 记入日志。如果缓存目录不可写（例如受沙箱限制），脚本会在 stderr 中提示，然后照常工作，只是每次调用都会重新签发 token。
@@ -38,9 +38,10 @@ sha256sum ~/.local/bin/reviewer-gh <AkkiaBot master 检出>/scripts/reviewer_gh.
 
 ```bash
 ~/.local/bin/reviewer-gh check
+AKKIABOT_REVIEWER_REPO=AkkiaLab/akkiabot-release-drill ~/.local/bin/reviewer-gh check   # 演练仓库
 ```
 
-该命令不输出任何凭据，会打印 App slug、installation、安装范围、权限和 token 过期时间。安装范围不是"仅 AkkiaBot"、权限与上表不一致或 App 订阅了 webhook 事件时，以非 0 退出码结束。为了核对真实的安装范围，`check` 会临时签发一个只有 metadata 读权限、不限仓库的 token，用完立即吊销。
+该命令不输出任何凭据，会打印 App slug、installation、安装范围、权限和 token 过期时间。安装范围不是 selected、不包含目标仓库或超出上表两个仓库、权限与上表不一致或 App 订阅了 webhook 事件时，以非 0 退出码结束。为了核对真实的安装范围，`check` 会临时签发一个只有 metadata 读权限、不限仓库的 token，用完立即吊销。
 
 其他命令：
 

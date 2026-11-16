@@ -58,6 +58,10 @@ from typing import Any
 
 API = "https://api.github.com"
 DEFAULT_REPO = "AkkiaLab/AkkiaBot"
+#: Repositories the App may be installed on (BOT-40): the product repository and
+#: the public release-flow drill repository. A token is always restricted to the
+#: single repository picked with ``AKKIABOT_REVIEWER_REPO``.
+ALLOWED_REPOS: tuple[str, ...] = (DEFAULT_REPO, "AkkiaLab/akkiabot-release-drill")
 # Reuse a cached token only while it has at least this many seconds left, so
 # a long review never runs with a token that expires half way through.
 MIN_REMAINING = 15 * 60
@@ -305,8 +309,15 @@ def check_installation(paths: Paths, repo: str, http: Http, *, refresh: bool) ->
     print(f"token 过期时间:   {record['expires_at']}（{'复用缓存' if from_cache else '新签发'}）")
 
     problems: list[str] = []
-    if installation.get("repository_selection") != "selected" or repo_names != [repo]:
-        problems.append(f"安装范围应只包含 {repo}，实际为 {repo_names}")
+    if (
+        installation.get("repository_selection") != "selected"
+        or repo not in repo_names
+        or not set(repo_names) <= set(ALLOWED_REPOS)
+    ):
+        problems.append(
+            f"安装范围应为 selected、包含 {repo} 且只在 {list(ALLOWED_REPOS)} 之内，"
+            f"实际为 {installation.get('repository_selection')} {repo_names}"
+        )
     for name, level in EXPECTED_PERMISSIONS.items():
         if permissions.get(name) != level:
             problems.append(f"权限 {name} 应为 {level}，实际为 {permissions.get(name)}")
@@ -360,6 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     paths = Paths.from_env(env)
     repo = env.get("AKKIABOT_REVIEWER_REPO") or DEFAULT_REPO
     try:
+        if repo not in ALLOWED_REPOS:
+            raise ReviewerGhError(
+                f"AKKIABOT_REVIEWER_REPO 只能是 {', '.join(ALLOWED_REPOS)}，实际为 {repo}"
+            )
         if args.command == "check":
             problems = check_installation(paths, repo, urllib_http, refresh=args.refresh)
             for problem in problems:
