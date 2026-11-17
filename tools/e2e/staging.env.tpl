@@ -26,7 +26,8 @@ E2E_ALLOWED_CHAT_IDS=op://AkkiaBot/e2e-telegram/allowed_chat_ids
 # --- plain settings (optional; defaults shown)
 # Bot API test endpoints (/bot<token>/test/); `run --serve` forces this anyway.
 TELEGRAM_TEST_ENVIRONMENT=true
-OBSERVABILITY_SENTRY_ENVIRONMENT=staging
+# `run --serve` forces Sentry environment `e2e` so local runs never mix into staging issues.
+OBSERVABILITY_SENTRY_ENVIRONMENT=e2e
 # E2E_CHAT_TITLE=AkkiaBot E2E 自动验收群
 # E2E_REPLY_TIMEOUT=30
 # E2E_FLOOD_MAX_WAIT=120

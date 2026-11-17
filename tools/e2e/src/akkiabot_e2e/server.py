@@ -46,8 +46,10 @@ def server_env(
         OBSERVABILITY_METRICS_HOST="127.0.0.1",
         OBSERVABILITY_METRICS_PORT=str(metrics_port),
         OBSERVABILITY_LOG_FORMAT="json",
+        # Local acceptance runs keep the DSN but report under their own Sentry
+        # environment, even when the caller's shell carries ``staging``.
+        OBSERVABILITY_SENTRY_ENVIRONMENT="e2e",
     )
-    env.setdefault("OBSERVABILITY_SENTRY_ENVIRONMENT", "staging")
     return env
 
 
