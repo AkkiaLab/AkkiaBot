@@ -459,9 +459,11 @@ class Dispatcher:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def _find(self, key: str) -> list[dict[str, Any]]:
+        # `issue search` returns an empty metadata object, so a task found by both
+        # lookups keeps the `issue list` row, which carries the real metadata.
         by_id: dict[str, dict[str, Any]] = {}
         for task in [*self.tasks.find_by_metadata(key), *self.tasks.find_by_marker(key)]:
-            by_id[task["id"]] = task
+            by_id.setdefault(task["id"], task)
         return sorted(by_id.values(), key=lambda t: int(t.get("number") or 0))
 
     def _link(self, task: dict[str, Any], key: str) -> None:
