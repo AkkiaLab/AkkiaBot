@@ -27,7 +27,7 @@ from akkiabot_core.config import (
 from akkiabot_core.db import create_engine, create_session_factory
 from akkiabot_core.db.migrate import upgrade
 from akkiabot_core.observability import configure_logging, setup_observability
-from akkiabot_server import __version__
+from akkiabot_server import __version__, release_name
 
 logger = logging.getLogger("akkiabot_server")
 
@@ -104,8 +104,12 @@ def _serve() -> int:
     from akkiabot_server.api import create_app
     from akkiabot_server.runtime import Runtime
 
-    setup_observability(settings.observability, release=f"akkiabot@{__version__}")
-    logger.info("starting akkiabot", extra={"version": __version__, "config": settings.redacted()})
+    release = release_name()
+    setup_observability(settings.observability, release=release)
+    logger.info(
+        "starting akkiabot",
+        extra={"version": __version__, "release": release, "config": settings.redacted()},
+    )
     app = create_app(Runtime.build(settings))
     config = uvicorn.Config(
         app,

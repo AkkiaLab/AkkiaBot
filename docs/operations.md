@@ -129,7 +129,10 @@ flowchart LR
 | `OBSERVABILITY_SENTRY_DSN` | 空 | 为空时不启用 Sentry。 |
 | `OBSERVABILITY_SENTRY_ENVIRONMENT` | `development` | Sentry 环境名：生产用 `production`，预发布用 `staging`。 |
 | `OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Sentry 性能采样率，0–1。 |
+| `AKKIABOT_GIT_SHA` | 镜像内置 | **不在 `.env` 中设置。** 构建镜像时由 `release.yml` 以 build arg 写入该镜像对应的完整 commit sha（`deploy/Dockerfile`）。Sentry 与 Langfuse 的 release 都取 `akkiabot@<sha>`；变量为空（本地运行、未传 build arg 的镜像）时回退为 `akkiabot@<包版本>`。见下方“release 与版本的对应关系”。 |
 | `OBSERVABILITY_METRICS_ENABLED` | `true` | 是否启动 `/metrics` 监听器。 |
+
+**release 与版本的对应关系**：Sentry 和 Langfuse 中的 release `akkiabot@<sha>` 标识的是**镜像的构建提交**，与 `.env` 的 `AKKIABOT_TAG`（同一个 sha）一一对应。它不是语义化版本：镜像先于 RC 和正式 tag 构建，同一个 sha 可能先后对应多个 `vX.Y.Z-rc.N` 和最终的 `vX.Y.Z`。要从 release 查到版本，用 `git tag --points-at <sha>`；要确认某个环境当时实际运行哪个 sha，以部署记录（`releases.log`、`.env` 的 `AKKIABOT_TAG`）为准，tag 本身不代表部署成功（`docs/release.md`）。核对方法：部署后在该环境的 Sentry 事件或 Langfuse trace 中查看 release，应等于本次部署的 sha；启动日志 `starting akkiabot` 的 `release` 字段也会给出同一个值。
 
 ## 4. 首次部署（干净机器）
 
@@ -536,7 +539,7 @@ echo "exit=$?"
 5. **健康检查与观测核对**：生产侧受 Telegram 平台限制，**不执行 Telegram 相关的主动冒烟**（不在生产群发命令、不用测试账号入群或制造垃圾消息），也不请求生产验证账号（负责人于 BOT-4 决定，2026-11-15）。
    - 非 Telegram 检查：`/readyz`、tunnel、日志中的 `bot started` 和持续的 getUpdates；`https://bot.akkia.moe/version.json` 的 sha；必要时在生产容器内做不经过 Telegram 的后端调用（例如 whois 查询、LLM 判定）。
    - Telegram 能力（私聊命令、群管理命令、入群验证、反垃圾、入群申请提示等）：用自然流量的日志、指标、链路和告警观测，按 `chat_id` 等条件检索；逐项记录**已观测**和**未观测**，未观测不算通过，也不因缺少测试账号阻塞收尾，后续有自然流量时再补记。
-   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<版本>`）的事件。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
+   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<本次部署的完整 sha>`，§3）的事件。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
    结果记录到 BOT-16，包括版本 sha、已观测与未观测的能力。
 
 ### 9.5 回滚
