@@ -50,6 +50,13 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# Full commit sha of this build, reported as the Sentry / Langfuse release
+# `akkiabot@<sha>` (docs/operations.md §3). Declared last so a new sha only
+# rebuilds this metadata layer; builds without the arg fall back to the
+# package version.
+ARG AKKIABOT_GIT_SHA=""
+ENV AKKIABOT_GIT_SHA=${AKKIABOT_GIT_SHA}
+
 USER akkiabot
 WORKDIR /app
 

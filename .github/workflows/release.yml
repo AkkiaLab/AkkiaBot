@@ -56,5 +56,8 @@ jobs:
             ${{ inputs.sha == '' && github.ref == 'refs/heads/master' && format('{0}:latest', env.IMAGE) || '' }}
           labels: |
             org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+          # Read at runtime as the Sentry / Langfuse release akkiabot@<sha>.
+          build-args: |
+            AKKIABOT_GIT_SHA=${{ steps.rev.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -21,7 +21,7 @@ from akkiabot_core.cache import Cache, create_cache
 from akkiabot_core.config import Settings
 from akkiabot_core.db import create_engine, create_session_factory, ping
 from akkiabot_core.observability import REGISTRY
-from akkiabot_server import __version__
+from akkiabot_server import __version__, release_name
 from akkiabot_server.bot.application import (
     ALLOWED_UPDATES,
     build_application,
@@ -118,7 +118,7 @@ class Runtime:
         )
         start_payloads = StartPayloadStore(cache, default_ttl=settings.telegram.start_payload_ttl)
         if llm is None:
-            llm = build_llm(settings, release=__version__)
+            llm = build_llm(settings, release=release_name())
         moderation = ModerationService(session_factory, chat_settings)
         background = BackgroundTasks()
         antispam = settings.antispam
