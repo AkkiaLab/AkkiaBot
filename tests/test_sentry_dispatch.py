@@ -75,7 +75,8 @@ class FakeTasks:
         return self._matches(key)
 
     def find_by_marker(self, key: str) -> list[dict[str, Any]]:
-        return [dict(t) for t in self.tasks if sd.marker(key) in t["description"]]
+        # Like the real `issue search`: results carry an empty metadata object.
+        return [{**t, "metadata": {}} for t in self.tasks if sd.marker(key) in t["description"]]
 
     def list_linked(self) -> list[dict[str, Any]]:
         return [dict(t) for t in self.tasks if t["metadata"].get(sd.META_SOURCE) == sd.SOURCE_VALUE]
