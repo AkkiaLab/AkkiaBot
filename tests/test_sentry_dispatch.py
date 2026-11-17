@@ -361,3 +361,100 @@ def test_redact_truncates_and_strips_backticks() -> None:
     out = sd.redact("`x` " + "a " * 200, limit=20)
     assert len(out) == 20
     assert "`" not in out
+
+
+def test_stale_snapshot_cannot_overwrite_newer_state(tmp_path: Path) -> None:
+    """Notification A reads an older state, B applies a newer one: B's must win."""
+    sentry = FakeSentry({"1001": sentry_issue()})
+    tasks = FakeTasks()
+    dispatcher = sd.Dispatcher(
+        sentry=sentry,
+        tasks=tasks,
+        org=ORG,
+        target_project=TARGET,
+        lock_path=tmp_path / "dispatch.lock",
+        log=lambda _line: None,
+    )
+    dispatcher.sync("1001", may_create=True, reason="w")
+    assert tasks.tasks[0]["metadata"][sd.META_STATE] == "unresolved/new"
+
+    sentry.issues["1001"] = sentry_issue(substatus="escalating")
+    a_reading, release_a = threading.Event(), threading.Event()
+    original_get = sentry.get_issue
+    first = {"armed": True}
+
+    def stalling_get(issue_id: str) -> dict[str, Any] | None:
+        snapshot = original_get(issue_id)
+        if first["armed"]:
+            first["armed"] = False
+            a_reading.set()
+            assert release_a.wait(5)
+        return snapshot
+
+    sentry.get_issue = stalling_get  # type: ignore[method-assign]
+    a = threading.Thread(target=lambda: dispatcher.sync("1001", may_create=True, reason="A"))
+    a.start()
+    assert a_reading.wait(5)
+    # Sentry moves on while A still holds its (now stale) snapshot.
+    sentry.issues["1001"] = sentry_issue(status="resolved", substatus=None)
+    b = threading.Thread(target=lambda: dispatcher.sync("1001", may_create=False, reason="B"))
+    b.start()
+    time.sleep(0.3)  # without the lock around the read, B would finish here
+    release_a.set()
+    a.join(5)
+    b.join(5)
+    assert tasks.tasks[0]["metadata"][sd.META_STATE] == "resolved/-"
+    assert [body.split("：")[1].split("。")[0] for _, body in tasks.comments] == [
+        "`unresolved/new` → `unresolved/escalating`",
+        "`unresolved/escalating` → `resolved/-`",
+    ]
+
+
+# mock: fabricated, unusable credential-shaped values for the output-level redaction test.
+MOCK_SHORT_BEARER = "mock.Short-1"
+MOCK_BASIC = "bW9jazptb2Nr"
+MOCK_URL_PASSWORD = "mockpass"
+MOCK_JWT = "eyJmb2NrIjoxfQ.eyJtb2NrIjoxfQ.mocksig"
+
+
+@pytest.mark.parametrize(
+    ("free_text", "secret"),
+    [
+        (f"HTTPError Authorization: Bearer {MOCK_SHORT_BEARER} rejected", MOCK_SHORT_BEARER),
+        (f"headers={{'Authorization': 'Bearer {MOCK_SHORT_BEARER}'}}", MOCK_SHORT_BEARER),
+        (f"Proxy-Authorization: Basic {MOCK_BASIC}", MOCK_BASIC),
+        (f"sent Bearer {MOCK_SHORT_BEARER} to upstream", MOCK_SHORT_BEARER),
+        (
+            f"connect redis://mockuser:{MOCK_URL_PASSWORD}@cache.invalid:6379/0 failed",
+            MOCK_URL_PASSWORD,
+        ),
+        (f"dsn https://mockkey:{MOCK_URL_PASSWORD}@o0.ingest.invalid/1", MOCK_URL_PASSWORD),
+        (f"login mockuser:{MOCK_URL_PASSWORD}@db.invalid refused", MOCK_URL_PASSWORD),
+        (f"api_key={MOCK_SHORT_BEARER}&x=1 invalid", MOCK_SHORT_BEARER),
+        (f'{{"password": "{MOCK_URL_PASSWORD}"}}', MOCK_URL_PASSWORD),
+        (f"jwt {MOCK_JWT} expired", MOCK_JWT),
+        (f"bot {MOCK_TELEGRAM_SHAPED_TOKEN} rejected", MOCK_TELEGRAM_SHAPED_TOKEN.split(":")[1]),
+    ],
+)
+def test_task_title_and_description_never_carry_credentials(free_text: str, secret: str) -> None:
+    snap = sd.Snapshot(
+        issue_id="1001",
+        short_id="AKKIABOT-STAGING-Z",
+        project_slug=TARGET,
+        status="unresolved",
+        substatus="new",
+        level="error",
+        title=free_text,
+        culprit=free_text,
+        permalink="https://example.invalid/issues/1001/",
+        first_seen="2026-11-17T08:00:00Z",
+        last_seen="2026-11-17T08:05:00Z",
+        count="1",
+        user_count=0,
+        environments=[(free_text, 1)],
+        releases=[(free_text, 1)],
+    )
+    outputs = [sd.task_title(snap), sd.task_description(snap, KEY)]
+    for output in outputs:
+        assert secret not in output
+        assert "mockuser:" not in output

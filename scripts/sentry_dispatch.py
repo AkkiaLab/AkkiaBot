@@ -70,16 +70,34 @@ MAX_PAGES = 50
 CLI_TIMEOUT_SECONDS = 60
 
 _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{30,}\b"), "[token]"),
+    # Authorization headers: the scheme (Bearer, Basic, ...) and the whole value.
     (
-        re.compile(r"(?i)\b(bearer|token|key|secret|password|passwd|authorization)\b\s*[:=]\s*\S+"),
+        re.compile(
+            r"(?i)\b(proxy-authorization|authorization)\b[\"']?\s*[:=]\s*[\"']?"
+            r"(?:[a-z][\w-]*\s+)?[^\s,;\"']+"
+        ),
         r"\1=[redacted]",
     ),
-    (re.compile(r"(https?://[^/\s?#]+)[^\s]*"), r"\1/…"),
+    # Bare auth schemes, e.g. "Bearer <value>" without a header name.
+    (re.compile(r"(?i)\b(bearer|basic|digest|negotiate|token)\s+[^\s,;\"']{4,}"), r"\1 [redacted]"),
+    # key=value / key: value where the key names a credential.
+    (
+        re.compile(
+            r"(?i)\b([\w-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key"
+            r"|credential|cookie|session|signature|dsn|auth)[\w-]*)\b[\"']?\s*[:=]\s*[\"']?[^\s,;\"']+"
+        ),
+        r"\1=[redacted]",
+    ),
+    # URLs: keep scheme and host only (drops userinfo, path, query and fragment).
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*)://(?:[^\s/@]*@)?([^\s/?#:@]+)[^\s]*"), r"\1://\2/…"),
+    # Scheme-less userinfo such as user:pass@host.
+    (re.compile(r"[^\s:/@]+:[^\s@/]+@"), "[credential]@"),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+(?:\.[\w-]+)?"), "[jwt]"),
+    (re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{30,}\b"), "[token]"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[email]"),
     (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "[ip]"),
     (re.compile(r"-100\d{6,}"), "[chat]"),
-    (re.compile(r"\b[A-Za-z0-9_\-+/=]{32,}\b"), "[redacted]"),
+    (re.compile(r"\b[A-Za-z0-9_\-+/=]{32,}"), "[redacted]"),
 ]
 
 
@@ -360,7 +378,7 @@ class Snapshot:
         return TEST_MARKER in self.title
 
     def env_text(self) -> str:
-        return "、".join(f"{name}（{n}）" for name, n in self.environments) or "未知"
+        return "、".join(f"{redact(name, 40)}（{n}）" for name, n in self.environments) or "未知"
 
 
 def load_snapshot(sentry: SentryApi, issue_id: str) -> Snapshot | None:
@@ -472,13 +490,15 @@ class Dispatcher:
     def sync(self, issue_id: str, *, may_create: bool, reason: str) -> str:
         if not re.fullmatch(r"\d{1,20}", issue_id):
             raise DispatchError("issue id must be numeric")
-        snap = load_snapshot(self.sentry, issue_id)
-        if snap is None:
-            return "sentry_issue_not_found"
-        if snap.project_slug != self.target_project:
-            return "project_not_target"
-        key = issue_key(self.org, snap.project_slug, snap.issue_id)
+        # The snapshot is read inside the lock: a snapshot taken before waiting
+        # could be older than one another notification already applied.
         with self._locked():
+            snap = load_snapshot(self.sentry, issue_id)
+            if snap is None:
+                return "sentry_issue_not_found"
+            if snap.project_slug != self.target_project:
+                return "project_not_target"
+            key = issue_key(self.org, snap.project_slug, snap.issue_id)
             found = self._find(key)
             if not found:
                 if not (may_create and snap.status == "unresolved"):
