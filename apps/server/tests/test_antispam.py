@@ -4,15 +4,22 @@ a fake Bot API and a fake OpenAI-compatible endpoint."""
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import pytest
+import sentry_sdk
+import sentry_sdk.integrations as sentry_integrations
+from openai.resources.chat.completions import AsyncCompletions
 
 from akkiabot_antispam.testing import FakeLlm, RecordingTracer, completion, error, verdict_json
 from akkiabot_core.cache import MemoryCache
+from akkiabot_core.config import ObservabilitySettings
 from akkiabot_core.db import ChatMemberRepository, MessageLogRepository, Restriction, session_scope
 from akkiabot_core.db.migrate import upgrade_engine
+from akkiabot_core.observability import init_sentry
+from akkiabot_core.observability import sentry as core_sentry
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.services.chat_settings import Toggle
 from akkiabot_server.services.llm import build_llm
@@ -26,6 +33,7 @@ from akkiabot_server.testing import (
 )
 
 from .conftest import MakeSettings
+from .test_instrumentation import MOCK_SENTRY_DSN, CapturingTransport
 
 CHAT = -1001234567890
 OWNER_ID, MEMBER_ID, SPAMMER_ID, ADMIN_ID = 1, 4, 42, 2
@@ -273,6 +281,95 @@ async def test_llm_failure_fails_open(
     assert api.calls_to("restrictChatMember") == []
     assert metric_value("akkiabot_antispam_llm_errors_total", error="api_error") == errors + 1
     assert verdicts("none", "error") == failed + 1
+
+
+@pytest.fixture(params=[True, False], ids=["openai-integration-off", "control-sdk-default"])
+def sentry_events(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[bool, list[dict[str, Any]]]]:
+    """Sentry via the app's ``init_sentry``; the control run restores the SDK default
+    (OpenAI integration auto-enabled) to prove the assertions catch the misreport."""
+    disabled = bool(request.param)
+    # The SDK decides each integration once per process (``setup_once`` patches the
+    # openai classes for good). Toggle only the ``openai`` entry of its bookkeeping so
+    # both runs work in any order and later tests never see the integration enabled.
+    processed: set[str] = sentry_integrations._processed_integrations  # pyright: ignore[reportPrivateUsage]
+    installed: set[str] = sentry_integrations._installed_integrations  # pyright: ignore[reportPrivateUsage]
+    patched = AsyncCompletions.create.__code__.co_name.startswith("_sentry_patched")
+    installed.discard("openai")
+    if not disabled:
+        monkeypatch.setattr(core_sentry, "disabled_integrations", list)
+        if patched:
+            installed.add("openai")
+        else:
+            processed.discard("openai")
+    transport = CapturingTransport()
+    real_init = sentry_sdk.init
+
+    def init_with_transport(**kwargs: Any) -> Any:
+        return real_init(transport=transport, **kwargs)
+
+    monkeypatch.setattr(sentry_sdk, "init", init_with_transport)
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(settings, release="akkiabot@test")
+    try:
+        yield disabled, transport.events
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
+        installed.discard("openai")
+        processed.add("openai")
+
+
+async def test_handled_llm_error_is_not_reported_to_sentry(
+    sentry_events: tuple[bool, list[dict[str, Any]]],
+    llm: FakeLlm,
+    group: Group,
+    api: FakeBotApi,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    disabled, events = sentry_events
+    assert ("openai" not in sentry_sdk.get_client().integrations) is disabled
+    with sentry_sdk.isolation_scope(), sentry_sdk.new_scope():
+        await group.enable()
+        llm.queue(error(500, "upstream down"))
+        errors = metric_value("akkiabot_antispam_llm_errors_total", error="api_error")
+        failed = verdicts("none", "error")
+        with caplog.at_level(logging.WARNING):
+            await group.say(SPAMMER_ID, "注册即送888彩金")
+        # Business fail-open, metric and warning log are unaffected.
+        assert api.calls_to("deleteMessages") == []
+        assert api.calls_to("restrictChatMember") == []
+        assert metric_value("akkiabot_antispam_llm_errors_total", error="api_error") == errors + 1
+        assert verdicts("none", "error") == failed + 1
+        assert any(r.message == "antispam: llm api error" for r in caplog.records)
+
+        # An unrelated error afterwards is still reported, without a leaked ``chat`` name.
+        try:
+            raise RuntimeError("unrelated")
+        except RuntimeError:
+            sentry_sdk.capture_exception()
+        sentry_sdk.flush()
+
+    unhandled = [
+        e
+        for e in events
+        for v in e.get("exception", {}).get("values", [])
+        if v.get("mechanism", {}).get("type") == "openai"
+    ]
+    unrelated = [
+        e
+        for e in events
+        if any(v.get("type") == "RuntimeError" for v in e.get("exception", {}).get("values", []))
+    ]
+    assert len(unrelated) == 1
+    leaked = str(unrelated[0].get("transaction") or "").startswith("chat ")
+    if disabled:
+        assert unhandled == []
+        assert not leaked
+    else:  # control: the SDK default reproduces both symptoms
+        assert unhandled
+        assert leaked
 
 
 async def test_structured_output_fallback_through_the_bot(

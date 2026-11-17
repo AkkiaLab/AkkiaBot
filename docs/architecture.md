@@ -317,7 +317,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 
 | 信号 | 实现 | 去向 |
 | --- | --- | --- |
-| 异常、慢请求 | `sentry-sdk`（FastAPI 集成 + logging 集成），PTB handler 的异常统一上报 | Sentry |
+| 异常、慢请求 | `sentry-sdk`（FastAPI 集成 + logging 集成），PTB handler 的异常统一上报；显式禁用自动启用的 OpenAI 集成（它会把业务已 fail-open 处理的 LLM 错误记成 unhandled，并把 `chat <model>` 串到无关事件的 transaction 上），LLM 故障由 warning 日志和 `antispam_llm_errors_total` 告警覆盖 | Sentry |
 | LLM 调用 | `langfuse` 包装的 OpenAI 客户端：记录提示词版本、输入输出、耗时、token 用量和判定结果 | Langfuse |
 | 日志 | 结构化 JSON 日志输出到 stdout，字段包含 `chat_id`、`user_id`、`update_id`、`handler`、`trace_id` 等；Alloy 采集 Docker 日志并推送 | Grafana Cloud（Loki） |
 | 指标 / 埋点 | `prometheus-client` 暴露 `/metrics`（只在内网可访问，不经 tunnel 暴露）；Alloy 抓取后推送 | Grafana Cloud（Prometheus） |

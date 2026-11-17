@@ -363,3 +363,5 @@ def test_sentry_initialised_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     # SDK defaults: no PII is collected.
     assert "send_default_pii" not in captured
     assert "data_collection" not in captured
+    # The auto-enabling OpenAI integration stays off (misreports handled LLM errors).
+    assert [i.identifier for i in captured["disabled_integrations"]] == ["openai"]

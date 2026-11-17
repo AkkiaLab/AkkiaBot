@@ -127,7 +127,7 @@ flowchart LR
 | `CORS_ALLOW_ORIGINS` | 空 | 允许跨域访问 API 的来源，逗号分隔；生产为 `https://bot.akkia.moe`。 |
 | `OBSERVABILITY_LOG_LEVEL` | `INFO` | 日志级别。即使设为 `DEBUG`，会在 URL 中带出 token 的第三方日志器也保持固定级别。 |
 | `OBSERVABILITY_SENTRY_DSN` | 空 | 为空时不启用 Sentry。 |
-| `OBSERVABILITY_SENTRY_ENVIRONMENT` | `development` | Sentry 环境名：生产用 `production`，预发布用 `staging`。 |
+| `OBSERVABILITY_SENTRY_ENVIRONMENT` | `development` | Sentry 环境名：生产用 `production`，预发布用 `staging`；本机 e2e `--serve` 启动的被测 bot 固定为 `e2e`，不混入 staging。 |
 | `OBSERVABILITY_SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Sentry 性能采样率，0–1。 |
 | `AKKIABOT_GIT_SHA` | 镜像内置 | **不在 `.env` 中设置。** 构建镜像时由 `release.yml` 以 build arg 写入该镜像对应的完整 commit sha（`deploy/Dockerfile`）。Sentry 与 Langfuse 的 release 都取 `akkiabot@<sha>`；变量为空（本地运行、未传 build arg 的镜像）时回退为 `akkiabot@<包版本>`。见下方“release 与版本的对应关系”。 |
 | `OBSERVABILITY_METRICS_ENABLED` | `true` | 是否启动 `/metrics` 监听器。 |
