@@ -83,8 +83,8 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     # key=value / key: value where the key names a credential.
     (
         re.compile(
-            r"(?i)\b([\w-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key"
-            r"|credential|cookie|session|signature|dsn|auth)[\w-]*)\b[\"']?\s*[:=]\s*[\"']?[^\s,;\"']+"
+            r"(?i)\b([\w-]*(?:token|secret|passw(?:or)?d|pwd|key|bearer|basic|credential"
+            r"|cookie|session|signature|dsn|auth)[\w-]*)\b[\"']?\s*[:=]\s*[\"']?[^\s,;\"']+"
         ),
         r"\1=[redacted]",
     ),
