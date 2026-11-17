@@ -30,6 +30,8 @@ MOCK_OP_TOKEN = "ops_synthetic-service-account-token"
 MOCK_OP_TOKEN_OVERRIDE = "ops_x"
 # mock: 故意畸形的不可用 bot token。
 MOCK_MALFORMED_BOT_TOKEN = "1:x"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
 
 
 def mode(path: Path) -> int:
@@ -173,13 +175,26 @@ def test_server_env_drops_user_sessions_and_op_token(tmp_path: Path) -> None:
     assert env["TELEGRAM_BOT_TOKEN"] == MOCK_MALFORMED_BOT_TOKEN
     assert env["DB_URL"] == f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}"
     assert env["SERVER_HOST"] == env["OBSERVABILITY_METRICS_HOST"] == "127.0.0.1"
-    assert env["OBSERVABILITY_SENTRY_ENVIRONMENT"] == "staging"
+    assert env["OBSERVABILITY_SENTRY_ENVIRONMENT"] == "e2e"
     # The bot under test is pinned to the test environment, whatever the caller set.
     assert env["TELEGRAM_TEST_ENVIRONMENT"] == "true"
     forced = server_env(
         {"TELEGRAM_TEST_ENVIRONMENT": "false"}, db_path=tmp_path / "x", port=1, metrics_port=2
     )
     assert forced["TELEGRAM_TEST_ENVIRONMENT"] == "true"
+
+
+def test_server_env_reports_to_its_own_sentry_environment(tmp_path: Path) -> None:
+    """Even an inherited ``staging`` environment is overridden; the DSN is kept."""
+    base = {
+        "OBSERVABILITY_SENTRY_ENVIRONMENT": "staging",
+        "OBSERVABILITY_SENTRY_DSN": MOCK_SENTRY_DSN,
+    }
+    env = server_env(base, db_path=tmp_path / "bot.db", port=1, metrics_port=2)
+    assert env["OBSERVABILITY_SENTRY_ENVIRONMENT"] == "e2e"
+    assert env["OBSERVABILITY_SENTRY_DSN"] == MOCK_SENTRY_DSN
+    server = ManagedServer(tmp_path, base)
+    assert server.env["OBSERVABILITY_SENTRY_ENVIRONMENT"] == "e2e"
 
 
 def test_query_message_log(tmp_path: Path) -> None:
