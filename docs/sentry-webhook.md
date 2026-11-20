@@ -1,6 +1,6 @@
 # Sentry 报错自动分派
 
-本文说明 Sentry 新增报错、回归和 resolved 如何自动同步为 Multica 小队任务，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`，任务分工见工作区约定。本链路由 BOT-55 建立。
+本文说明 Sentry 新增报错、回归和 resolved 如何自动同步为 Multica 小队任务，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`，任务分工见工作区约定。本链路由 BOT-55（旧工作区编号，已不可访问）建立；配套的 autopilot「Sentry 报错分派」尚待迁入 AkkiaLab 工作区（由 DevOps 主责，外部 webhook 切换需负责人确认），迁入前不会自动建单。
 
 ## 1. 数据流
 
@@ -36,8 +36,8 @@ flowchart LR
    - **resolved**：只同步状态和证据，不关闭任务，任务仍按实现、评审和验收流程收尾。
    - **回归**（`regressed` / `escalating`）：原任务已经 done 或 cancelled 时，重开为 todo，由 Leader 重新指定主责；原任务仍在处理时只评论，不改状态和负责人，也不取消成员正在执行的运行。
 5. 新建任务的规则：
-   - 新任务归小队所有，状态为 todo，由 Leader 指定 Engineer 或 Platform 作为唯一主责。
-   - 标题含 `[BOT-55-WEBHOOK-TEST]` 的测试事件，建为 backlog 状态的 `[测试]` 任务。
+   - 新任务归小队所有，状态为 todo，由 Leader 指定唯一主责。
+   - 标题含 `[SENTRY-WEBHOOK-TEST]` 的测试事件，建为 backlog 状态的 `[测试]` 任务。
    - Sentry 中已是 resolved 的 issue、非目标项目的 issue 不建任务。
 
 **对账**（`reconcile`）用于补上 runtime 离线或转发失败时漏掉的事件：
@@ -85,7 +85,7 @@ Sentry 侧的配置（需要组织 owner 或 manager 在网页上操作）：Set
 
 - 单元测试：`uv run pytest tests/test_sentry_dispatch.py tests/test_sentry_relay.py`，覆盖验签、裁剪、过滤、重投、并发建单、超时后查找、中断后按标识找回、乱序 resolved、回归重开、对账游标和分页。
 - 真实链路：
-  1. 在 staging 环境用 staging DSN 发送一条标题含 `[BOT-55-WEBHOOK-TEST]` 的测试事件，检查建单。
+  1. 在 staging 环境用 staging DSN 发送一条标题含 `[SENTRY-WEBHOOK-TEST]` 的测试事件，检查建单。
   2. 在 Sentry 上 resolve，再 unresolve，检查同一任务收到状态同步。
   3. 用同一个 Request-ID 重放，检查不会重复建单或评论。
   4. 用 Client Secret 签名一个非目标项目的受控请求，中继应返回 `ignored`。

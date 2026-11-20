@@ -2,6 +2,8 @@
 
 本文说明如何对已实现的功能（目前为 M2、M3、M4、M5）做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
 
+> 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
+
 工具代码位于 `tools/e2e`（Python 包 `akkiabot_e2e`，命令 `akkiabot-e2e`）。它只通过 Telegram 黑盒验证，不导入产品代码；产品代码也不依赖它（import-linter 契约 `e2e-black-box`、`product-without-e2e`）。
 
 ## 1. 环境隔离：只使用 Telegram 测试环境

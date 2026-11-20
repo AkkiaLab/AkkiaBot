@@ -1,6 +1,6 @@
 # 版本开发、逐级上合与发布流程
 
-本文是“按版本开发与自动发布”（负责人于 2026-11-15 确认，BOT-38）在仓库中的实现说明与运行手册。来源：BOT-39（实现）、BOT-40（平台接入与 staging 演练）。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
+本文是“按版本开发与自动发布”（负责人于 2026-11-15 确认）在仓库中的实现说明与运行手册。文中的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处（来源：BOT-38 方案、BOT-39 实现、BOT-40 平台接入与 staging 演练）。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
 
 工具入口：`just release <命令>`（即 `python -m scripts.release`，代码在 `scripts/release/`，只依赖 Python 标准库、`git` 和 `gh`）。GitHub Actions 与运行机执行同一份代码。
 
@@ -25,12 +25,12 @@ flowchart LR
 - x 只在重大迭代时变化；每个常规版本占用一个 y（`vX.Y.0`）；z 用于修复发版、加车等小版本。
 - 常规版本 `vX.Y.0` 从**最新 master** 创建；小版本 `vX.Y.Z`（Z>0）从**上一个正式 tag** `vX.Y.(Z-1)` 创建（v1.2.0 → v1.2.1 → v1.2.2），上一个正式 tag 不存在时拒绝创建。
 - 版本号严格校验（`v` 前缀、无前导零），已存在的版本（分支或 tag）不能复用，常规版本不能低于已存在的常规版本。版本按语义排序（v1.10.0 > v1.9.0）。
-- 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 Platform 创建。
+- 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 DevOps 创建。
 - 只有发布 App 能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app` 换取安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
 
 ## 2. 日常开发
 
-- 任务分支从**目标 release** 创建，PR 提向该 release：`git switch -c bot-<编号>-<描述> origin/releases/vX.Y.Z`。原始实现 PR 照常由 Reviewer 评审后 squash 合并。不跟本期上线的任务从下一个 release 开发。
+- 任务分支从**目标 release** 创建，PR 提向该 release：`git switch -c akkia-<编号>-<描述> origin/releases/vX.Y.Z`（PR 标题 `AKKIA-<编号>: …`，正文第一行 `Closes AKKIA-<编号>`）。原始实现 PR 照常由 Reviewer 评审后 squash 合并。不跟本期上线的任务从下一个 release 开发。
 - `release-guard`（`.github/workflows/release-guard.yml`，规则来自 base 分支上的工具代码，不使用 PR 自身的代码，只读）检查：
   - 版本流程启用后（存在任意 `releases/*`），PR 不再直接提向 master；例外是带 `release-forward` 标签的上合冲突解决 PR。
   - base 已封版：拒绝。
@@ -59,7 +59,7 @@ flowchart LR
 
 - 某一跳合并冲突时：中止合并，**只暂停这一方向**，其他方向照常上合。
 - 去重：在仓库中创建一个带 `release-forward-conflict` 标签的 issue，正文含标记 `<!-- release-forward: 来源->目标 -->`。存在打开的同标记 issue 时不会重复创建，也不会重复通知。
-- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR、PR 标题中的 BOT 编号以及恢复步骤；同时向 Multica 自动化 webhook（secret `MULTICA_RELEASE_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷，由 autopilot 为开发小队创建任务（BOT-40 配置）。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
+- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR、PR 标题中的 AKKIA 编号以及恢复步骤；同时向 Multica 自动化 webhook（secret `MULTICA_RELEASE_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷，由 autopilot 为开发小队创建任务。该 autopilot 尚待迁入 AkkiaLab 工作区：迁入前 webhook 通知会丢失，但上合本身由 GitHub Actions 执行不受影响，冲突仍会在仓库 issue 中记录，需要人工关注。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
 - 解决：
 
   ```bash
@@ -69,7 +69,7 @@ flowchart LR
   git push origin HEAD
   ```
 
-  向目标分支提 PR，标题仍按 `BOT-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。发布 App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
+  向目标分支提 PR，标题仍按 `AKKIA-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。发布 App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
   - PR 打开、带 `release-forward` 标签、目标未封版、包含目标当前 HEAD 和一个处于暂停的来源；
   - `akkiabot-reviewer[bot]` 的最新评审是对**当前 head** 的 Approve（其他账号的批准不算）；
   - 任何人的最新评审都不是 Request changes；所有评审线程已解决；
@@ -102,7 +102,7 @@ flowchart LR
 1. 最新 RC 的 `staging-acceptance=success`，且等于分支 HEAD；否则不加锁、不打 tag。
 2. 把分支加入规则集 `releases 封版`（`update`、`deletion`、`non_fast_forward`，无绕过者）：GitHub 直接拒绝之后的 PR 合并和直接推送，上合机器人也无法写入。
 3. 回读：规则集包含该分支，`GET /rules/branches/<分支>` 显示规则已生效，分支 HEAD 仍等于 RC。规则未生效则失败、不打 tag；锁定期间分支被推进（竞态）则撤销锁定、不打 tag，需要新 RC。
-4. 在 RC 的同一 commit 上创建正式 tag，回读确认。tag 保护规则集禁止更新和删除 `v*` tag（BOT-40 配置）。
+4. 在 RC 的同一 commit 上创建正式 tag，回读确认。tag 保护规则集禁止更新和删除 `v*` tag。
 5. 每一步都可重复执行：已锁定、已打 tag 的版本再次封版只补齐锁定；正式 tag 已存在但指向其他 commit 时报错，不移动 tag。
 6. 成功后显式触发 `release-production.yml -f tag=vX.Y.Z`。
 
@@ -165,7 +165,7 @@ flowchart LR
 - master 规则集“master 保护”：禁止删除和强制推送，只允许 squash 合并的 PR、需要解决评审线程、必需检查 `ci-ok` / `secret-scan`，**没有绕过者**；仓库只允许 squash 合并。
 - 已安装的 App：`akkiabot-reviewer`（Reviewer 专用，不复用）、`multica-ai`（只读）、Cloudflare Pages；没有发布 App。环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
 
-建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若负责人另有编号偏好，在创建前于 BOT-38 说明即可，工具不会自动推导首个版本。
+建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若负责人另有编号偏好，在创建前说明即可，工具不会自动推导首个版本。
 
 引导步骤（BOT-40，平台接入完成后执行）：
 
@@ -187,7 +187,7 @@ flowchart LR
 | secret `MULTICA_RELEASE_WEBHOOK_URL` | Multica autopilot webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`；autopilot 以开发小队为负责人建任务。未配置时只在运行摘要中提示 |
 | 运行机 ssh | `~/.ssh/config` 中 `Host greencloud-tyo-01`（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥取自 1Password `AkkiaBot/shared-ssh`） | `just release-deploy production` 的默认目标；也可 `--ssh/--dir` 覆盖 |
 | 标签 | `release:fix`、`release-forward`、`release-forward-conflict` | 不存在时 GitHub 在首次使用时会报错，先创建 |
-| Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由 Platform 另行确定接入方式（BOT-40 遗留项） |
+| Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由 DevOps 另行确定接入方式（平台接入遗留项） |
 
 ## 8. 测试与已知限制
 

@@ -1,19 +1,21 @@
 # PR 评审通知：评审回到原任务唤醒实现者（运维说明）
 
-AkkiaBot 仓库的 PR 收到小队 Reviewer 以外的评审（Copilot、人类）时，自动回到 PR 关联的 Multica 任务，留一条记录并唤醒该任务的实现者处理。小队 Reviewer 的评审继续沿用它自己的交接（在 issue 上 @实现者），这里不重复提醒。来源：BOT-35（父任务 BOT-5）。
+AkkiaBot 仓库的 PR 收到小队 Reviewer 以外的评审（Copilot、人类）时，自动回到 PR 关联的 Multica 任务，留一条记录并唤醒该任务的实现者处理。小队 Reviewer 的评审继续沿用它自己的交接（在 issue 上 @实现者），这里不重复提醒。来源：BOT-35（父任务 BOT-5）；本文中的 `BOT-<编号>` 均为旧工作区任务编号，已不可访问，只作历史出处。
 
-Multica 的 `issue wakeup` 没有 PR 评审事件，`--until-pr` 只支持 checks / merged / conflicts，所以采用与 BOT-25 相同的“GitHub 仓库 webhook → Multica webhook autopilot（run_only）”路径，由分派智能体按下文规则判定后写入原任务。
+> 状态：旧工作区的 autopilot 已停用，本机制尚待迁入 AkkiaLab 工作区（由 DevOps 主责，外部 webhook 切换需负责人确认）。迁入前外部评审不会自动通知，需要时在 issue 上 @ 实现者。
+
+Multica 的 `issue wakeup` 没有 PR 评审事件，`--until-pr` 只支持 checks / merged / conflicts，所以采用“GitHub 仓库 webhook → Multica webhook autopilot（run_only）”路径，由分派智能体按下文规则判定后写入原任务。
 
 ## 组成
 
 | 项 | 值 | 说明 |
 | --- | --- | --- |
-| Autopilot | `PR 评审通知分派（AkkiaLab/AkkiaBot）`，run_only，分派智能体 Mika | 提示词即下文“分派提示词”，以本文为准；改动先改本文再同步到 autopilot |
+| Autopilot | `PR 评审通知分派（AkkiaLab/AkkiaBot）`，run_only，分派智能体在迁入时指定（下文提示词用运行时的 `MULTICA_AGENT_ID` 识别自身，不写死 id） | 提示词即下文“分派提示词”，以本文为准；改动先改本文再同步到 autopilot |
 | Webhook trigger | provider generic，label `github-pr-review` | 事件筛选（网页设置）：event `pull_request_review`，action `submitted` |
 | GitHub 仓库 webhook | `AkkiaLab/AkkiaBot`，只订阅 `Pull request reviews`，JSON，开启 TLS 校验 | URL 含 Multica webhook 令牌，只在 Multica 与 GitHub hook 配置之间传递，不进仓库、评论和日志 |
 | 进度键 | 原任务 metadata `github_review_<review id>`，值 `commented:<评论 id>` / `done:<评论 id>:<唤醒 id 或 none>` | 记录每条评审的处理进度，只有 `done:` 才结束；见“分步状态与失败恢复” |
 
-autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
+autopilot / trigger / hook 的实际 ID 以 Multica 中的 autopilot 配置和 GitHub 仓库 hook 设置为准，不写入仓库。
 
 ## 为什么只订阅 `pull_request_review` / `submitted`
 
@@ -33,13 +35,13 @@ autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
 
 按 user id 判断，不按显示名。已知事实：
 
-- 小队 Reviewer 在 BOT-3（PR #4，2026-11-14 17:36 UTC 合并）之前用 `AkkiaS7` 发过评审（PR #1–#3）；之后所有评审都来自 App，`AkkiaS7` 的评审只剩线程回复。若 Reviewer 再以 `AkkiaS7` 发带正文的评审，本机制无法与负责人本人的评审区分，会产生一次额外提醒；Reviewer 写操作必须走 `reviewer-gh`（见 `docs/reviewer-github-app.md`）。
+- 小队 Reviewer 在 Reviewer App 接入（PR #4，2026-11-14 17:36 UTC 合并）之前用 `AkkiaS7` 发过评审（PR #1–#3）；之后所有评审都来自 App，`AkkiaS7` 的评审只剩线程回复。若 Reviewer 再以 `AkkiaS7` 发带正文的评审，本机制无法与负责人本人的评审区分，会产生一次额外提醒；Reviewer 写操作必须走 `reviewer-gh`（见 `docs/reviewer-github-app.md`）。
 - 负责人用 `AkkiaS7` 在已有线程里只做回复（不写评审正文）时，按上面的规则会被当成实现者回复跳过；需要实现者处理时请在 issue 上 @ 实现者，或提交带正文的评审。
 
 ## 路由、状态与去重
 
 1. **范围**：只处理 `repository.id = 1457915068`（`AkkiaLab/AkkiaBot`）且 PR 为 open 的事件。已关闭 / 已合并 PR 上的评审只在运行输出说明，不写任何内容。
-2. **关联**：从 PR 标题、head 分支、正文中 `Closes/Fixes/Resolves BOT-<n>` 提取候选编号，再用 `multica issue pull-requests` 核对该 issue 确实关联了这个 PR（仓库与编号一致、`link_source` 非空）。只认恰好一个已关联的 issue；没有关联或无法确定时不路由、不创建任务。
+2. **关联**：从 PR 标题、head 分支、正文中 `Closes/Fixes/Resolves AKKIA-<n>` 提取候选编号，再用 `multica issue pull-requests` 核对该 issue 确实关联了这个 PR（仓库与编号一致、`link_source` 非空）。只认恰好一个已关联的 issue；没有关联或无法确定时不路由、不创建任务。
 3. **原任务状态**：done / cancelled 不重开、不唤醒，只留一条记录评论；其他状态正常处理。
 4. **实现者**：原任务负责人是智能体且不是 Reviewer 时唤醒它；负责人是成员、为空或为 Reviewer 时只留记录评论，不唤醒。
 5. **分步状态与失败恢复**（每条评审独立推进，任何一步失败都可从断点续做）：
@@ -48,7 +50,7 @@ autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
    - 唤醒：见下一条“并发收敛”。确认存在一条有效唤醒（或按状态规则无须唤醒）后才写 `done:<评论 id>:<唤醒 id 或 none>`。
    - 任一步失败或运行中断：已发的评论 / 已建的唤醒会被下一次处理按标记找到并复用，不会漏通知也不会重复。
 6. **并发收敛**（平台没有原子的“已存在则跳过”：实测两次并发 `wakeup create` 会生成两条规则）：
-   - 本机制的资源范围：由分派智能体（Mika）创建、启用中、`kind=at`、`fire_count=0`、目标为同一实现者、指令以 `[review-notify]` 开头的待触发唤醒。这些规则只由本机制创建，任何一次分派运行都可以清理。
+   - 本机制的资源范围：由分派智能体创建、启用中、`kind=at`、`fire_count=0`、目标为同一实现者、指令以 `[review-notify]` 开头的待触发唤醒。这些规则只由本机制创建，任何一次分派运行都可以清理。
    - 没有候选才新建（延迟 2 分钟）；新建后等 5 秒重新列出，只保留创建时间最早（同时间取 id 最小）的一条，**其余候选全部删除，不论是哪次运行创建的**。删除会撤回该规则尚未开始的运行。
    - 收敛不依赖创建者存活：全局最早的那条规则，任何看到它的运行都会保留，没有人会删它；比它晚的规则，只要后来有任何运行看到，就会被删除。所以某个创建者在建完规则后中断，它的遗留规则会被下一次分派运行（同 issue 的新评审、该评审的补偿重试、补偿扫描）删除。
    - 实现者兜底：唤醒指令要求实现者在开始处理前，删除本 issue 上其余指向自己的待触发 `[review-notify]` 规则（正在触发的那条 `fire_count>0`，不在其中）。这些规则对应的评审在本次运行开始前已经提交，会在本次运行中一并处理。即使中断遗留的规则在所有分派运行结束后才出现，也会在实现者开始处理前被清掉（同时触发的边界见第 7 条）。
@@ -64,14 +66,14 @@ autopilot / trigger / hook 的实际 ID 记录在 BOT-35 中。
 
 ## 成本
 
-GitHub 和 Multica 的事件筛选都无法按评审者过滤，小队 Reviewer 的每次评审（含线程回复）仍会启动一次分派运行，分派智能体不调用任何工具即判定结束，耗时数秒，**不是零消耗**。如需零消耗，可改为 GitHub Actions 先按评审者过滤再转发到 webhook（需要把 webhook URL 存为仓库 secret，参照 BOT-30 的 `MULTICA_PRUNE_WEBHOOK_URL`），目前未采用。
+GitHub 和 Multica 的事件筛选都无法按评审者过滤，小队 Reviewer 的每次评审（含线程回复）仍会启动一次分派运行，分派智能体不调用任何工具即判定结束，耗时数秒，**不是零消耗**。如需零消耗，可改为 GitHub Actions 先按评审者过滤再转发到 webhook（需要把 webhook URL 存为仓库 secret，参照 `MULTICA_PRUNE_WEBHOOK_URL` 的做法），目前未采用。
 
 ## 分派提示词
 
 以下内容原样作为 autopilot 描述（run_only 运行提示词）。
 
 ```text
-PR 评审通知分派（BOT-35 配置，规则见 AkkiaBot 仓库 docs/review-notify.md）。本运行由 GitHub 仓库 webhook 推送触发时，Trigger payload 即 GitHub 原始 pull_request_review 载荷；手动触发时没有该载荷，执行“补偿扫描”。你只做判定和通知，不改代码、不在 GitHub 上写任何内容、不创建 issue，不在输出或评论中复述 webhook URL 或令牌。下文 $M 指 "$MULTICA_CLI_PATH"。
+PR 评审通知分派（规则见 AkkiaBot 仓库 docs/review-notify.md）。本运行由 GitHub 仓库 webhook 推送触发时，Trigger payload 即 GitHub 原始 pull_request_review 载荷；手动触发时没有该载荷，执行“补偿扫描”。你只做判定和通知，不改代码、不在 GitHub 上写任何内容、不创建 issue，不在输出或评论中复述 webhook URL 或令牌。下文 $M 指 "$MULTICA_CLI_PATH"。
 
 ## 0. 入口
 - 有 pull_request_review 载荷：按第 1 步判定；通过后对这一条评审执行“处理流程 P”。
@@ -94,8 +96,8 @@ gh api --paginate repos/AkkiaLab/AkkiaBot/pulls/N/reviews/RID/comments --jq '.[]
 - 评审者 id = 68485070（AkkiaS7）且 B 为空且 C = R：结束（实现者在线程中的回复）。
 
 ### P2. 找到关联任务
-- 候选编号：PR 标题中的 BOT-<n>（不区分大小写）、head 分支中的 bot-<n>、PR 正文中紧跟 Closes/Fixes/Resolves 的 BOT-<n>，去重（补偿扫描时用 gh pr view N -R AkkiaLab/AkkiaBot --json title,headRefName,body 取得）。
-- 对每个候选：$M issue get BOT-<n> --output json；$M issue pull-requests BOT-<n> --output json。pull_requests 中存在 repo_owner = AkkiaLab、repo_name = AkkiaBot、number = N 且 link_source 非空的条目才算已关联。
+- 候选编号：PR 标题中的 AKKIA-<n>（不区分大小写）、head 分支中的 akkia-<n>、PR 正文中紧跟 Closes/Fixes/Resolves 的 AKKIA-<n>，去重（补偿扫描时用 gh pr view N -R AkkiaLab/AkkiaBot --json title,headRefName,body 取得）。
+- 对每个候选：$M issue get AKKIA-<n> --output json；$M issue pull-requests AKKIA-<n> --output json。pull_requests 中存在 repo_owner = AkkiaLab、repo_name = AkkiaBot、number = N 且 link_source 非空的条目才算已关联。
 - 恰好一个已关联任务才继续（记为 ISSUE，取 id、identifier、status、assignee_type、assignee_id）；零个或多个：结束，输出原因。
 
 ### P3. 进度状态（不是闸门）
@@ -108,13 +110,13 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 - MARK = 首行文本 “[review-notify] PR #N review RID”。
 - 查找：$M issue comment list <ISSUE id> --roots-only --summary --since <T 减 1 分钟，RFC3339> --output json，取 content 以 MARK 开头的评论。
 - 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、处理方式（已唤醒 / 原任务已关闭未唤醒 / 负责人不是实现智能体未唤醒，按 P5 的判断填写）。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
-- 收敛：等待 5 秒后按同样方式重新查找；只看 author_type = agent 且 author_id = 1178379b-5f95-4519-9310-7b902d4cd59d（分派智能体）、content 以 MARK 开头的评论，按 (created_at, id) 最小者为 CID，其余这类评论全部 $M issue comment delete <评论 id>（不论是哪次运行发的；不删其他作者的评论）。
+- 收敛：等待 5 秒后按同样方式重新查找；只看 author_type = agent 且 author_id = 本运行智能体自身（环境变量 MULTICA_AGENT_ID）、content 以 MARK 开头的评论，按 (created_at, id) 最小者为 CID，其余这类评论全部 $M issue comment delete <评论 id>（不论是哪次运行发的；不删其他作者的评论）。
 - $M issue metadata set <ISSUE id> --key github_review_RID --value commented:CID --type string --output json
 
 ### P5. 唤醒实现者（先查后建、建后收敛）
 - ISSUE.status 为 done 或 cancelled：不唤醒、不改状态，W = none。
-- assignee_type ≠ agent，或 assignee_id = 77ea0846-9b13-4d08-ab12-a884e536a484（Reviewer）：不唤醒，W = none。
-- 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 1178379b-5f95-4519-9310-7b902d4cd59d（分派智能体）且 instruction 以 “[review-notify]” 开头的规则。
+- assignee_type ≠ agent，或 assignee_id = 60f2a233-d86f-4c9a-aa0e-63e2592433bd（小队 Reviewer Ginoza）：不唤醒，W = none。
+- 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 本运行智能体自身（MULTICA_AGENT_ID）且 instruction 以 “[review-notify]” 开头的规则。
 - 没有候选：在工作目录写指令文件，内容：
     [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
   然后 $M issue wakeup create <ISSUE id> --agent-id TARGET --kind at --after 2m --instruction-file <文件> --output json，
@@ -130,7 +132,7 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 不修改 issue 状态和负责人，不修改本自动化配置。输出只写：入口、每条评审的判定结果与原因、ISSUE 编号（如有）、CID 与 W（是否唤醒）。
 ```
 
-## 并发与恢复验证（2026-11-15，BOT-35）
+## 并发与恢复验证（2026-11-15，旧工作区 BOT-35，已不可访问）
 
 在 BOT-35 上用真实 Multica CLI 按 P3–P6 的同一套步骤模拟（复审补充的中断场景按“其余候选全部删除”的版本重跑；唤醒延迟改为 12 小时、目标为 Engineer，测完全部删除；记录评论改发在一个评论线程内，因为评论触发的运行不能发顶层评论，webhook 运行不受此限）：
 
@@ -147,11 +149,11 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 | A 完成后才出现中断者遗留的唤醒（A 看不到），再来一次分派运行 | 新运行删除遗留规则，保留最早的一条 |
 | 中断遗留后没有任何后续分派 | 实现者开始前的清理删除其余待触发规则 |
 
-真实 webhook 运行中的失败恢复、补偿扫描和端到端通知，需在 GitHub hook 接入后验证，结果记在 BOT-35。
+真实 webhook 运行中的失败恢复、补偿扫描和端到端通知，见下一节。
 
-## 端到端验收（2026-11-15，BOT-35）
+## 端到端验收（2026-11-15，旧工作区 BOT-35，已不可访问）
 
-GitHub hook 与 autopilot 启用后，在 PR #37（关联 BOT-35）和临时的未关联草稿 PR #38 上实测：外部意见路由与唤醒、未关联 PR 不路由、重投去重、补偿扫描补回接入前遗漏的评审、Engineer 删除分派智能体创建的唤醒规则。逐项证据（运行 id、delivery、规则 id）记录在 BOT-35。
+GitHub hook 与 autopilot 启用后，在 PR #37（关联 BOT-35）和临时的未关联草稿 PR #38 上实测：外部意见路由与唤醒、未关联 PR 不路由、重投去重、补偿扫描补回接入前遗漏的评审、Engineer 删除分派智能体创建的唤醒规则。上述项目全部按预期通过；逐项证据（运行 id、delivery、规则 id）记录在旧工作区，已不可访问。迁入 AkkiaLab 后需重新做一次端到端验收。
 
 已知：Copilot 因额度不足无法评审时，也会提交一条带正文的 review，按现行规则会通知实现者，实现者确认无意见后结束。
 

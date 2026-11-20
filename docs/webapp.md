@@ -64,7 +64,7 @@ flowchart LR
 
 生产发布与切换仍是负责人确认的操作：`webapp-production` 环境要求负责人（GitHub `AkkiaS7`）审批。智能体可以触发 `webapp-promote.yml`，但不审批生产部署。由于智能体也使用该 GitHub 账号，这条限制靠流程约束，不是技术隔离。
 
-GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，见 BOT-4 中负责人的决定）：
+GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，负责人 2026-11-14 决定）：
 
 | 位置 | 名称 | 值 / 来源 |
 | --- | --- | --- |
