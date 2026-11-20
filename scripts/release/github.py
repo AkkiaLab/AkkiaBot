@@ -1,4 +1,4 @@
-"""GitHub (and Multica webhook) access for the release flow.
+"""GitHub (and release notification webhook) access for the release flow.
 
 ``GitHub`` is the interface the logic depends on; ``GhCli`` implements it with
 ``gh api`` so the token stays in ``gh``'s environment (``GH_TOKEN`` in Actions,
@@ -29,10 +29,10 @@ SEALED_RULE_TYPES = frozenset({"update", "deletion", "non_fast_forward"})
 CONFLICT_LABEL = "release-forward-conflict"
 FORWARD_LABEL = "release-forward"
 FIX_LABEL = "release:fix"
-#: Bot user ID of the workspace agent App ``akkialab-agent`` (App ID 5760780; it
-#: does both review and release, docs/release.md §7). Its approval is the only one that
+#: Bot user ID of the GitHub App ``akkialab-agent`` (App ID 5760780; it does both
+#: review and release, docs/release.md §7). Its approval is the only one that
 #: lets the release flow land a conflict resolution. Matched by ID, never by login: the
-#: login follows the App name, the ID survives renames (AKKIA-25).
+#: login follows the App name, the ID survives renames.
 REVIEWER_BOT_ID = 356702926
 #: Identity label of that App in gate results. Logins never contain spaces or
 #: parentheses, so no other account can map to this label.
@@ -116,7 +116,7 @@ class RunNotTerminatedError(ReleaseError):
 class GhCli:
     """``GitHub`` over ``gh api``; ``repo`` is ``owner/name``."""
 
-    def __init__(self, repo: str, *, webhook_env: str = "MULTICA_RELEASE_WEBHOOK_URL") -> None:
+    def __init__(self, repo: str, *, webhook_env: str = "RELEASE_NOTIFY_WEBHOOK_URL") -> None:
         self.repo = repo
         self.webhook_env = webhook_env
         self.sleep = time.sleep
@@ -478,12 +478,12 @@ class GhCli:
 
     # -------------------------------------------------------------- webhook
     def notify(self, payload: dict[str, Any]) -> str:
-        """POST to the Multica autopilot webhook. The URL is a secret: never printed."""
+        """POST to the optional release notification webhook. The URL is a secret: never printed."""
         url = os.environ.get(self.webhook_env, "")
         if not url:
-            return f"未配置 {self.webhook_env}，未通知 Multica"
+            return f"未配置 {self.webhook_env}，未发送发布通知"
         if not url.startswith("https://"):
-            return f"{self.webhook_env} 不是 https 地址，未通知 Multica"
+            return f"{self.webhook_env} 不是 https 地址，未发送发布通知"
         request = urllib.request.Request(  # noqa: S310 - https enforced above
             url,
             data=json.dumps(payload, ensure_ascii=False).encode(),
@@ -492,11 +492,11 @@ class GhCli:
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-                return f"已通知 Multica（HTTP {response.status}）"
+                return f"已发送发布通知（HTTP {response.status}）"
         except urllib.error.HTTPError as exc:
-            return f"通知 Multica 失败（HTTP {exc.code}）"
+            return f"发送发布通知失败（HTTP {exc.code}）"
         except (urllib.error.URLError, TimeoutError) as exc:
-            return f"通知 Multica 失败（{type(exc).__name__}）"
+            return f"发送发布通知失败（{type(exc).__name__}）"
 
 
 def review_problems(

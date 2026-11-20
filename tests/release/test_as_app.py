@@ -108,7 +108,7 @@ def test_success_hands_token_via_environment_only(env: dict[str, str]) -> None:
     args = Path(env["FAKE_ARGS"]).read_text()
     for secret in ("Authorization", "Bearer", "BEGIN", "mock-op-service-account-token"):
         assert secret not in args
-    # The token is requested for the release purpose only (AKKIA-25), with the same
+    # The token is requested for the release purpose only, with the same
     # permission set the release-setup action and app_permissions declare.
     body = next(line for line in args.splitlines() if "access_tokens" in line)
     requested = json.loads(body.split("-d ", 1)[1].rsplit(" ", 1)[0])

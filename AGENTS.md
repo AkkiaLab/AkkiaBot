@@ -4,55 +4,50 @@
 
 ## 密钥与配置
 
-- 密钥统一放在 1Password 的 `AkkiaBot` vault，条目按 `<环境>-<用途>` 命名（`e2e-*`、`staging-*` 供 dev/staging 共用、`prod-*`）；dev/staging 共用一个 Cloudflare token，prod 用另一个（负责人 2026-11-14 决定）。服务账号可读写，工具会自动写回会话、测试 bot、群 id。测试密钥可在 Multica 内部共享，但仓库是公开的：仓库、PR、CI 日志只出现 `op://` 引用（`tools/e2e/*.env.tpl`）与 `.env.example`。字段清单见 `docs/e2e-acceptance.md` 第 3 节。
+- 密钥统一放在 1Password 的 `AkkiaBot` vault，条目按 `<环境>-<用途>` 命名（`e2e-*`、`staging-*` 供 dev/staging 共用、`prod-*`）；dev/staging 共用一个 Cloudflare token，prod 用另一个。服务账号可读写，工具会自动写回会话、测试 bot、群 id。测试密钥只在维护者之间经受控渠道共享，仓库是公开的：仓库、PR、CI 日志只出现 `op://` 引用（`tools/e2e/*.env.tpl`）与 `.env.example`。字段清单见 `docs/e2e-acceptance.md` 第 3 节。
 - 不得把 token、DSN、Telegram 会话、验证码、两步验证密码写进仓库、PR、日志或命令行参数；写入 1Password 时值经 stdin 传递。交接时说明 1Password 中的位置即可。
 - 测试与文档中的凭据样例：一律使用一看就是假的、且**不符合真实凭据格式**的占位值，例如 bot token 用 `123456:fake-bot-token-for-tests`（真实格式为 8–10 位 bot id + `:AA` 开头的 35 位串），其他密钥用 `fake-api-hash-for-tests` 这类低熵字符串。不要照抄官方文档的示例 token，不要手写"看起来真实"的随机串，也不要用字符串拼接（如 `"123456:" + "A" * 35`）凑出真实格式或绕过扫描。需要能被解析器识别的 token（如 BotFather 回复解析）时复用 `akkiabot_e2e.testing.MOCK_BOT_TOKEN`。
-- 凭据形样例必须就地声明为 mock（负责人要求）：赋给 `MOCK_`（局部变量用 `mock_`）开头的名称，并在同一行或上一行写 `# mock: ...` 注释，说明是人工构造、不可用的测试值；不要在调用参数、字典、f-string 里直接写字面量。`tests/test_secret_samples.py` 会拦截已跟踪文件中的真实 Telegram bot token 格式，以及未按此声明的凭据形字面量（`<数字>:<字母…>`、`ghs_`/`ops_` 等前缀、Sentry DSN、api_hash、webhook secret、Telethon 会话串），失败时只报告位置。
+- 凭据形样例必须就地声明为 mock：赋给 `MOCK_`（局部变量用 `mock_`）开头的名称，并在同一行或上一行写 `# mock: ...` 注释，说明是人工构造、不可用的测试值；不要在调用参数、字典、f-string 里直接写字面量。`tests/test_secret_samples.py` 会拦截已跟踪文件中的真实 Telegram bot token 格式，以及未按此声明的凭据形字面量（`<数字>:<字母…>`、`ghs_`/`ops_` 等前缀、Sentry DSN、api_hash、webhook secret、Telethon 会话串），失败时只报告位置。
 - 凭据扫描门禁见 `docs/secret-scanning.md`：pre-commit 扫暂存区，pre-push 扫公开 remote `origin` 还没有的提交并运行 `test_secret_samples`（`just setup` 会同时安装两类钩子），CI 的固定检查 `secret-scan` 扫全部提交，`just secret-scan` 可在本地复现。命中后只报告规则、文件、行号；不要用 `--no-verify`、拼接或宽泛 allowlist 绕过，未知告警不得直接写入 `.gitleaksignore`。
-- 安全告警不能只凭来源记录判定为构造值，还要用服务方无副作用的只读接口实际验证（如 Telegram `getMe`），来源证据与验证结果分开记录；凭据只在进程内读取，不进命令参数、日志、含值 URL 或报告。网络失败、限流或本地格式拒绝记为"未验证"；若意外有效，停止调用并请负责人吊销/轮换。
+- 安全告警不能只凭来源记录判定为构造值，还要用服务方无副作用的只读接口实际验证（如 Telegram `getMe`），来源证据与验证结果分开记录；凭据只在进程内读取，不进命令参数、日志、含值 URL 或报告。网络失败、限流或本地格式拒绝记为"未验证"；若意外有效，停止调用并请凭据所有者吊销/轮换。
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
-- 真实产品数据不公开（负责人 2026-11-15 决定）：仓库是公开的，真实业务统计（群数、成员数、消息数、禁言人数、命中率等）、生产指标数值及其截图、导出和验收记录，都不能写进代码、文档、PR / issue 评论或公开的 CI 产物，也不能用汇总统计或“约 N 万”之类的近似值绕过。真实数据和验收证据只放在有访问控制的内部记录（Multica issue、1Password、生产机上权限 600 的报告）；公开文档只写方法、指标定义、查询模板和明确标注的虚构示例。发现已公开的内容，先在受控位置留存原文，再清理并在内部记录位置与处理状态，报告中不复述数值；历史提交等仍可访问的残留如实列出，历史重写等额外操作先提方案、经确认再执行。
+- 真实产品数据不公开：仓库是公开的，真实业务统计（群数、成员数、消息数、禁言人数、命中率等）、生产指标数值及其截图、导出和验收记录，都不能写进代码、文档、PR / issue 评论或公开的 CI 产物，也不能用汇总统计或“约 N 万”之类的近似值绕过。真实数据和验收证据只放在有访问控制的内部记录（私有任务记录、1Password、生产机上权限 600 的报告）；公开文档只写方法、指标定义、查询模板和明确标注的虚构示例。发现已公开的内容，先在受控位置留存原文，再清理并在内部记录位置与处理状态，报告中不复述数值；历史提交等仍可访问的残留如实列出，历史重写等额外操作先提方案、经确认再执行。
 
-## 任务编号与 PR 约定
+## PR 约定
 
-- 任务在 Multica 工作区 AkkiaLab 跟踪，issue 前缀为 `AKKIA`。提交约定：PR 标题形如 `AKKIA-<编号>: <中文摘要>`，正文**第一行**写 `Closes AKKIA-<编号>`，分支名包含小写编号，如 `akkia-<编号>-<简短英文描述>`。
-- CI 校验（`pr-title`，`scripts/check_pr_meta.py`）只检查：标题符合 `AKKIA-<编号>: <摘要>`；正文中有以 `Closes AKKIA-<编号>` 开头的一行（不要求在第一行）；该编号与标题编号一致。旧前缀 `BOT-` 在标题和正文中都不再被接受。“正文第一行”与分支名是提交约定，CI 不检查，由实现者自查、Reviewer 复核。
-- 仓库代码注释、测试、文档和提交历史中出现的 `BOT-<编号>` 都是旧工作区（已停用）的任务编号，**已不可访问**，只作历史出处；需要的结论已写在仓库文档中，不要据此去查找任务。新的引用一律使用 `AKKIA-<编号>`。
-- 智能体、小队、项目等 Multica 对象 ID 不写死在仓库里，以 Multica 中的项目与 autopilot 配置为准。
+- PR 标题和正文写清改了什么、怎么验证的；CI 不检查标题格式或任务编号。
+- 代码注释、测试、文档和提交历史中出现的 `BOT-<编号>` 等任务编号是历史出处，外部**不可访问**；需要的结论已写在仓库文档中，不要据此去查找任务，新的代码和文档也不要再引用任务编号。
 
 ## 版本分支与发布
 
-- 按版本开发（负责人于 2026-11-15 确认；实现见 `docs/release.md`）：任务分支从目标 `releases/vX.Y.Z` 创建，PR 提向该 release，不再默认基于 master 或提向 master；不跟本期上线的任务提向下一个 release，缺失的版本分支由 DevOps 创建（`just release-app create`）。常规版本从最新 master 创建，小版本从上一个正式 tag 创建。
-- 原始实现 PR 由 Reviewer squash 合并；release 之间及到 master 的逐级上合由流水线以 merge commit 完成并保留 merge 关系，冲突时自动建任务，按 `docs/release.md` §3.3 用带 `release-forward` 标签的 PR 解决（不 squash）。
+- 按版本开发（实现见 `docs/release.md`）：任务分支从目标 `releases/vX.Y.Z` 创建，PR 提向该 release，不默认基于 master 或提向 master；不跟本期上线的改动提向下一个 release，缺失的版本分支由维护者创建（`just release-app create`）。常规版本从最新 master 创建，小版本从上一个正式 tag 创建。
+- 原始实现 PR 经评审后 squash 合并；release 之间及到 master 的逐级上合由流水线以 merge commit 完成并保留 merge 关系，冲突时自动开 issue，按 `docs/release.md` §3.3 用带 `release-forward` 标签的 PR 解决（不 squash）。
 - 发布日 18:00（UTC+8）当前常规版本冻结新增功能：修复 PR 加 `release:fix` 标签，功能下车到下一个 release。`release-guard` 检查 PR 的目标、冻结与基分支。
-- 已封版分支不接收任何 PR、推送或上合；正式 tag `vX.Y.Z` 与 RC tag 永不移动或删除。正式 tag 不等于生产部署成功，生产以部署记录为准，生产切换仍需负责人审批。
+- 已封版分支不接收任何 PR、推送或上合；正式 tag `vX.Y.Z` 与 RC tag 永不移动或删除。正式 tag 不等于生产部署成功，生产以部署记录为准，生产切换需维护者审批。
 
 ## 部署与运行环境
 
-- staging、production 一律用仓库 `deploy/compose.yaml` 完整 docker compose 部署，不在服务器上直接运行二进制或 `uv run`（负责人 2026-11-15 要求）。
+- staging、production 一律用仓库 `deploy/compose.yaml` 完整 docker compose 部署，不在服务器上直接运行二进制或 `uv run`。
 - 开发和测试用到的 PostgreSQL、Redis 等环境服务也由 docker compose 提供（`deploy/compose.dev.yaml`、`just services`）；只有我们自己的代码为了方便调试和迭代，允许在本机直接运行。
 
 ## 真实 Telegram 验收
 
 - 一律使用 Telegram 测试环境（MTProto 测试 DC、Bot API `/test/` 端点、测试环境 BotFather），无法使用时报错阻塞，不回退生产；产品侧开关为 `TELEGRAM_TEST_ENVIRONMENT`。
-- 分层验收（负责人于 2026-11-14 确认，取代“每个需求都完整真实验收”和“staging 客户端验收必须人工完成”的旧要求）：
-  - **单个需求 / PR**：只验证改动**明确涉及**的场景（规则适用于所有场景，负责人已确认）。用 `just e2e --scenarios <场景>`（本机 `--serve`，只复用固定测试群、不新建群），把报告 `report.md` 贴回对应 issue。
+- 分层验收：
+  - **单个需求 / PR**：只验证改动**明确涉及**的场景（规则适用于所有场景）。用 `just e2e --scenarios <场景>`（本机 `--serve`，只复用固定测试群、不新建群），报告 `report.md` 只放在受控的内部记录。
     - 无法判断是否受影响时默认跳过；共享配置、handler 注册、依赖升级等也按不受影响处理，除非确实改到了相关场景的代码。staging 发版同样只验收差异，间接影响不会被自动补跑。
     - PR 描述列出“已验证的场景”和“未验证、留给 staging”的部分。报告中未选中的场景记为跳过，不计为通过。
-    - 选择规则见 `docs/e2e-acceptance.md` §6“PR 级验收的场景选择”，入群限流见 §7。两次验收之间不再要求固定间隔（负责人已取消“全量至少间隔约 1 小时”）；失败后先查清原因再重跑，不盲目连续重试，FloodWait、`PEER_FLOOD` 如实报错。
-  - **staging 发版**：可以累积多个已合并的任务，再由智能体对已部署的 staging 栈执行**差异**自动化验收（负责人决定）：`just release-staging <RC tag> <场景>`（部署 RC 并在同一把锁内执行 `just e2e-staging --record-status <RC sha> --baseline <该 sha 谱系中上一个通过 staging-acceptance 的祖先> --scenarios <场景>`，`docs/release.md` §4.1），只跑基线以来产品改动明确涉及的场景，选择规则与 PR 级相同；没改加群流程就不跑入群相关场景，无法判断时默认跳过并如实列出。选中的场景全部实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本、基线、场景和结果。需要时仍可不带 `--scenarios`/`--baseline` 执行全量。细则见 `docs/e2e-acceptance.md` §6.2。
-  - **prod 发布**：只发布已通过 staging 验收、经封版打正式 tag 的 sha（`release-production.yml` 审批后 `just release-deploy production <tag>`，前端随后经 `webapp-promote.yml`，`docs/release.md` §4.3）。只做环境配置检查、健康检查和非 Telegram 的必要冒烟（例如 `/readyz`、`webapp-promote.yml` 的页面检查），不重复全量验收。生产侧受 Telegram 平台限制，不执行 Telegram 相关的主动冒烟，也不请求生产验证账号；相关能力通过自然流量的日志、指标、链路和告警观测，分别记录已覆盖和未观测的能力，未观测不算通过，也不因缺少测试账号阻塞收尾（负责人 2026-11-15 决定）。生产发布、切换和数据迁移仍需负责人确认；智能体不审批 `webapp-production` 部署。
+    - 选择规则见 `docs/e2e-acceptance.md` §6“PR 级验收的场景选择”，入群限流见 §7。两次验收之间不要求固定间隔；失败后先查清原因再重跑，不盲目连续重试，FloodWait、`PEER_FLOOD` 如实报错。
+  - **staging 发版**：可以累积多个已合并的改动，再对已部署的 staging 栈执行**差异**自动化验收：`just release-staging <RC tag> <场景>`（部署 RC 并在同一把锁内执行 `just e2e-staging --record-status <RC sha> --baseline <该 sha 谱系中上一个通过 staging-acceptance 的祖先> --scenarios <场景>`，`docs/release.md` §4.1），只跑基线以来产品改动明确涉及的场景，选择规则与 PR 级相同；没改加群流程就不跑入群相关场景，无法判断时默认跳过并如实列出。选中的场景全部实际执行并通过才写入 commit status `staging-acceptance=success`（跳过不计为通过），并在发版记录中写明版本、基线、场景和结果。需要时仍可不带 `--scenarios`/`--baseline` 执行全量。细则见 `docs/e2e-acceptance.md` §6.2。
+  - **prod 发布**：只发布已通过 staging 验收、经封版打正式 tag 的 sha（`release-production.yml` 审批后 `just release-deploy production <tag>`，前端随后经 `webapp-promote.yml`，`docs/release.md` §4.3）。只做环境配置检查、健康检查和非 Telegram 的必要冒烟（例如 `/readyz`、`webapp-promote.yml` 的页面检查），不重复全量验收。生产侧受 Telegram 平台限制，不执行 Telegram 相关的主动冒烟，也不请求生产验证账号；相关能力通过自然流量的日志、指标、链路和告警观测，分别记录已覆盖和未观测的能力，未观测不算通过，也不因缺少测试账号阻塞收尾。生产发布、切换和数据迁移需维护者确认；智能体不审批 `webapp-production` 部署。
 - 缺少凭据时，工具以退出码 77 跳过，不能当作通过。自动化做不到的步骤要如实列出（报告中的“未自动化”），不能用 mock、测试 key 或绕过检测的手段冒充通过。目前唯一的已知项是 Mini App 中真实 Turnstile 挑战的完成与随后的解除禁言，`m7.captcha` 只自动化到“提交未通过 Turnstile 的 token 被拒绝”。本地 `just e2e-turnstile-test-keys`（`m7.captcha-test-keys`）用 Cloudflare 官方测试 key 跑通通过/拒绝链路，报告单独标为“官方测试 key”，属于另一类证据，不能替代 staging 真实 widget 的证据（`docs/e2e-acceptance.md` §6.4）。
 - 只使用白名单中的两个测试账号和专用测试群（staging 发版验收使用单独的“AkkiaBot Staging 发版验收群”）；不删除群、不清理历史（需要时另行确认）。同一时间只在一台机器上运行验收。
 - 新功能需要真实验收时，在 `tools/e2e/src/akkiabot_e2e/scenarios.py` 增加场景，并用 `akkiabot_e2e.testing` 的模拟 transport 写单元测试；普通 CI 不发送真实消息。
 
 ## 群内公开消息
 
-- 群内公开发送、提到某个成员的提醒（入群验证提示、`/ban`、`/warn`、`/spam` 及反垃圾通知等）只显示名字片段，不带完整名字和 `@username`，因为有人用名字或用户名打广告（负责人要求）。统一用 `akkiabot_core.telegram.public_name` 生成显示文本（超过 4 个字符时只保留首尾各 2 个字符），再包进 `tg://user?id=` 提及链接，提醒对象仍可点击识别；不要直接拼 `first_name` / `full_name` / `username`。只发给管理员的提及（如举报转人工时 @ 管理员）和用户主动查询的 `/id` 不受此限。真实验收中的检查见 `docs/e2e-acceptance.md`（`check_name_hidden`）。
+- 群内公开发送、提到某个成员的提醒（入群验证提示、`/ban`、`/warn`、`/spam` 及反垃圾通知等）只显示名字片段，不带完整名字和 `@username`，因为有人用名字或用户名打广告。统一用 `akkiabot_core.telegram.public_name` 生成显示文本（超过 4 个字符时只保留首尾各 2 个字符），再包进 `tg://user?id=` 提及链接，提醒对象仍可点击识别；不要直接拼 `first_name` / `full_name` / `username`。只发给管理员的提及（如举报转人工时 @ 管理员）和用户主动查询的 `/id` 不受此限。真实验收中的检查见 `docs/e2e-acceptance.md`（`check_name_hidden`）。
 
-## PR 评审
+## GitHub 身份
 
-- 推送公开仓库前先在私有库 `AkkiaLab/AkkiaBot-internal` 完成小队内部预审（负责人 2026-11-20 确认）：私有 PR 与公开 PR 规则相同，评审者在 Multica issue 写 `预审通过：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`，pre-push 钩子 `preapproval-check` 核对推往公开库的 head 与之一致。流程、跳过方式和已知限制见 `docs/secret-scanning.md`“推送前的内部预审”。
-
-- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；智能体共用 App `akkialab-agent` 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重、配置与提示词在工作区私有工具仓库的 `docs/review-notify.md`（AKKIA-34 迁出），改分派提示词先改该文档再同步 autopilot。
-- GitHub 身份：提交、推送、开 PR 用 `AkkiaS7`；评审、合并与发布流水线写操作用工作区共用 App `akkialab-agent`（不再按项目或角色建 App）。该 App 是发布规则集的绕过者，用它合并时平台门禁不生效，所以 Reviewer 合并只用 `reviewer-gh merge`（先核对必需检查、评审线程与批准），`reviewer-gh gh` 的 token 没有合并权限。按 bot 用户 ID 识别该 App，不按登录名。`reviewer-gh` 及其运维说明在工作区私有工具仓库（AKKIA-34 迁出），发布用途的权限与规则集见 `docs/release.md` §7。
+- 发布流水线的写操作用 GitHub App `akkialab-agent`。该 App 是发布规则集的绕过者，用它合并时平台门禁不生效，所以自动化只在核对必需检查、评审线程与批准之后才用它合并；按 bot 用户 ID 识别该 App，不按登录名。发布用途的权限与规则集见 `docs/release.md` §7。

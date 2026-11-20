@@ -57,7 +57,7 @@ flowchart LR
 
 **当前生产环境**（BOT-16，2026-11-15 切换）：服务器 `greencloud-tyo-01`，经 Cloudflare Access 以 `akkia` 用户登录（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥为 1Password `AkkiaBot/shared-ssh`）。该用户在 docker 组中，但没有免密 sudo，所以生产目录在 `~/akkiabot/production`（即 `/home/akkia/akkiabot/production`），本文中的 `/opt/akkiabot/production` 都按这个路径理解；compose 项目名为 `akkiabot`。预发布环境仍在 `/opt/akkiabot/staging`。
 
-`.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。密钥都在 1Password 的 `AkkiaBot` vault 中：生产用 `prod-*` 条目（如 `prod-cloudflare`、`prod-bot`，由负责人填写），预发布与本地开发共用 `staging-*` 条目。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
+`.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。密钥都在 1Password 的 `AkkiaBot` vault 中：生产用 `prod-*` 条目（如 `prod-cloudflare`、`prod-bot`，由维护者填写），预发布与本地开发共用 `staging-*` 条目。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
 
 ## 3. 配置项
 
@@ -282,7 +282,7 @@ crontab -e
 17 3 * * * cd /opt/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
 ```
 
-备份保存在同一台服务器上，只能应对误操作和升级失败。需要防范整机故障时，再用 rclone 等工具把 `backups/` 同步到异地存储，这部分由负责人决定，暂不在本仓库实现。Redis 只用作缓存，不需要备份。
+备份保存在同一台服务器上，只能应对误操作和升级失败。需要防范整机故障时，再用 rclone 等工具把 `backups/` 同步到异地存储，这部分由维护者决定，暂不在本仓库实现。Redis 只用作缓存，不需要备份。
 
 ### 6.2 恢复
 
@@ -411,15 +411,15 @@ curl -fsS https://bot-api-staging.akkia.moe/readyz
 curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 $SHA
 ```
 
-然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收并经封版打正式 tag 的 `SHA`（`docs/release.md` §4.2–4.3）：负责人审批 `release-production.yml` 后，`just release-deploy production <tag>` 按 §5.1 升级后端，再触发前端的 `webapp-promote.yml`。生产发布前需要负责人确认，发布后只做健康检查和非 Telegram 的冒烟，不重复全量验收；Telegram 相关能力只靠自然流量观测（见 §9.4 第 5 步）。
+然后在仓库检出中执行 `just e2e-staging --record-status "$SHA" --baseline "$BASE" --scenarios <场景>`，只验收上一个通过 `staging-acceptance` 的 commit（`BASE`）以来产品改动明确涉及的场景，并写入 `staging-acceptance` 状态；场景选择、全量验收的用法和 `success` 的含义见 `docs/e2e-acceptance.md` §6.2。生产只发布通过验收并经封版打正式 tag 的 `SHA`（`docs/release.md` §4.2–4.3）：维护者审批 `release-production.yml` 后，`just release-deploy production <tag>` 按 §5.1 升级后端，再触发前端的 `webapp-promote.yml`。生产发布前需要维护者确认，发布后只做健康检查和非 Telegram 的冒烟，不重复全量验收；Telegram 相关能力只靠自然流量观测（见 §9.4 第 5 步）。
 
-在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的 Multica daemon 及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
+在执行 `usermod -aG docker` 之前就已启动的进程（例如长期运行的守护进程及其子进程）不会获得新加入的 docker 组权限：可以重新登录或重启该进程，也可以临时用 `sg docker -c "docker compose ..."` 执行。
 
 1Password 中 `staging-*` 条目的值更新后，重新执行上面的三条 `op inject` 和 `docker compose up -d --wait`。
 
 ## 9. 正式切换（M10）
 
-本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、健康检查与观测核对、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在负责该切换的 Multica 任务中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
+本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、健康检查与观测核对、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先请求维护者确认并在受控的内部记录中留档后再执行**；本节只是操作手册，本身不构成授权。
 
 ### 9.1 前置检查
 
@@ -428,7 +428,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 - [ ] M3、M5、M7、M9 已完成，旧版的全部命令（包括 `/ip`）都已迁移。
 - [ ] staging 已经用一个确定的 master sha 完成 staging 发版验收（§8.1，差异或全量，commit status `staging-acceptance` 为 success），生产会使用同一个 sha。
 - [ ] 生产目录已按 §4.2 准备好，`app.env` 使用 `prod-*` 条目：正式 bot token、`WEBAPP_URL=https://bot.akkia.moe`、prod Turnstile、`OBSERVABILITY_SENTRY_DSN`；`.env` 填好 `prod-cloudflare` 的 tunnel token 和 `prod-grafana`。按 §4 的说明，只执行 `docker compose up -d --wait postgres redis && docker compose run --rm migrate`，**还没有启动 `app`**。
-- [ ] 前端：`webapp-promote.yml` 已经可以用同一个 sha 提升到 `bot.akkia.moe`（需要负责人审批）。
+- [ ] 前端：`webapp-promote.yml` 已经可以用同一个 sha 提升到 `bot.akkia.moe`（需要维护者审批）。
 - [ ] 确认旧版使用 SQLite：旧部署目录中 `botlab_core/data/config.yaml` 的 `db.driver` 为 `sqlite`。如果是 `mysql`，本脚本不适用，改用 §9.8 的备选方案。
 - [ ] 已用旧库只读副本完成一次 dry-run（§9.3），统计“一致”，报告中的注意事项和最近被 captcha 禁言的名单都已看过。
 - [ ] 记下旧版镜像的 digest，回滚时使用：在旧部署目录执行 `docker compose images core`，或 `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/akkialab/botlab-core:latest`。
@@ -452,7 +452,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 | `telegram_chat_members.warn_count`（> 0） | `chat_member.warn_count` | 旧库的值为准 |
 | `telegram_chat_members.message_count`（> 0） | `chat_member.message_count` | 新旧两边取较大值。新旧系统都对发言数超过 3 的成员免于反垃圾检查（新系统 `ANTISPAM_EXEMPT_MESSAGE_COUNT` 默认 3），导入后老成员保持豁免 |
 | `telegram_messages`（最近 `--recent-hours` 小时，默认 48） | `message_log`（只有消息 id、发送者和时间，不含正文） | 切换后立即 `/ban`、`/warn` 封禁或反垃圾封禁时，仍能清理该成员切换前的近期消息（Telegram 只允许 bot 删除 48 小时内的消息，旧版也只删 23 小时内的） |
-| `restriction_type = 'CaptchaBAN'` 的成员 | 不写入 | 在 Telegram 中保持禁言，与切换前相同（负责人于 BOT-16 决定）。报告按群汇总人数，只逐个列出最近 `--recent-hours` 小时内被禁言的成员，完整名单在 JSON 报告中 |
+| `restriction_type = 'CaptchaBAN'` 的成员 | 不写入 | 在 Telegram 中保持禁言，与切换前相同（BOT-16 决定）。报告按群汇总人数，只逐个列出最近 `--recent-hours` 小时内被禁言的成员，完整名单在 JSON 报告中 |
 | `AdminBAN` / `AdminSPAM` 等其他限制记录 | 不写入 | 封禁本身由 Telegram 保存，不受切换影响。不导入记录，是为了避免管理员早已在客户端解封、但旧库仍记为封禁的成员重新入群时被跳过入群验证 |
 
 成员数据（警告数、发言数、近期消息）除了上面这些群，还包括旧库中**没有群记录的群**：旧版只有在群里执行过 `/config` 才会保存群记录，其他群的所有开关都为关。这些群（负数 chat id）只导入成员数据，不创建 `chat` 配置；新系统对没有配置的群同样按全关运行，行为一致。私聊（正数 chat id）不导入。
@@ -535,14 +535,14 @@ echo "exit=$?"
    echo "exit=$?"                                     # 必须为 0
    ```
 
-   历史上未完成验证的成员保持禁言，不需要处理。报告中“最近 48 小时内被禁言的成员”的旧验证按钮已失效；负责人于 2026-11-15 决定**不主动交接**这份名单，禁言保持原状，报告只作受控留存（权限 600，不公开）。
+   历史上未完成验证的成员保持禁言，不需要处理。报告中“最近 48 小时内被禁言的成员”的旧验证按钮已失效；已决定**不主动交接**这份名单，禁言保持原状，报告只作受控留存（权限 600，不公开）。
 3. **启动新服务**：`docker compose up -d --wait`，然后按 §4.3 验证（`/readyz`、tunnel、日志中的 `bot started`）。Grafana 告警规则的预期环境加入 `production`（`docs/observability.md` §5）。
-4. **切换 Mini App 地址**：执行 `webapp-promote.yml`（同一个 sha，需要负责人审批），确认 `https://bot.akkia.moe/version.json`。如果旧 bot 在 BotFather 中设置过菜单按钮或 Mini App 地址（`/mybots` → Bot Settings → Menu Button / Configure Mini App），改为 `https://bot.akkia.moe`。新的入群验证按钮使用 `app.env` 的 `WEBAPP_URL`，不再使用旧前端的地址。
-5. **健康检查与观测核对**：生产侧受 Telegram 平台限制，**不执行 Telegram 相关的主动冒烟**（不在生产群发命令、不用测试账号入群或制造垃圾消息），也不请求生产验证账号（负责人于 BOT-4 决定，2026-11-15）。
+4. **切换 Mini App 地址**：执行 `webapp-promote.yml`（同一个 sha，需要维护者审批），确认 `https://bot.akkia.moe/version.json`。如果旧 bot 在 BotFather 中设置过菜单按钮或 Mini App 地址（`/mybots` → Bot Settings → Menu Button / Configure Mini App），改为 `https://bot.akkia.moe`。新的入群验证按钮使用 `app.env` 的 `WEBAPP_URL`，不再使用旧前端的地址。
+5. **健康检查与观测核对**：生产侧受 Telegram 平台限制，**不执行 Telegram 相关的主动冒烟**（不在生产群发命令、不用测试账号入群或制造垃圾消息），也不请求生产验证账号（BOT-4 决定）。
    - 非 Telegram 检查：`/readyz`、tunnel、日志中的 `bot started` 和持续的 getUpdates；`https://bot.akkia.moe/version.json` 的 sha；必要时在生产容器内做不经过 Telegram 的后端调用（例如 whois 查询、LLM 判定）。
    - Telegram 能力（私聊命令、群管理命令、入群验证、反垃圾、入群申请提示等）：用自然流量的日志、指标、链路和告警观测，按 `chat_id` 等条件检索；逐项记录**已观测**和**未观测**，未观测不算通过，也不因缺少测试账号阻塞收尾，后续有自然流量时再补记。
-   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<本次部署的完整 sha>`，§3）的事件。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
-   结果记录到负责该切换的 Multica 任务，包括版本 sha、已观测与未观测的能力。
+   - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<本次部署的完整 sha>`，§3）的事件。没有自然产生的错误时，是否人为制造一次错误由维护者决定。
+   结果记录到受控的内部记录，包括版本 sha、已观测与未观测的能力。
 
 ### 9.5 回滚
 
@@ -551,17 +551,17 @@ echo "exit=$?"
 1. 停止新服务：`cd /opt/akkiabot/production && docker compose stop app cloudflared`。
 2. 在旧部署目录重新启动 Go 版：`docker compose start core`（本地镜像不在时，用 9.1 记录的 digest 拉取）。旧库在切换期间没有被修改，配置和警告数仍是切换前的状态；新系统运行期间产生的警告、禁言记录不会回写到旧库。
 3. Mini App 地址：如果在 BotFather 中改过，改回旧地址；`bot.akkia.moe` 可以保留，旧版不会使用它。
-4. 用 `/start`、`/help` 确认旧 bot 恢复响应，并在负责该切换的 Multica 任务中记录回滚原因。
+4. 用 `/start`、`/help` 确认旧 bot 恢复响应，并在受控的内部记录中记录回滚原因。
 
 再次切换时从 9.4 第 1 步重新开始，用新的停服副本重新导入（新库已有数据时，导入只更新四项群配置和警告数，报告中会列出原值）。
 
 ### 9.6 旧仓库归档
 
-切换上线并稳定运行一段时间（时长由负责人决定）之后：在负责该事项的 Multica 任务中**再请求一次确认**，然后在 5 个旧仓库（botlab-core、botlab-telegram、botlab-llm、botlab-fe、Toolbox-py）的 README 顶部注明“已迁移到 AkkiaLab/AkkiaBot”，再把它们归档（GitHub Settings → Archive）。旧服务器上的 Go 版服务和旧库保留到负责人决定清理为止。
+切换上线并稳定运行一段时间（时长由维护者决定）之后：**再向维护者请求一次确认**，然后在 5 个旧仓库（botlab-core、botlab-telegram、botlab-llm、botlab-fe、Toolbox-py）的 README 顶部注明“已迁移到 AkkiaLab/AkkiaBot”，再把它们归档（GitHub Settings → Archive）。旧服务器上的 Go 版服务和旧库保留到维护者决定清理为止。
 
 ### 9.7 版本记录
 
-切换完成后，在负责该切换的 Multica 任务中记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、健康检查与观测核对结果（已观测/未观测）、旧版镜像 digest。
+切换完成后，在受控的内部记录中记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、健康检查与观测核对结果（已观测/未观测）、旧版镜像 digest。
 
 ### 9.8 备选方案
 

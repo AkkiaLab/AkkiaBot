@@ -37,7 +37,7 @@ just dev   # 启动 postgres / redis 和 Vite 开发服务器
 
 选择在 GitHub Actions 里用 wrangler 直接上传（Direct Upload），不用 Pages 的 Git 集成，原因：构建沿用仓库锁定的 Node / pnpm 版本；发布前一定先跑 mock 检查；不需要在组织上安装 Cloudflare 的 GitHub App；部署地址作为 GitHub deployment 显示在 PR 上。
 
-staging 与 prod 的发布入口分离（负责人于 2026-11-14 确认的分层验收，见 `AGENTS.md`）：
+staging 与 prod 的发布入口分离（分层验收，见 `AGENTS.md`）：
 
 ```mermaid
 flowchart LR
@@ -62,9 +62,9 @@ flowchart LR
 2. `deploy` 任务检出这个 sha（构建 action 也来自该 commit），并确认 `HEAD` 等于它；然后只换成生产环境变量重新构建。因此代码与 staging 验收的完全相同，差别只在环境配置。
 3. 上传后对部署地址做冒烟：`/`、`/captcha?challenge=…` 返回 200，`/version.json` 的 sha 等于输入值。
 
-生产发布与切换仍是负责人确认的操作：`webapp-production` 环境要求负责人（GitHub `AkkiaS7`）审批。智能体可以触发 `webapp-promote.yml`，但不审批生产部署。由于智能体也使用该 GitHub 账号，这条限制靠流程约束，不是技术隔离。
+生产发布与切换是维护者确认的操作：`webapp-production` 环境要求维护者（GitHub `AkkiaS7`）审批。智能体可以触发 `webapp-promote.yml`，但不审批生产部署。由于智能体也使用该 GitHub 账号，这条限制靠流程约束，不是技术隔离。
 
-GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个，负责人 2026-11-14 决定）：
+GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging 与 prod 各用一个）：
 
 | 位置 | 名称 | 值 / 来源 |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ GitHub 配置（已于 2026-11-14 完成；token 按环境区分，dev/staging �
 | 环境 `webapp-preview` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/staging-cloudflare/api_token`（DNS、Tunnel、Pages、Turnstile 权限） |
 | 环境 `webapp-preview` 变量 | `VITE_API_BASE_URL` | `https://bot-api-staging.akkia.moe`（预发布后端） |
 | 环境 `webapp-preview` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/staging-turnstile/site_key` |
-| 环境 `webapp-production` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/prod-cloudflare/api_token`（负责人填写，已写入并做过只读校验） |
+| 环境 `webapp-production` secret | `CLOUDFLARE_API_TOKEN` | `op://AkkiaBot/prod-cloudflare/api_token`（维护者填写，已写入并做过只读校验） |
 | 环境 `webapp-production` 保护规则 | 审批人、部署分支 | 审批人 `AkkiaS7`；只允许 `master` |
 | 环境 `webapp-production` 变量 | `VITE_API_BASE_URL` | `https://bot-api.akkia.moe` |
 | 环境 `webapp-production` 变量 | `VITE_TURNSTILE_SITE_KEY` | `op://AkkiaBot/prod-turnstile/site_key` |

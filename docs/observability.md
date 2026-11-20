@@ -1,6 +1,6 @@
 # 可观测性：Grafana Alloy、dashboard 与告警
 
-本文说明日志和指标如何从服务器进入 Grafana Cloud，以及版本化的 dashboard、告警规则如何维护和发布。异常走 Sentry、LLM 调用走 Langfuse，见 `docs/architecture.md` §5.5；Sentry 报错自动分派为 Multica 任务见 `docs/sentry-webhook.md`；部署步骤见 `docs/operations.md`。任务范围见 `docs/migration-plan.md` M9。
+本文说明日志和指标如何从服务器进入 Grafana Cloud，以及版本化的 dashboard、告警规则如何维护和发布。异常走 Sentry、LLM 调用走 Langfuse，见 `docs/architecture.md` §5.5；Sentry 报错 webhook 的签名中继见 `docs/sentry-webhook.md`；部署步骤见 `docs/operations.md`。任务范围见 `docs/migration-plan.md` M9。
 
 > 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
 
