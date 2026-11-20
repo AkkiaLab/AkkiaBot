@@ -50,6 +50,7 @@ import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -76,6 +77,8 @@ DEFAULT_WATCH_DAYS = 7
 META_ALERT = "grafana_alert"
 META_ALERT_STATE = "grafana_alert_state"
 META_SOURCE = "grafana_source"
+#: ``<state>|reopen`` while a reopen is half done, so a retry finishes it.
+META_ALERT_PENDING = "grafana_alert_pending"
 SOURCE_VALUE = "grafana-dispatch"
 MARKER_PREFIX = "grafana-alert-key="
 
@@ -90,6 +93,9 @@ W_OWNER = "grafana_watch_owner"
 W_CONCLUDER = "grafana_watch_concluder"
 W_EXERCISED = "grafana_watch_exercised_at"
 W_REGRESSION = "grafana_watch_regression_at"
+#: ``<startsAt>|reopen`` or ``<startsAt>|wake`` while a regression is being
+#: handled: W_REGRESSION is only written after the wakeup exists.
+W_REGRESSION_PENDING = "grafana_watch_regression_pending"
 W_WAKEUP = "grafana_watch_wakeup"
 W_RESULT = "grafana_watch_result"
 ACTIVE_WATCH = ("active", "extended")
@@ -330,6 +336,28 @@ class Grafana(Protocol):
     def datasource_uids(self) -> dict[str, str]: ...
     def put_rule_group(self, payload: dict[str, Any]) -> None: ...
     def delete_rule_group(self, name: str) -> None: ...
+    def window_count(self, kind: str, expr: str, at: datetime) -> float: ...
+
+
+def _regex_free(value: str) -> str:
+    # Values are pattern-checked (no quotes or backslashes); keep it explicit.
+    if not re.fullmatch(r"[A-Za-z0-9_.:<>-]+", value):
+        raise DispatchError("invalid watch target")
+    return value
+
+
+def window_query(kind: str, env: str, target: str, seconds: int) -> str:
+    """Instant query counting the watched target's activity over the last ``seconds``."""
+    env, target = _regex_free(env), _regex_free(target)
+    if kind == "regression":
+        return (
+            f'sum(count_over_time({{service="app", env="{env}"}} |= "handler failed" '
+            f'| handler="{target}" [{seconds}s]))'
+        )
+    sel = f'akkiabot_command_total{{result="ok", env="{env}", command="{target}"}}'
+    # increase() handles counter resets; the `unless offset` part counts a
+    # series that first appeared inside the window (lazy labels after restart).
+    return f"sum(increase({sel}[{seconds}s])) or sum({sel} unless {sel} offset {seconds}s)"
 
 
 @dataclass
@@ -377,6 +405,20 @@ class GrafanaApi:
 
     def delete_rule_group(self, name: str) -> None:
         self._call("DELETE", f"/api/v1/provisioning/folder/{GRAFANA_FOLDER_UID}/rule-groups/{name}")
+
+    def window_count(self, kind: str, expr: str, at: datetime) -> float:
+        """Sum of an instant query's sample values; only the total is returned."""
+        uids = self.datasource_uids()
+        ds = "loki" if kind == "regression" else "prometheus"
+        api = "loki/api/v1/query" if ds == "loki" else "api/v1/query"
+        query = urllib.parse.urlencode({"query": expr, "time": iso(at)})
+        data = self._call("GET", f"/api/datasources/proxy/uid/{uids[ds]}/{api}?{query}")
+        result = ((data or {}).get("data") or {}).get("result") or []
+        total = 0.0
+        for series in result:
+            value = series.get("value") or [0, "0"]
+            total += float(value[1])
+        return total
 
 
 def watch_rule_group(
@@ -572,29 +614,38 @@ class Dispatcher:
             )
         ):
             return f"stale_ignored {ident}"
-        reopened = False
+        meta = task.get("metadata") or {}
+        marker_value = f"{alert.state}|reopen"
+        # A retry after a half-done reopen sees the task already in todo: the
+        # pending marker keeps it on the reopen path so the wakeup is not lost.
+        reopened = meta.get(META_ALERT_PENDING) == marker_value or (
+            alert.status == "firing" and task.get("status") in CLOSED
+        )
         if alert.status == "resolved":
             line = (
                 f"Grafana 告警已恢复（resolved）：{alert.describe()}。"
                 "这里只同步状态，本任务仍按实现、评审和验收流程收尾，不会自动关闭。"
             )
-        elif task.get("status") in CLOSED:
-            reopened = True
-            line = (
-                f"Grafana 告警再次触发：{alert.describe()}。本任务从 {task.get('status')} 重开为 todo，"
-                "已唤醒 Leader 重新指定主责。"
-            )
-        else:
-            line = f"Grafana 告警再次触发：{alert.describe()}。任务仍在处理，不改状态和负责人，请当前主责关注。"
-        self.tasks.comment(task["id"], line)
-        if reopened:
+        elif reopened:
+            if meta.get(META_ALERT_PENDING) != marker_value:
+                self.tasks.set_metadata(task["id"], META_ALERT_PENDING, marker_value)
             self.tasks.set_status(task["id"], "todo")
             self._wake(
                 task["id"],
                 self.leader_id,
                 "Grafana 告警再次触发，任务已重开为 todo：请重新指定唯一主责。",
             )
+            line = (
+                f"Grafana 告警再次触发：{alert.describe()}。本任务已从关闭状态重开为 todo，"
+                "已唤醒 Leader 重新指定主责。"
+            )
+        else:
+            line = f"Grafana 告警再次触发：{alert.describe()}。任务仍在处理，不改状态和负责人，请当前主责关注。"
+        self.tasks.comment(task["id"], line)
+        # State last: until it is written, a retry redoes the steps above.
         self.tasks.set_metadata(task["id"], META_ALERT_STATE, alert.state)
+        if META_ALERT_PENDING in meta or reopened:
+            self.tasks.delete_metadata(task["id"], META_ALERT_PENDING)
         return f"{'reopened' if reopened else 'updated'} {ident}"
 
     def _wake(self, task_id: str, agent_id: str, instruction: str) -> None:
@@ -643,45 +694,74 @@ class Dispatcher:
         started = meta.get(W_STARTED)
         if active and started and alert.starts_at < started:
             return f"before_watch {ident}"
-        if alert.watch_kind == "exercised":
-            if meta.get(W_EXERCISED):
-                return f"exercised_already_recorded {ident}"
-            self.tasks.set_metadata(task["id"], W_EXERCISED, alert.starts_at)
-            self.tasks.comment(
-                task["id"],
-                f"修复后观察：已出现自然场景（{alert.describe()}）。到期判定时据此记为“已观测”；"
-                "若期间没有复发告警，结论为“已观测，无复发”。",
-            )
-            return f"exercised {ident}"
-        if meta.get(W_REGRESSION) == alert.starts_at:
+        kind = alert.watch_kind or "regression"
+        if kind == "exercised" and meta.get(W_EXERCISED):
+            return f"exercised_already_recorded {ident}"
+        if kind == "regression" and meta.get(W_REGRESSION) == alert.starts_at:
             return f"regression_already_recorded {ident}"
-        self.tasks.set_metadata(task["id"], W_REGRESSION, alert.starts_at)
-        if task.get("status") in CLOSED:
+        # Generic rules look back 10 minutes / 1 hour: their first evaluation
+        # after a watch opens can be driven by activity from before the watch.
+        # Only count the alert when the data source shows activity inside the
+        # watch window itself.
+        if active and not alert.watch and not self._seen_in_window(meta, kind, self.clock()):
+            return f"outside_window {ident}"
+        if kind == "exercised":
             self.tasks.comment(
                 task["id"],
-                f"修复后观察：出现复发告警（{alert.describe()}）。本任务从 {task.get('status')} "
-                "重开为 todo，已唤醒 Leader 重新指定主责。",
+                f"修复后观察：已出现自然场景（{alert.describe()}，观察窗口内已核实）。到期判定时据此记为“已观测”；"
+                "若期间没有复发，结论为“已观测，无复发”。",
             )
+            self.tasks.set_metadata(task["id"], W_EXERCISED, alert.starts_at)
+            return f"exercised {ident}"
+        return self._regression(task, meta, alert.starts_at, alert.describe())
+
+    def _regression(
+        self, task: dict[str, Any], meta: dict[str, Any], starts: str, what: str
+    ) -> str:
+        """Wake the owner (or reopen and wake the Leader); safe to retry after any failure."""
+        ident = task.get("identifier")
+        pending_starts, _, pending_mode = (meta.get(W_REGRESSION_PENDING) or "").partition("|")
+        if pending_starts == starts and pending_mode in {"reopen", "wake"}:
+            mode = pending_mode
+        else:
+            mode = "reopen" if task.get("status") in CLOSED else "wake"
+            self.tasks.set_metadata(task["id"], W_REGRESSION_PENDING, f"{starts}|{mode}")
+        if mode == "reopen":
             self.tasks.set_status(task["id"], "todo")
             self._wake(
                 task["id"],
                 self.leader_id,
                 "修复后观察出现复发，任务已重开为 todo：请重新指定唯一主责。",
             )
-            return f"regression_reopened {ident}"
-        owner = meta.get(W_OWNER) or self.leader_id
-        self.tasks.comment(
-            task["id"],
-            f"修复后观察：出现复发告警（{alert.describe()}）。已唤醒主责排查；"
-            "排查方法见 docs/grafana-alerting.md「复发排查」。",
+            line = f"修复后观察：出现复发（{what}）。本任务已从关闭状态重开为 todo，已唤醒 Leader 重新指定主责。"
+        else:
+            self._wake(
+                task["id"],
+                meta.get(W_OWNER) or self.leader_id,
+                f"修复后观察出现复发（{what}）：按 docs/grafana-alerting.md「复发排查」处理，结论回复在本 issue。",
+            )
+            line = f"修复后观察：出现复发（{what}）。已唤醒主责排查；排查方法见 docs/grafana-alerting.md「复发排查」。"
+        self.tasks.comment(task["id"], line)
+        # Recorded only once the wakeup and comment exist; until then a retry redoes them.
+        self.tasks.set_metadata(task["id"], W_REGRESSION, starts)
+        self.tasks.delete_metadata(task["id"], W_REGRESSION_PENDING)
+        return f"regression_{'reopened' if mode == 'reopen' else 'woken'} {ident}"
+
+    def _seen_in_window(self, meta: dict[str, Any], kind: str, until: datetime) -> bool:
+        """Whether the watched target shows activity in [watch start, until]."""
+        if self.grafana is None:
+            raise DispatchError("Grafana client required to check the watch window")
+        started = parse_time(meta.get(W_STARTED))
+        target = meta.get(W_HANDLER if kind == "regression" else W_COMMAND)
+        if started is None or not target:
+            return False
+        seconds = int((until - started).total_seconds())
+        if seconds <= 0:
+            return False
+        return (
+            self.grafana.window_count(kind, window_query(kind, meta[W_ENV], target, seconds), until)
+            > 0
         )
-        self._wake(
-            task["id"],
-            owner,
-            f"修复后观察出现复发告警（{alert.describe()}）：按 docs/grafana-alerting.md「复发排查」处理，"
-            "结论回复在本 issue。",
-        )
-        return f"regression_woken {ident}"
 
     def sync_watch_rules(self) -> str:
         """Make the Grafana group akkiabot-watch cover exactly the open watches."""
@@ -786,10 +866,24 @@ class Dispatcher:
                 return f"not_due {ident} (deadline {iso(deadline)})"
             exercised, regressed = meta.get(W_EXERCISED), meta.get(W_REGRESSION)
             window = f"{meta.get(W_STARTED)} ~ {meta.get(W_DEADLINE)}"
+            # One query per kind over the whole window (not polling): it catches
+            # events whose alert was skipped or merged into an earlier episode.
+            until = min(now, deadline) if deadline else now
+            if not exercised and self._seen_in_window(meta, "exercised", until):
+                exercised = f"窗口内查询核实，截至 {iso(until)}"
+                self.tasks.set_metadata(task["id"], W_EXERCISED, iso(until))
+            if not regressed and self._seen_in_window(meta, "regression", until):
+                regressed = iso(until)
+                self._regression(
+                    task,
+                    meta,
+                    regressed,
+                    f"到期查询发现观察窗口内有 handler 失败日志，截至 {regressed}",
+                )
             if regressed:
                 result = "regressed"
                 text = (
-                    f"观察期 {window} 内出现复发告警（最近一次开始于 {regressed}），已在当时唤醒主责。"
+                    f"观察期 {window} 内出现复发（最近一次记录于 {regressed}），已唤醒主责。"
                     f"自然场景：{'已出现（' + exercised + '）' if exercised else '未出现'}。"
                 )
             elif exercised:
@@ -820,15 +914,16 @@ class Dispatcher:
                     f"观察期（含一次延长）{window} 内仍未出现自然场景，也没有复发告警。"
                     "结论：**修复已上线、自然场景未观测**（未观测不等于已验证）。"
                 )
-            self.tasks.set_metadata(task["id"], W_RESULT, result)
-            self.tasks.set_metadata(task["id"], W_STATUS, "ended")
-            still_open = task.get("status") not in CLOSED
-            closing = " 已唤醒 Leader 核对收尾。" if still_open else ""
-            self.tasks.comment(task["id"], f"修复后观察到期判定：{text}{closing}")
+            still_open = self.tasks.get(task["id"]).get("status") not in CLOSED
             if still_open:
                 self._wake(
                     task["id"], self.leader_id, f"修复后观察已结束（{result}）：请核对验收并收尾。"
                 )
+            closing = " 已唤醒 Leader 核对收尾。" if still_open else ""
+            self.tasks.comment(task["id"], f"修复后观察到期判定：{text}{closing}")
+            # Ended last: a retry after a failure above repeats the verdict.
+            self.tasks.set_metadata(task["id"], W_RESULT, result)
+            self.tasks.set_metadata(task["id"], W_STATUS, "ended")
             return f"concluded {ident}: {result}; {self.sync_watch_rules()}"
 
     # -------------------------------------------------------- self-check
@@ -989,15 +1084,22 @@ def grafana_from_env() -> GrafanaApi:
     return GrafanaApi(url=url, token=token)
 
 
-NEEDS_GRAFANA = frozenset(
-    {"watch-start", "watch-stop", "watch-conclude", "watch-sync", "selfcheck"}
-)
+class LazyGrafana:
+    """Reads the Grafana credentials only when a command actually needs them."""
+
+    def __init__(self) -> None:
+        self._api: GrafanaApi | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        if self._api is None:
+            self._api = grafana_from_env()
+        return getattr(self._api, name)
 
 
 def run(args: argparse.Namespace, tasks: Tasks, grafana: Grafana | None = None) -> list[str]:
     fixed_now = parse_time(args.now) if args.now else None
-    if grafana is None and args.action in NEEDS_GRAFANA:
-        grafana = grafana_from_env()
+    if grafana is None:
+        grafana = LazyGrafana()  # type: ignore[assignment]
     dispatcher = Dispatcher(
         tasks=tasks,
         grafana=grafana,

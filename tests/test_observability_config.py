@@ -605,3 +605,33 @@ def test_drill_start_and_stop(capsys: pytest.CaptureFixture[str]) -> None:
     drill = yaml.safe_load((OBSERVABILITY / "alerting" / "drill.yaml").read_text(encoding="utf-8"))
     for item in drill["rules"]:
         assert item["labels"]["env"] == "staging"
+
+
+class EchoingGrafana(NotifyGrafana):
+    """Answers the contact point write with an error body that echoes the request."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith(
+            "/api/v1/provisioning/contact-points"
+        ) and request.method in {
+            "POST",
+            "PUT",
+        }:
+            return httpx.Response(400, text=request.content.decode())
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_contact_point_errors_do_not_echo_the_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://relay.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = EchoingGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    captured = capsys.readouterr()
+    assert "HTTP 400" in captured.err
+    for leaked in (mock_secret, "relay.example"):
+        assert leaked not in captured.err + captured.out

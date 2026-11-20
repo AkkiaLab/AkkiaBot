@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ class FakeTasks:
         self.wakeups: list[dict[str, str]] = []
         self.disabled: list[str] = []
         self.fail_create_after_insert = False
+        self.fail_wakeup_once = False
         self._ids = itertools.count(100)
 
     def add(self, status: str = "in_progress", **metadata: str) -> dict[str, Any]:
@@ -87,6 +89,9 @@ class FakeTasks:
         self._by(task_id)["status"] = status
 
     def wakeup_at(self, task_id: str, at: str, agent_id: str, instruction: str) -> str:
+        if self.fail_wakeup_once:
+            self.fail_wakeup_once = False
+            raise gd.DispatchError("multica issue wakeup failed (exit 1)")
         wid = f"wakeup-{len(self.wakeups) + 1}"
         self.wakeups.append(
             {"id": wid, "task": self._by(task_id)["identifier"], "at": at, "agent": agent_id,
@@ -102,6 +107,15 @@ class FakeGrafana:
     def __init__(self) -> None:
         self.groups: dict[str, dict[str, Any]] = {}
         self.calls: list[str] = []
+        # Times at which the watched target was active, per watch kind.
+        self.events: dict[str, list[datetime]] = {"regression": [], "exercised": []}
+        self.queries: list[str] = []
+
+    def window_count(self, kind: str, expr: str, at: datetime) -> float:
+        self.queries.append(expr)
+        (seconds,) = {int(n) for n in re.findall(r"\[(\d+)s\]|offset (\d+)s", expr)[0] if n}
+        start = at - timedelta(seconds=seconds)
+        return float(sum(1 for t in self.events[kind] if start < t <= at))
 
     def datasource_uids(self) -> dict[str, str]:
         return {"prometheus": "grafanacloud-prom", "loki": "grafanacloud-logs"}
@@ -286,6 +300,15 @@ def start_watch(d: gd.Dispatcher, tasks: FakeTasks, status: str = "in_review") -
     return fix
 
 
+DAY1 = T0 + timedelta(days=1, hours=1)  # 2026-11-21T09:00:00Z
+
+
+def occur(clock: Clock, kind: str, when: datetime = DAY1) -> None:
+    """The watched target was really active at ``when``; the clock moves past it."""
+    GRAFANA.events[kind].append(when)
+    clock.now = max(clock.now, when + timedelta(hours=1))
+
+
 def regression(**kw: Any) -> gd.Alert:
     base = {
         "rule": gd.WATCH_REGRESSION_RULE,
@@ -353,8 +376,9 @@ def test_watch_needs_a_target(env) -> None:
 
 
 def test_generic_regression_wakes_the_owner_once(env) -> None:
-    d, tasks, _ = env
+    d, tasks, clock = env
     fix = start_watch(d, tasks)
+    occur(clock, "regression")
     assert d.handle_alert(regression()) == [f"regression_woken {fix['identifier']}"]
     assert tasks.wakeups[-1]["agent"] == OWNER
     assert "复发" in tasks.wakeups[-1]["instruction"]
@@ -364,8 +388,9 @@ def test_generic_regression_wakes_the_owner_once(env) -> None:
 
 
 def test_generic_regression_reopens_a_closed_issue(env) -> None:
-    d, tasks, _ = env
+    d, tasks, clock = env
     fix = start_watch(d, tasks, status="done")
+    occur(clock, "regression")
     assert d.handle_alert(regression()) == [f"regression_reopened {fix['identifier']}"]
     assert fix["status"] == "todo"
     assert tasks.wakeups[-1]["agent"] == LEADER
@@ -384,8 +409,9 @@ def test_generic_watch_rules_need_a_matching_watch(env) -> None:
 
 
 def test_exercised_is_recorded_once(env) -> None:
-    d, tasks, _ = env
+    d, tasks, clock = env
     fix = start_watch(d, tasks)
+    occur(clock, "exercised")
     assert d.handle_alert(exercised()) == [f"exercised {fix['identifier']}"]
     assert fix["metadata"][gd.W_EXERCISED] == "2026-11-21T10:00:00Z"
     n = len(tasks.comments)
@@ -410,6 +436,7 @@ def test_watch_label_rule_wakes_its_issue_even_after_the_watch(env) -> None:
 def test_conclude_observed_without_regression(env) -> None:
     d, tasks, clock = env
     fix = start_watch(d, tasks)
+    occur(clock, "exercised")
     d.handle_alert(exercised())
     assert (
         d.watch_conclude(fix["identifier"])
@@ -448,6 +475,7 @@ def test_conclude_unobserved_extends_once_then_ends(env) -> None:
 def test_conclude_regressed(env) -> None:
     d, tasks, clock = env
     fix = start_watch(d, tasks)
+    occur(clock, "regression")
     d.handle_alert(regression())
     clock.now = T0 + timedelta(days=7)
     assert d.watch_conclude(fix["identifier"]).startswith(
@@ -549,8 +577,9 @@ def test_watch_rules_cover_exactly_the_open_watches(env) -> None:
 
     # Ending every watch removes the group; conclude also re-syncs.
     d.watch_stop(other["id"], "fictional")
-    clock.now = T0 + timedelta(days=7)
+    occur(clock, "exercised")
     d.handle_alert(exercised())
+    clock.now = T0 + timedelta(days=7)
     d.watch_conclude(fix["identifier"])
     assert "akkiabot-watch" not in GRAFANA.groups
     assert GRAFANA.calls[-1] == "delete akkiabot-watch"
@@ -597,3 +626,89 @@ def test_cli_metadata_filter_is_passed_raw(monkeypatch: pytest.MonkeyPatch, tmp_
     cli = gd.MulticaCli("multica", PROJECT, SQUAD, tmp_path)
     assert cli.find_by_metadata(gd.W_STATUS, "active") == []
     assert "grafana_watch=active" in seen[0]
+
+
+# ------------------------------------------- partial failures and the window
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome", "woken"), [("in_review", "woken", OWNER), ("done", "reopened", LEADER)]
+)
+def test_regression_retry_completes_the_wakeup(env, status: str, outcome: str, woken: str) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks, status=status)
+    occur(clock, "regression")
+    tasks.fail_wakeup_once = True
+    with pytest.raises(gd.DispatchError):
+        d.handle_alert(regression())
+    # Nothing claims a wakeup that does not exist, and the event is not marked done.
+    assert not any("已唤醒" in body for _, body in tasks.comments[1:])
+    assert gd.W_REGRESSION not in fix["metadata"]
+    # The retry (the issue may already be reopened) finishes the same path.
+    assert d.handle_alert(regression()) == [f"regression_{outcome} {fix['identifier']}"]
+    assert tasks.wakeups[-1]["agent"] == woken
+    assert fix["status"] == ("todo" if status == "done" else status)
+    assert gd.W_REGRESSION_PENDING not in fix["metadata"]
+    assert d.handle_alert(regression()) == [f"regression_already_recorded {fix['identifier']}"]
+
+
+def test_general_reopen_retry_still_wakes_the_leader(env) -> None:
+    d, tasks, _ = env
+    d.handle_alert(alert())
+    tasks.tasks[0]["status"] = "done"
+    tasks.fail_wakeup_once = True
+    with pytest.raises(gd.DispatchError):
+        d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z"))
+    assert tasks.tasks[0]["status"] == "todo"  # reopened before the wakeup failed
+    assert d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z")) == ["reopened AKKIA-100"]
+    assert tasks.wakeups[-1]["agent"] == LEADER
+    assert gd.META_ALERT_PENDING not in tasks.tasks[0]["metadata"]
+
+
+def test_activity_before_the_watch_never_counts(env) -> None:
+    d, tasks, clock = env
+    # Fictional: the command ran and the handler failed shortly before the watch opened.
+    GRAFANA.events["exercised"].append(T0 - timedelta(minutes=30))
+    GRAFANA.events["regression"].append(T0 - timedelta(minutes=5))
+    fix = start_watch(d, tasks)
+    # The rules' first evaluation after opening still sees that activity in their lookback.
+    clock.now = T0 + timedelta(minutes=2)
+    early = {"starts_at": "2026-11-20T08:01:00Z"}
+    assert d.handle_alert(exercised(**early)) == [f"outside_window {fix['identifier']}"]
+    assert d.handle_alert(regression(**early)) == [f"outside_window {fix['identifier']}"]
+    assert len(tasks.wakeups) == 1  # only the deadline wakeup
+    clock.now = T0 + timedelta(days=7)
+    assert d.watch_conclude(fix["identifier"]).startswith(f"extended {fix['identifier']}")
+    clock.now = T0 + timedelta(days=14)
+    assert d.watch_conclude(fix["identifier"]).startswith(
+        f"concluded {fix['identifier']}: unobserved"
+    )
+    for query in GRAFANA.queries:
+        assert 'env="production"' in query
+
+
+def test_conclude_counts_events_whose_alert_was_skipped(env) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    # Inside the window, but no alert was handled (merged into an earlier episode).
+    GRAFANA.events["exercised"].append(T0 + timedelta(days=2))
+    GRAFANA.events["regression"].append(T0 + timedelta(days=3))
+    clock.now = T0 + timedelta(days=7)
+    assert d.watch_conclude(fix["identifier"]).startswith(
+        f"concluded {fix['identifier']}: regressed"
+    )
+    assert OWNER in [w["agent"] for w in tasks.wakeups]
+    assert gd.W_EXERCISED in fix["metadata"]
+
+
+def test_window_query_shapes() -> None:
+    reg = gd.window_query("regression", "production", "command:spam", 600)
+    assert reg == (
+        'sum(count_over_time({service="app", env="production"} |= "handler failed" '
+        '| handler="command:spam" [600s]))'
+    )
+    ex = gd.window_query("exercised", "staging", "spam", 3600)
+    assert "increase(" in ex
+    assert "offset 3600s" in ex
+    with pytest.raises(gd.DispatchError):
+        gd.window_query("regression", "production", 'x"} or vector(1)', 60)

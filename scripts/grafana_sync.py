@@ -275,8 +275,12 @@ class Grafana:
             )
         else:
             response = self.client.post("/api/v1/provisioning/contact-points", json=contact_point)
-        # Grafana echoes no secure settings in its errors; the body is safe to show.
-        self._check(response, f"写入 contact point {contact_point['uid']}")
+        # The request carries the relay URL and HMAC secret, and an error body
+        # may echo request fields: report the operation and status only.
+        if response.is_error:
+            raise SyncError(
+                f"写入 contact point {contact_point['uid']} 失败：HTTP {response.status_code}"
+            )
 
     def policies(self) -> dict[str, Any]:
         return self._check(
