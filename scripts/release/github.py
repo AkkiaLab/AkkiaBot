@@ -29,8 +29,8 @@ SEALED_RULE_TYPES = frozenset({"update", "deletion", "non_fast_forward"})
 CONFLICT_LABEL = "release-forward-conflict"
 FORWARD_LABEL = "release-forward"
 FIX_LABEL = "release:fix"
-#: Bot user ID of the workspace agent App ``akkialab-agent`` (App ID 5760780, formerly
-#: ``akkiabot-reviewer``; docs/release.md §7). Its approval is the only one that
+#: Bot user ID of the workspace agent App ``akkialab-agent`` (App ID 5760780; it
+#: does both review and release, docs/release.md §7). Its approval is the only one that
 #: lets the release flow land a conflict resolution. Matched by ID, never by login: the
 #: login follows the App name, the ID survives renames (AKKIA-25).
 REVIEWER_BOT_ID = 356702926
