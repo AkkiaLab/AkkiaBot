@@ -97,6 +97,9 @@ W_REGRESSION = "grafana_watch_regression_at"
 #: handled: W_REGRESSION is only written after the wakeup exists.
 W_REGRESSION_PENDING = "grafana_watch_regression_pending"
 W_WAKEUP = "grafana_watch_wakeup"
+#: The new deadline while the one-time extension is being written; a retry
+#: resumes the extension instead of reaching a verdict on the old deadline.
+W_EXTENDING = "grafana_watch_extending"
 W_RESULT = "grafana_watch_result"
 ACTIVE_WATCH = ("active", "extended")
 
@@ -904,6 +907,14 @@ class Dispatcher:
             status = meta.get(W_STATUS)
             if status not in ACTIVE_WATCH:
                 return f"watch_not_active {ident}"
+            pending = meta.get(W_EXTENDING)
+            if pending:
+                if status == "extended" and meta.get(W_DEADLINE) == pending:
+                    # Fully written; only the marker cleanup was lost.
+                    self.tasks.delete_metadata(task["id"], W_EXTENDING)
+                else:
+                    # A half-written extension: finish it, never judge on the old deadline.
+                    return self._extend(task, meta, ident, pending)
             now = self.clock()
             deadline = parse_time(meta.get(W_DEADLINE))
             if deadline and now < deadline - timedelta(minutes=1):
@@ -937,25 +948,10 @@ class Dispatcher:
                 new_deadline = (deadline or now) + timedelta(days=DEFAULT_WATCH_DAYS)
                 if new_deadline <= now:
                     new_deadline = now + timedelta(days=DEFAULT_WATCH_DAYS)
-                tag = f"grafana-watch:deadline:{iso(new_deadline)}"
-                wakeup = self.tasks.find_wakeup(task["id"], tag) or self.tasks.wakeup_at(
-                    task["id"],
-                    iso(new_deadline),
-                    meta.get(W_CONCLUDER) or self.leader_id,
-                    f"{conclude_instruction(ident, self.conclude_args, self.script_ref)}\n{tag}",
-                )
-                self._say(
-                    task["id"],
-                    f"观察期 {window} 内未出现自然场景，也没有复发告警。按约定自动延长一次 "
-                    f"{DEFAULT_WATCH_DAYS} 天，新截止 {iso(new_deadline)}（仍只在到期时判定一次）。",
-                    tag,
-                )
-                # Deadline last: a retry recomputes the same new deadline and
-                # finds the wakeup and comment by their tag.
-                self.tasks.set_metadata(task["id"], W_WAKEUP, wakeup)
-                self.tasks.set_metadata(task["id"], W_STATUS, "extended")
-                self.tasks.set_metadata(task["id"], W_DEADLINE, iso(new_deadline))
-                return f"extended {ident} until {iso(new_deadline)}"
+                # Intent first: from here on a retry resumes this extension.
+                self.tasks.set_metadata(task["id"], W_EXTENDING, iso(new_deadline))
+                meta = {**meta, W_EXTENDING: iso(new_deadline)}
+                return self._extend(task, meta, ident, iso(new_deadline))
             else:
                 result = "unobserved"
                 text = (
@@ -980,6 +976,30 @@ class Dispatcher:
             self.tasks.set_metadata(task["id"], W_RESULT, result)
             self.tasks.set_metadata(task["id"], W_STATUS, "ended")
             return f"concluded {ident}: {result}; {self.sync_watch_rules()}"
+
+    def _extend(
+        self, task: dict[str, Any], meta: dict[str, Any], ident: str, new_deadline: str
+    ) -> str:
+        """Write the one-time extension; every step is safe to repeat."""
+        tag = f"grafana-watch:deadline:{new_deadline}"
+        wakeup = self.tasks.find_wakeup(task["id"], tag) or self.tasks.wakeup_at(
+            task["id"],
+            new_deadline,
+            meta.get(W_CONCLUDER) or self.leader_id,
+            f"{conclude_instruction(ident, self.conclude_args, self.script_ref)}\n{tag}",
+        )
+        self._say(
+            task["id"],
+            f"观察期 {meta.get(W_STARTED)} ~ {meta.get(W_DEADLINE)} 内未出现自然场景，也没有复发告警。"
+            f"按约定自动延长一次 {DEFAULT_WATCH_DAYS} 天，新截止 {new_deadline}（仍只在到期时判定一次）。",
+            tag,
+        )
+        self.tasks.set_metadata(task["id"], W_WAKEUP, wakeup)
+        self.tasks.set_metadata(task["id"], W_DEADLINE, new_deadline)
+        self.tasks.set_metadata(task["id"], W_STATUS, "extended")
+        # Marker last: until it is gone, a retry lands back here.
+        self.tasks.delete_metadata(task["id"], W_EXTENDING)
+        return f"extended {ident} until {new_deadline}"
 
     # -------------------------------------------------------- self-check
 

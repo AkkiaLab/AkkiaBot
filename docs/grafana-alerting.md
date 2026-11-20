@@ -90,6 +90,7 @@ flowchart LR
 | `grafana_watch_exercised_at`、`grafana_watch_regression_at` | 第一次自然事件、最近一次复发的告警开始时间 |
 | `grafana_watch_wakeup`、`grafana_watch_result` | 到期唤醒的 id；结论 |
 | `grafana_watch_regression_pending` | 复发处理进行中（唤醒成功前），完成后删除 |
+| `grafana_watch_extending` | 自动延长进行中的新截止时间；先写入再建唤醒、改截止和状态，最后删除。存在时补跑会先续完延长，不按旧截止判定 |
 
 1. **开启**（修复上线并验收通过后，由 DevOps 执行，见 §4.3）：写入 metadata，创建**一次**到截止时间的时间唤醒，重渲染 `akkiabot-watch`，在 issue 评论观察范围。默认观察 7 天。
 2. **观察期内**：自然事件规则 firing 且窗口内核实有活动时，在 issue 上记录一次“已出现自然场景”；复发规则 firing 且窗口内核实有失败时立即唤醒主责（issue 已关闭则重开并唤醒 Leader）。同一轮告警只处理一次；唤醒、评论都完成后才记录这一轮，唤醒和评论按固定标识（`grafana-watch:regression:<开始时间>` 等）去重，中途失败时补跑同一告警只完成剩余步骤（重开的进度另记在 `grafana_watch_regression_pending`）。

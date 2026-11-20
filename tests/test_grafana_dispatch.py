@@ -33,6 +33,7 @@ class FakeTasks:
         self.fail_wakeup_once = False
         self.wakeup_lands_but_fails_once = False
         self.fail_comment_once = False
+        self.fail_metadata_once: str | None = None  # key whose next write/delete fails
         self._ids = itertools.count(100)
 
     def add(self, status: str = "in_progress", **metadata: str) -> dict[str, Any]:
@@ -78,10 +79,17 @@ class FakeTasks:
             self.fail_create_after_insert = False
             raise gd.DispatchError("multica issue create timed out")
 
+    def _maybe_fail_metadata(self, key: str) -> None:
+        if self.fail_metadata_once == key:
+            self.fail_metadata_once = None
+            raise gd.DispatchError("multica issue metadata failed (exit 1)")
+
     def set_metadata(self, task_id: str, key: str, value: str) -> None:
+        self._maybe_fail_metadata(key)
         self._by(task_id)["metadata"][key] = value
 
     def delete_metadata(self, task_id: str, key: str) -> None:
+        self._maybe_fail_metadata(key)
         self._by(task_id)["metadata"].pop(key, None)
 
     def find_wakeup(self, task_id: str, tag: str) -> str | None:
@@ -815,3 +823,52 @@ def test_conclude_retry_does_not_repeat_the_extension(env) -> None:
     )
     assert len(tasks.wakeups) == 2
     assert sum("按约定自动延长一次" in body for _, body in tasks.comments) == 1
+
+
+# ------------------------------------------------ review round 3: extension
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ("metadata", gd.W_EXTENDING),  # the intent itself
+        ("wakeup", "lands_but_fails"),
+        ("comment", ""),
+        ("metadata", gd.W_WAKEUP),
+        ("metadata", gd.W_DEADLINE),
+        ("metadata", gd.W_STATUS),  # the last field write
+        ("delete", gd.W_EXTENDING),  # the marker cleanup
+    ],
+)
+def test_extension_partial_failure_is_resumed(env, failure: tuple[str, str]) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    clock.now = T0 + timedelta(days=7)
+    kind, key = failure
+    if kind in {"metadata", "delete"}:
+        tasks.fail_metadata_once = key
+    elif kind == "wakeup":
+        tasks.wakeup_lands_but_fails_once = True
+    else:
+        tasks.fail_comment_once = True
+    with pytest.raises(gd.DispatchError):
+        d.watch_conclude(fix["identifier"])
+    # Retried right away: the extension is completed, never skipped to a verdict.
+    assert (
+        d.watch_conclude(fix["identifier"])
+        == f"extended {fix['identifier']} until 2026-12-04T08:00:00Z"
+    )
+    meta = fix["metadata"]
+    assert (meta[gd.W_STATUS], meta[gd.W_DEADLINE]) == ("extended", "2026-12-04T08:00:00Z")
+    assert gd.W_EXTENDING not in meta
+    deadline_wakeups = [w for w in tasks.wakeups if w["at"] == "2026-12-04T08:00:00Z"]
+    assert len(deadline_wakeups) == 1  # the existing new wakeup is reused
+    assert meta[gd.W_WAKEUP] == deadline_wakeups[0]["id"]
+    assert sum("按约定自动延长一次" in body for _, body in tasks.comments) == 1
+    assert "akkiabot-watch" in GRAFANA.groups  # the watch rules stay in place
+    # A further retry before the new deadline is simply not due.
+    assert d.watch_conclude(fix["identifier"]).startswith(f"not_due {fix['identifier']}")
+    clock.now = T0 + timedelta(days=14)
+    assert d.watch_conclude(fix["identifier"]).startswith(
+        f"concluded {fix['identifier']}: unobserved"
+    )
