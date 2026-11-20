@@ -26,7 +26,7 @@ flowchart LR
 - 常规版本 `vX.Y.0` 从**最新 master** 创建；小版本 `vX.Y.Z`（Z>0）从**上一个正式 tag** `vX.Y.(Z-1)` 创建（v1.2.0 → v1.2.1 → v1.2.2），上一个正式 tag 不存在时拒绝创建。
 - 版本号严格校验（`v` 前缀、无前导零），已存在的版本（分支或 tag）不能复用，常规版本不能低于已存在的常规版本。版本按语义排序（v1.10.0 > v1.9.0）。
 - 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 DevOps 创建。
-- 只有发布 App 能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app` 换取安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
+- 只有智能体共用 App `akkialab-agent`（规则集绕过者，`docs/reviewer-github-app.md`）能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app`（该 App 的发布私钥）换取**发布用途**的安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
 
 ## 2. 日常开发
 
@@ -51,7 +51,7 @@ flowchart LR
 ### 3.2 触发、并发与补偿（`release-cascade.yml`）
 
 - 触发：PR 合并进 `releases/**`（`pull_request_target` closed，只检出 master 上的工具代码，不检出 PR 代码）、`releases/**` 推送、每小时第 23 分的定时对账、手动运行。
-- 默认 `GITHUB_TOKEN` 的推送不会再触发工作流，所以链路不依赖“上一跳推送触发下一跳”：一次运行在同一个 job 内循环规划→合并→推送，直到没有缺口或只剩冲突暂停的方向。推送使用发布 App 的 token。
+- 默认 `GITHUB_TOKEN` 的推送不会再触发工作流，所以链路不依赖“上一跳推送触发下一跳”：一次运行在同一个 job 内循环规划→合并→推送，直到没有缺口或只剩冲突暂停的方向。推送使用 App 的发布用途 token。
 - 并发：`concurrency: release-cascade` 串行执行。GitHub 只保留一个排队运行，被替换的运行不会丢工作，因为后一个运行会重新对账全部分支。推送是非强制推送；目标在合并期间被更新会被拒绝，此时重新获取并规划，同一跳连续 3 次被拒绝则失败报警。
 - 重复、延迟事件：已包含的来源不会再合并，重复运行是空操作；漏掉的事件由定时对账补偿。
 
@@ -69,9 +69,9 @@ flowchart LR
   git push origin HEAD
   ```
 
-  向目标分支提 PR，标题仍按 `AKKIA-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。发布 App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
+  向目标分支提 PR，标题仍按 `AKKIA-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
   - PR 打开、带 `release-forward` 标签、目标未封版、包含目标当前 HEAD 和一个处于暂停的来源；
-  - `akkiabot-reviewer[bot]` 的最新评审是对**当前 head** 的 Approve（其他账号的批准不算）；
+  - Reviewer（共用 App `akkialab-agent[bot]`，按 bot 用户 ID 356702926 识别，不按登录名，App 改名不影响）的最新评审是对**当前 head** 的 Approve（其他账号的批准不算，与它同名的用户或其他 App 也不算）；
   - 任何人的最新评审都不是 Request changes；所有评审线程已解决；
   - Reviewer 准出之后，除 PR 作者和 Reviewer 外没有新的评论或评审（例如 Copilot 的后续意见）；有的话须处理后由 Reviewer 重新准出；
   - 以上信息逐页读全（评审线程、评审、评论分别分页，直到没有下一页）；超出页数上限或查询失败时拒绝落地；
@@ -177,12 +177,12 @@ flowchart LR
 
 | 项 | 需要的配置 | 说明 |
 | --- | --- | --- |
-| 发布 GitHub App（例如 `akkiabot-release`） | 仓库权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；只安装到本仓库；不开 webhook | 新增 App 与权限需负责人确认。私钥只放仓库 secret |
-| 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY` | App ID 与私钥（经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功 |
-| 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：发布 App | App 绕过用于上合 merge 与冲突解决的快进落地 |
-| master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入发布 App | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
+| 智能体共用 GitHub App `akkialab-agent`（AKKIA-25 起承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体），Reviewer 的 token 另按用途缩权 | 权限变更需负责人确认。风险与工具侧补偿见 `docs/reviewer-github-app.md`「风险与补偿」 |
+| 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY`；运行机 1Password `AkkiaBot/release-app` | 共用 App 的 App ID 与**发布专用私钥**（与 Reviewer 私钥分开，经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功。轮换：App 设置页新建私钥 → 写入 1Password 与 secret（均经 stdin）→ 手动运行一次 `release-cascade.yml` 确认 → 删除旧私钥 |
+| 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：`akkialab-agent`（App ID 5760780） | App 绕过用于上合 merge 与冲突解决的快进落地 |
+| master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入 `akkialab-agent` | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
 | 规则集 `releases 封版` | 目标 branch，include 初始为空（工具维护），规则 `update`、`deletion`、`non_fast_forward`，**无绕过者** | 名称须完全一致 |
-| tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅发布 App；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
+| tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅 `akkialab-agent`；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
 | secret `MULTICA_RELEASE_WEBHOOK_URL` | Multica autopilot webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`；autopilot 以开发小队为负责人建任务。未配置时只在运行摘要中提示 |
 | 运行机 ssh | `~/.ssh/config` 中 `Host greencloud-tyo-01`（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥取自 1Password `AkkiaBot/shared-ssh`） | `just release-deploy production` 的默认目标；也可 `--ssh/--dir` 覆盖 |
