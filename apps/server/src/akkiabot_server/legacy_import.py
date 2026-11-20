@@ -891,7 +891,7 @@ def render_report(plan: ImportPlan, *, source: Path, dry_run: bool) -> str:
         for m in plan.captcha_muted:
             per_chat.setdefault(m.chat_id, []).append(m)
         lines += [
-            "这些成员在 Telegram 中保持禁言，与切换前相同，导入不改动他们（负责人于 BOT-16 决定）。"
+            "这些成员在 Telegram 中保持禁言，与切换前相同，导入不改动他们（负责人决定）。"
             "真人被卡住时可联系管理员解除。按群汇总如下，完整名单见 JSON 报告。",
             "",
             f"| 群 id | 群标题 | 禁言人数 | 其中最近 {plan.recent_hours} 小时 |",

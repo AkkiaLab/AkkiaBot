@@ -60,9 +60,9 @@ DEFAULT_STATE_DIR = "~/.config/akkiabot/sentry-dispatch"
 META_KEY = "sentry_issue"
 META_SOURCE = "sentry_source"
 META_STATE = "sentry_state"
-SOURCE_VALUE = "bot-55-sentry"
+SOURCE_VALUE = "sentry-dispatch"
 MARKER_PREFIX = "sentry-issue-key="
-TEST_MARKER = "[BOT-55-WEBHOOK-TEST]"
+TEST_MARKER = "[SENTRY-WEBHOOK-TEST]"
 REGRESSION_SUBSTATUSES = frozenset({"regressed", "escalating"})
 CLOSED_TASK_STATUSES = frozenset({"done", "cancelled"})
 RECONCILE_OVERLAP = timedelta(hours=1)
@@ -431,7 +431,7 @@ def task_description(snap: Snapshot, key: str) -> str:
 
 ## 处理约定
 
-- 本任务由 Sentry webhook 自动分派创建（BOT-55）。Leader 指定 Engineer 或 Platform 唯一主责，小队归属不变。
+- 本任务由 Sentry webhook 自动分派创建。Leader 指定唯一主责，小队归属不变。
 - 分析时用 Sentry 只读 API 查看事件；请求体、用户信息、令牌等不写入评论或公开记录。
 - Sentry 状态变化（resolved / 回归）会以评论同步到本任务。resolved 不会自动关闭本任务，仍按实现、评审和验收流程收尾。
 
