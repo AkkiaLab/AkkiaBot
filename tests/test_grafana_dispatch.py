@@ -31,6 +31,8 @@ class FakeTasks:
         self.disabled: list[str] = []
         self.fail_create_after_insert = False
         self.fail_wakeup_once = False
+        self.wakeup_lands_but_fails_once = False
+        self.fail_comment_once = False
         self._ids = itertools.count(100)
 
     def add(self, status: str = "in_progress", **metadata: str) -> dict[str, Any]:
@@ -82,7 +84,21 @@ class FakeTasks:
     def delete_metadata(self, task_id: str, key: str) -> None:
         self._by(task_id)["metadata"].pop(key, None)
 
+    def find_wakeup(self, task_id: str, tag: str) -> str | None:
+        ident = self._by(task_id)["identifier"]
+        for w in self.wakeups:
+            if w["task"] == ident and tag in w["instruction"]:
+                return w["id"]
+        return None
+
+    def has_comment(self, task_id: str, tag: str) -> bool:
+        ident = self._by(task_id)["identifier"]
+        return any(i == ident and tag in body for i, body in self.comments)
+
     def comment(self, task_id: str, body: str) -> None:
+        if self.fail_comment_once:
+            self.fail_comment_once = False
+            raise gd.DispatchError("multica issue comment failed (exit 1)")
         self.comments.append((self._by(task_id)["identifier"], body))
 
     def set_status(self, task_id: str, status: str) -> None:
@@ -92,6 +108,12 @@ class FakeTasks:
         if self.fail_wakeup_once:
             self.fail_wakeup_once = False
             raise gd.DispatchError("multica issue wakeup failed (exit 1)")
+        if self.wakeup_lands_but_fails_once:
+            # Created on the server, but the call timed out: the result is unknown.
+            self.wakeup_lands_but_fails_once = False
+            self.wakeups.append({"id": "wakeup-lost", "task": self._by(task_id)["identifier"],
+                                 "at": at, "agent": agent_id, "instruction": instruction})  # fmt: skip
+            raise gd.DispatchError("multica issue wakeup timed out")
         wid = f"wakeup-{len(self.wakeups) + 1}"
         self.wakeups.append(
             {"id": wid, "task": self._by(task_id)["identifier"], "at": at, "agent": agent_id,
@@ -712,3 +734,84 @@ def test_window_query_shapes() -> None:
     assert "offset 3600s" in ex
     with pytest.raises(gd.DispatchError):
         gd.window_query("regression", "production", 'x"} or vector(1)', 60)
+
+
+# ------------------------------------- review round 2: idempotent steps, deadline
+
+
+@pytest.mark.parametrize("status", ["in_review", "done"])
+@pytest.mark.parametrize("failure", ["fail_comment_once", "wakeup_lands_but_fails_once"])
+def test_regression_retry_never_wakes_twice(env, status: str, failure: str) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks, status=status)
+    occur(clock, "regression")
+    setattr(tasks, failure, True)
+    with pytest.raises(gd.DispatchError):
+        d.handle_alert(regression())
+    out = d.handle_alert(regression())
+    assert out[0].startswith("regression_")
+    woken = [w for w in tasks.wakeups if "grafana-watch:regression:" in w["instruction"]]
+    assert len(woken) == 1
+    assert sum("出现复发" in body for _, body in tasks.comments) == 1
+    assert d.handle_alert(regression()) == [f"regression_already_recorded {fix['identifier']}"]
+
+
+@pytest.mark.parametrize("failure", ["fail_comment_once", "wakeup_lands_but_fails_once"])
+def test_general_reopen_retry_never_wakes_twice(env, failure: str) -> None:
+    d, tasks, _ = env
+    d.handle_alert(alert())
+    tasks.tasks[0]["status"] = "done"
+    setattr(tasks, failure, True)
+    with pytest.raises(gd.DispatchError):
+        d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z"))
+    assert d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z")) == ["reopened AKKIA-100"]
+    assert [w["agent"] for w in tasks.wakeups] == [LEADER]
+    assert sum("再次触发" in body for _, body in tasks.comments) == 1
+
+
+@pytest.mark.parametrize("kind", ["exercised", "regression"])
+def test_activity_after_the_deadline_never_counts(env, kind: str) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    deadline = T0 + timedelta(days=7)
+    # Fictional: the first activity happens after the deadline, and the verdict runs late.
+    occur(clock, kind, deadline + timedelta(hours=1))
+    late = (deadline + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    make = exercised if kind == "exercised" else regression
+    assert d.handle_alert(make(starts_at=late)) == [f"after_deadline {fix['identifier']}"]
+    # An alert whose episode started in time still has to show activity in the window.
+    assert d.handle_alert(make(starts_at="2026-11-26T08:00:00Z")) == [
+        f"outside_window {fix['identifier']}"
+    ]
+    assert d.watch_conclude(fix["identifier"]).startswith(f"extended {fix['identifier']}")
+    assert len([w for w in tasks.wakeups if w["agent"] == OWNER]) == 0
+
+
+def test_late_delivered_alert_inside_the_window_is_verified(env) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    deadline = T0 + timedelta(days=7)
+    occur(clock, "exercised", deadline - timedelta(hours=1))
+    clock.now = deadline + timedelta(hours=2)  # delivered late, before the verdict
+    assert d.handle_alert(exercised(starts_at="2026-11-27T07:00:00Z")) == [
+        f"exercised {fix['identifier']}"
+    ]
+    assert d.watch_conclude(fix["identifier"]).startswith(
+        f"concluded {fix['identifier']}: observed_no_regression"
+    )
+
+
+def test_conclude_retry_does_not_repeat_the_extension(env) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    clock.now = T0 + timedelta(days=7)
+    tasks.fail_comment_once = True
+    with pytest.raises(gd.DispatchError):
+        d.watch_conclude(fix["identifier"])
+    # The retry finishes the extension: same new deadline, no second wakeup.
+    assert (
+        d.watch_conclude(fix["identifier"])
+        == f"extended {fix['identifier']} until 2026-12-04T08:00:00Z"
+    )
+    assert len(tasks.wakeups) == 2
+    assert sum("按约定自动延长一次" in body for _, body in tasks.comments) == 1

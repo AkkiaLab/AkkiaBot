@@ -50,7 +50,7 @@ flowchart LR
 4. **一般告警**（其他规则）：
    - 按 metadata `grafana_alert=<rule>/<env>[/handler=…][/command=…]` 和描述中的关联标识 `grafana-alert-key=<同上>` 查找任务，两种方式都包含已关闭的任务。没有任务且为 firing 时新建小队任务（todo；`drill=true` 的演练告警建为 backlog 的 `[测试]` 任务）；建单失败或超时时先重新查找，找不到才重试一次。
    - 优先级：production 且 `severity=critical` 为 high，其他 production 为 medium，staging 和演练为 low。
-   - 状态记录在 metadata `grafana_alert_state=<status>@<startsAt>`。重复的事件不评论；更早一轮的事件、同一轮已恢复后迟到的 firing 视为过期，忽略。状态在评论和唤醒之后才写入；重开的进度记在 `grafana_alert_pending`，中途失败时补跑同一告警会继续完成重开和唤醒。
+   - 状态记录在 metadata `grafana_alert_state=<status>@<startsAt>`。重复的事件不评论；更早一轮的事件、同一轮已恢复后迟到的 firing 视为过期，忽略。状态在评论和唤醒之后才写入；重开的进度记在 `grafana_alert_pending`。脚本创建的唤醒说明和评论末尾都带一个固定标识（如 `grafana-dispatch:reopen:<告警键>:<状态>`），补跑时先按标识查找，已存在就不再创建；所以中途失败（包括唤醒已建好但调用结果不明）后补跑同一告警，只会完成剩余步骤。
    - **resolved** 只评论同步，不关闭任务。**新一轮 firing**：任务未关闭时只评论；已关闭时重开为 todo 并唤醒 Leader。
    - 没有对应任务的 resolved 不建单。
 
@@ -72,7 +72,7 @@ flowchart LR
 - 复发用 Loki 计数：`akkiabot_handler_errors_total` 的标签是懒创建的，容器重启后某个 handler 的第一次失败会以值为 1 的新序列出现，`increase()` 可能算成 0；日志计数不受影响。
 - 自然事件规则的第二部分（`… unless … offset 1h`）补上同一个问题：重启后第一次使用命令时序列是新的，`increase()` 不一定能算出来。
 - “没有告警”不能当作“已观测、无复发”：没有发生和发生了但正常都不会告警，所以必须有自然事件规则这个正向信号。
-- **按观察窗口判断**：规则回看 10 分钟 / 1 小时，开启观察后的第一次求值可能由开启前的活动触发。所以分派脚本收到通用观察规则的告警后，会用同样的条件对**观察窗口**（开始时间到现在）再查询一次，窗口内没有活动就记为 `outside_window`，不计入。到期判定时也对整个窗口各查询一次（一次判定，不是轮询），补上告警被并入先前一轮、没有单独送达的事件。查询结果只用于判断有无，不写出数值。
+- **按观察窗口判断**：规则回看 10 分钟 / 1 小时，开启观察后的第一次求值可能由开启前的活动触发。所以分派脚本收到通用观察规则的告警后，会用同样的条件对**观察窗口**（开始时间到现在）再查询一次，窗口与到期判定相同：观察开始到截止时间（判定或告警处理晚于截止时，只查到截止为止）。告警开始时间晚于截止的记为 `after_deadline`，窗口内没有活动的记为 `outside_window`，都不计入；延迟送达但活动在窗口内的告警照常计入。到期判定时也对整个窗口各查询一次（一次判定，不是轮询），补上告警被并入先前一轮、没有单独送达的事件。查询结果只用于判断有无，不写出数值。
 - 为单个修复写的 `watch` 标签规则查询各不相同，脚本无法复查，只按告警开始时间不早于观察开始来判断：这类规则的回看窗口应尽量短，并在观察开始后再下发。
 - 异常特征无法按 handler 区分时，在 `alerting/akkiabot.yaml` 为这个修复加一条 Loki 规则，带 `watch: AKKIA-<n>` 和 `dispatch_only: "true"` 标签（需要正向信号时再加一条 `watch_kind: exercised`），随修复 PR 或运维 PR 下发；观察结束后用 PR 删掉，再执行一次 `grafana-sync sync`。
 
@@ -92,7 +92,7 @@ flowchart LR
 | `grafana_watch_regression_pending` | 复发处理进行中（唤醒成功前），完成后删除 |
 
 1. **开启**（修复上线并验收通过后，由 DevOps 执行，见 §4.3）：写入 metadata，创建**一次**到截止时间的时间唤醒，重渲染 `akkiabot-watch`，在 issue 评论观察范围。默认观察 7 天。
-2. **观察期内**：自然事件规则 firing 且窗口内核实有活动时，在 issue 上记录一次“已出现自然场景”；复发规则 firing 且窗口内核实有失败时立即唤醒主责（issue 已关闭则重开并唤醒 Leader）。同一轮告警只处理一次；唤醒、评论都完成后才记录这一轮，中途失败时由 autopilot 补跑同一告警即可补齐（重开的进度另记在 `grafana_watch_regression_pending`）。
+2. **观察期内**：自然事件规则 firing 且窗口内核实有活动时，在 issue 上记录一次“已出现自然场景”；复发规则 firing 且窗口内核实有失败时立即唤醒主责（issue 已关闭则重开并唤醒 Leader）。同一轮告警只处理一次；唤醒、评论都完成后才记录这一轮，唤醒和评论按固定标识（`grafana-watch:regression:<开始时间>` 等）去重，中途失败时补跑同一告警只完成剩余步骤（重开的进度另记在 `grafana_watch_regression_pending`）。
 3. **到期判定**（时间唤醒触发，判定智能体执行 `watch-conclude`）：
    - 先对整个窗口各查询一次自然事件和复发；查到告警阶段漏掉的复发时，此时唤醒主责。
    - 出现过复发：结论 `regressed`。

@@ -214,6 +214,8 @@ class Tasks(Protocol):
     def comment(self, task_id: str, body: str) -> None: ...
     def set_status(self, task_id: str, status: str) -> None: ...
     def wakeup_at(self, task_id: str, at: str, agent_id: str, instruction: str) -> str: ...
+    def find_wakeup(self, task_id: str, tag: str) -> str | None: ...
+    def has_comment(self, task_id: str, tag: str) -> bool: ...
     def wakeup_disable(self, task_id: str, wakeup_id: str) -> None: ...
 
 
@@ -327,6 +329,19 @@ class MulticaCli:
 
     def wakeup_disable(self, task_id: str, wakeup_id: str) -> None:
         self._run("issue", "wakeup", "disable", task_id, wakeup_id, "--output", "json")
+
+    def find_wakeup(self, task_id: str, tag: str) -> str | None:
+        data = self._run("issue", "wakeup", "list", task_id, "--output", "json")
+        rows = data.get("wakeups", []) if isinstance(data, dict) else data or []
+        for row in rows:
+            if tag in (row.get("instruction") or ""):
+                return str(row.get("id"))
+        return None
+
+    def has_comment(self, task_id: str, tag: str) -> bool:
+        data = self._run("issue", "comment", "list", task_id, "--output", "json")
+        rows = data.get("comments", []) if isinstance(data, dict) else data or []
+        return any(tag in (row.get("content") or "") for row in rows)
 
 
 # ---------------------------------------------------------------- Grafana
@@ -634,6 +649,7 @@ class Dispatcher:
                 task["id"],
                 self.leader_id,
                 "Grafana 告警再次触发，任务已重开为 todo：请重新指定唯一主责。",
+                f"grafana-dispatch:reopen:{alert.key}:{alert.state}",
             )
             line = (
                 f"Grafana 告警再次触发：{alert.describe()}。本任务已从关闭状态重开为 todo，"
@@ -641,16 +657,32 @@ class Dispatcher:
             )
         else:
             line = f"Grafana 告警再次触发：{alert.describe()}。任务仍在处理，不改状态和负责人，请当前主责关注。"
-        self.tasks.comment(task["id"], line)
-        # State last: until it is written, a retry redoes the steps above.
+        self._say(task["id"], line, f"grafana-dispatch:sync:{alert.key}:{alert.state}")
+        # State last: until it is written, a retry redoes the steps above
+        # (wakeup and comment are found by their tags, not created again).
         self.tasks.set_metadata(task["id"], META_ALERT_STATE, alert.state)
         if META_ALERT_PENDING in meta or reopened:
             self.tasks.delete_metadata(task["id"], META_ALERT_PENDING)
         return f"{'reopened' if reopened else 'updated'} {ident}"
 
-    def _wake(self, task_id: str, agent_id: str, instruction: str) -> None:
-        """Start one run of ``agent_id`` on the issue (works for the run's own agent too)."""
-        self.tasks.wakeup_at(task_id, iso(self.clock() + WAKE_DELAY), agent_id, instruction)
+    def _wake(self, task_id: str, agent_id: str, instruction: str, tag: str) -> str:
+        """Start one run of ``agent_id`` on the issue (works for the run's own agent too).
+
+        Idempotent by ``tag``: a retry first looks for a wakeup carrying it, so a
+        wakeup that was created even though the call reported a failure (or
+        whose follow-up step failed) is never created twice.
+        """
+        existing = self.tasks.find_wakeup(task_id, tag)
+        if existing:
+            return existing
+        return self.tasks.wakeup_at(
+            task_id, iso(self.clock() + WAKE_DELAY), agent_id, f"{instruction}\n\n{tag}"
+        )
+
+    def _say(self, task_id: str, body: str, tag: str) -> None:
+        """Post a comment once per ``tag`` (same retry rule as :meth:`_wake`)."""
+        if not self.tasks.has_comment(task_id, tag):
+            self.tasks.comment(task_id, f"{body}\n\n<sub>{tag}</sub>")
 
     # ------------------------------------------------------------ watches
 
@@ -703,13 +735,22 @@ class Dispatcher:
         # after a watch opens can be driven by activity from before the watch.
         # Only count the alert when the data source shows activity inside the
         # watch window itself.
-        if active and not alert.watch and not self._seen_in_window(meta, kind, self.clock()):
-            return f"outside_window {ident}"
+        if active and not alert.watch:
+            # Same boundary as the deadline verdict: [start, deadline]. Activity
+            # after the deadline never counts, however late the verdict runs;
+            # a late-delivered alert for activity inside the window still does.
+            deadline = parse_time(meta.get(W_DEADLINE))
+            until = min(self.clock(), deadline) if deadline else self.clock()
+            if deadline and alert.starts_at > iso(deadline):
+                return f"after_deadline {ident}"
+            if not self._seen_in_window(meta, kind, until):
+                return f"outside_window {ident}"
         if kind == "exercised":
-            self.tasks.comment(
+            self._say(
                 task["id"],
                 f"修复后观察：已出现自然场景（{alert.describe()}，观察窗口内已核实）。到期判定时据此记为“已观测”；"
                 "若期间没有复发，结论为“已观测，无复发”。",
+                f"grafana-watch:exercised:{meta.get(W_STARTED)}",
             )
             self.tasks.set_metadata(task["id"], W_EXERCISED, alert.starts_at)
             return f"exercised {ident}"
@@ -732,6 +773,7 @@ class Dispatcher:
                 task["id"],
                 self.leader_id,
                 "修复后观察出现复发，任务已重开为 todo：请重新指定唯一主责。",
+                f"grafana-watch:regression:{starts}",
             )
             line = f"修复后观察：出现复发（{what}）。本任务已从关闭状态重开为 todo，已唤醒 Leader 重新指定主责。"
         else:
@@ -739,10 +781,12 @@ class Dispatcher:
                 task["id"],
                 meta.get(W_OWNER) or self.leader_id,
                 f"修复后观察出现复发（{what}）：按 docs/grafana-alerting.md「复发排查」处理，结论回复在本 issue。",
+                f"grafana-watch:regression:{starts}",
             )
             line = f"修复后观察：出现复发（{what}）。已唤醒主责排查；排查方法见 docs/grafana-alerting.md「复发排查」。"
-        self.tasks.comment(task["id"], line)
-        # Recorded only once the wakeup and comment exist; until then a retry redoes them.
+        self._say(task["id"], line, f"grafana-watch:regression:{starts}")
+        # Recorded only once the wakeup and comment exist; until then a retry
+        # redoes the remaining steps (both are found again by their tag).
         self.tasks.set_metadata(task["id"], W_REGRESSION, starts)
         self.tasks.delete_metadata(task["id"], W_REGRESSION_PENDING)
         return f"regression_{'reopened' if mode == 'reopen' else 'woken'} {ident}"
@@ -893,20 +937,24 @@ class Dispatcher:
                 new_deadline = (deadline or now) + timedelta(days=DEFAULT_WATCH_DAYS)
                 if new_deadline <= now:
                     new_deadline = now + timedelta(days=DEFAULT_WATCH_DAYS)
-                wakeup = self.tasks.wakeup_at(
+                tag = f"grafana-watch:deadline:{iso(new_deadline)}"
+                wakeup = self.tasks.find_wakeup(task["id"], tag) or self.tasks.wakeup_at(
                     task["id"],
                     iso(new_deadline),
                     meta.get(W_CONCLUDER) or self.leader_id,
-                    conclude_instruction(ident, self.conclude_args, self.script_ref),
+                    f"{conclude_instruction(ident, self.conclude_args, self.script_ref)}\n{tag}",
                 )
-                self.tasks.set_metadata(task["id"], W_DEADLINE, iso(new_deadline))
-                self.tasks.set_metadata(task["id"], W_WAKEUP, wakeup)
-                self.tasks.set_metadata(task["id"], W_STATUS, "extended")
-                self.tasks.comment(
+                self._say(
                     task["id"],
                     f"观察期 {window} 内未出现自然场景，也没有复发告警。按约定自动延长一次 "
                     f"{DEFAULT_WATCH_DAYS} 天，新截止 {iso(new_deadline)}（仍只在到期时判定一次）。",
+                    tag,
                 )
+                # Deadline last: a retry recomputes the same new deadline and
+                # finds the wakeup and comment by their tag.
+                self.tasks.set_metadata(task["id"], W_WAKEUP, wakeup)
+                self.tasks.set_metadata(task["id"], W_STATUS, "extended")
+                self.tasks.set_metadata(task["id"], W_DEADLINE, iso(new_deadline))
                 return f"extended {ident} until {iso(new_deadline)}"
             else:
                 result = "unobserved"
@@ -917,10 +965,17 @@ class Dispatcher:
             still_open = self.tasks.get(task["id"]).get("status") not in CLOSED
             if still_open:
                 self._wake(
-                    task["id"], self.leader_id, f"修复后观察已结束（{result}）：请核对验收并收尾。"
+                    task["id"],
+                    self.leader_id,
+                    f"修复后观察已结束（{result}）：请核对验收并收尾。",
+                    f"grafana-watch:concluded:{meta.get(W_STARTED)}",
                 )
             closing = " 已唤醒 Leader 核对收尾。" if still_open else ""
-            self.tasks.comment(task["id"], f"修复后观察到期判定：{text}{closing}")
+            self._say(
+                task["id"],
+                f"修复后观察到期判定：{text}{closing}",
+                f"grafana-watch:concluded:{meta.get(W_STARTED)}",
+            )
             # Ended last: a retry after a failure above repeats the verdict.
             self.tasks.set_metadata(task["id"], W_RESULT, result)
             self.tasks.set_metadata(task["id"], W_STATUS, "ended")
