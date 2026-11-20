@@ -51,9 +51,11 @@ Files (override with environment variables):
 * ``$AKKIABOT_REVIEWER_REPO`` (default ``AkkiaLab/AkkiaBot``): the repository
   the token is restricted to. It must be listed in ``AUTHORIZED_REPOS``.
 
-The set of repositories the App may be installed on is ``AUTHORIZED_REPOS``
-below, changed only through a reviewed PR together with the owner's approval
-of the installation scope (docs/reviewer-github-app.md).
+The App is installed on the whole organisation (workspace-shared, AKKIA-25);
+``AUTHORIZED_REPOS`` below is the set of repositories *this project's tools*
+may mint tokens for, changed only through a reviewed PR with the owner's
+approval (docs/reviewer-github-app.md). Only public repositories are listed:
+the file is public, so private repository names never go in here.
 """
 
 from __future__ import annotations
@@ -83,21 +85,15 @@ DEFAULT_REPO = "AkkiaLab/AkkiaBot"
 # Reuse a cached token only while it has at least this many seconds left, so
 # a long review never runs with a token that expires half way through.
 MIN_REMAINING = 15 * 60
-# Repositories the owner explicitly authorised for the App installation, with
-# the issue that recorded the decision (``BOT-<n>`` ids belong to the retired
-# Multica workspace and are no longer accessible; new entries use ``AKKIA-<n>``).
-# ``check`` fails if the installation
-# reaches any repository outside this set; an authorised repository that is not
-# (yet) installed is only reported. Tokens are minted for listed repos only.
+# Repositories this project's tools may mint tokens for, with the issue that
+# recorded the decision (``BOT-<n>`` ids belong to the retired Multica workspace
+# and are no longer accessible; new entries use ``AKKIA-<n>``). Public
+# repositories only (AKKIA-25). The installation itself may reach more of the
+# organisation; ``check`` only counts those, never names them, and tokens are
+# always restricted to one listed repository.
 AUTHORIZED_REPOS: Mapping[str, str] = {
     "AkkiaLab/AkkiaBot": "BOT-3",
     "AkkiaLab/akkiabot-release-drill": "BOT-40",
-    # Legacy repositories: migration notice README PRs before archiving (BOT-16).
-    "AkkiaLab/botlab-core": "BOT-16",
-    "AkkiaLab/botlab-telegram": "BOT-16",
-    "AkkiaLab/botlab-llm": "BOT-16",
-    "AkkiaLab/botlab-fe": "BOT-16",
-    "AkkiaLab/Toolbox-py": "BOT-16",
 }
 #: Bot user ID of the App (REST ``user.id``, GraphQL ``Bot.databaseId``). It does not
 #: change when the App is renamed; ``check`` verifies the current slug maps to it.
@@ -432,12 +428,17 @@ def check_installation(
     slug = app.get("slug") or ""
     bot = http("GET", f"{API}/users/{slug}%5Bbot%5D", record["token"], None) if slug else {}
 
-    repo_names = sorted(r["full_name"] for r in repos.get("repositories", []))
+    repo_names = {r["full_name"] for r in repos.get("repositories", [])}
+    others = len(repo_names - set(AUTHORIZED_REPOS))
     permissions: dict[str, str] = installation.get("permissions", {})
     print(f"App:              {slug} (bot 身份 {slug}[bot]，bot 用户 ID {bot.get('id')})")
     print(f"Installation:     {record['installation_id']} @ {installation['account']['login']}")
+    # Only authorised (public) names are printed: run logs and issue comments must
+    # not enumerate the organisation's other, possibly private, repositories.
+    authorised_installed = sorted(set(AUTHORIZED_REPOS) & repo_names)
     print(
-        f"安装范围:         {installation.get('repository_selection')} -> {', '.join(repo_names)}"
+        f"安装范围:         {installation.get('repository_selection')}；"
+        f"授权仓库 {', '.join(authorised_installed) or '无'}；其他仓库 {others} 个（不列名称）"
     )
     print(f"权限:             {json.dumps(permissions, sort_keys=True)}")
     for purpose, wanted in PURPOSES.items():
@@ -454,11 +455,6 @@ def check_installation(
     problems: list[str] = []
     if bot.get("id") != BOT_USER_ID:
         problems.append(f"{slug}[bot] 的用户 ID 应为 {BOT_USER_ID}，实际为 {bot.get('id')}")
-    if installation.get("repository_selection") != "selected":
-        problems.append(f"安装范围应为 selected，实际为 {installation.get('repository_selection')}")
-    unauthorized = sorted(set(repo_names) - set(AUTHORIZED_REPOS))
-    if unauthorized:
-        problems.append(f"安装范围包含未授权仓库：{unauthorized}")
     if repo not in repo_names:
         problems.append(f"安装范围不包含目标仓库 {repo}")
     for purpose in ("review", "merge", *(("release",) if require_release else ())):
