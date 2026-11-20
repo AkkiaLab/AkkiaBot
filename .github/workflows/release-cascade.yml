@@ -69,7 +69,7 @@ jobs:
         if: steps.boot.outputs.active == 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
-          # Optional; the second secret name is a fallback until the rename is done.
-          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; unset means the notification is skipped.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL }}
           TRIGGER: "${{ github.event_name == 'pull_request_target' && format('PR #{0}', github.event.pull_request.number) || format('{0} {1}', github.event_name, github.ref_name) }}"
         run: python3 -m scripts.release cascade --trigger "$TRIGGER"

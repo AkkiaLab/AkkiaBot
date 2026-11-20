@@ -80,8 +80,8 @@ jobs:
           TAG: ${{ needs.rc.outputs.tag }}
           SHA: ${{ needs.rc.outputs.sha }}
           BASELINE: ${{ needs.rc.outputs.baseline }}
-          # Optional; the second secret name is a fallback until the rename is done.
-          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; unset means the notification is skipped.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
