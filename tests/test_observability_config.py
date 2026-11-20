@@ -469,31 +469,103 @@ EXISTING_TREE = {
     "group_by": ["grafana_folder", "alertname"],
     "routes": [
         {"receiver": "someone-else", "object_matchers": [["team", "=", "fictional"]]},
-        {"receiver": "stale", "object_matchers": [["akkiabot_rule", "=~", "old"]]},
+    ],
+}
+
+# Fictional deployer routes: an on-call route keyed on our rule label, one keyed
+# on another label (both stop matching), and a `continue` route with two
+# matchers that also lets alerts fall through.
+ONCALL_TREE = {
+    "receiver": "grafana-default-email",
+    "routes": [
+        {"receiver": "oncall", "object_matchers": [["akkiabot_rule", "=", "akkiabot-readyz"]]},
+        {"receiver": "pager", "object_matchers": [["severity", "=", "critical"]]},
+        {
+            "receiver": "audit",
+            "object_matchers": [["env", "=", "production"], ["team", "=~", "ops|sre"]],
+            "continue": True,
+        },
     ],
 }
 
 
-def test_policy_merge_keeps_root_and_foreign_routes() -> None:
+def _matches(alert: dict[str, str], matchers: list[list[str]]) -> bool:
+    for name, op, value in matchers:
+        actual = alert.get(name, "")
+        ok = {
+            "=": actual == value,
+            "!=": actual != value,
+            "=~": re.fullmatch(value, actual) is not None,
+            "!~": re.fullmatch(value, actual) is None,
+        }[op]
+        if not ok:
+            return False
+    return True
+
+
+def _route(tree: dict[str, Any], alert: dict[str, str]) -> list[str]:
+    """Alertmanager routing over the top-level children."""
+    hit = []
+    for route in tree.get("routes") or []:
+        if _matches(alert, route.get("object_matchers") or []):
+            hit.append(route["receiver"])
+            if not route.get("continue"):
+                break
+    return hit or [tree["receiver"]]
+
+
+ALERTS = [
+    {"akkiabot_rule": rule, **extra}
+    for rule in ("akkiabot-readyz", "akkiabot-errors", "other-rule", "")
+    for extra in (
+        {},
+        {"severity": "critical"},
+        {"env": "production", "team": "ops"},
+        {"env": "production", "team": "dev"},
+        {"env": "staging", "team": "sre"},
+        {"team": "fictional"},
+        {"dispatch_only": "true"},
+        {"drill": "true", "env": "production", "team": "sre"},
+        {"akkiabot_sync": "off"},
+    )
+]
+
+
+@pytest.mark.parametrize("tree", [EXISTING_TREE, ONCALL_TREE], ids=["simple", "oncall"])
+def test_policy_merge_keeps_every_other_delivery(tree: dict[str, Any]) -> None:
     config = grafana_sync.load_notifications()
-    merged = grafana_sync.merge_policy_tree(EXISTING_TREE, config["routes"])
-    assert merged["receiver"] == "grafana-default-email"
-    assert merged["group_by"] == ["grafana_folder", "alertname"]
-    dispatch, email, foreign = merged["routes"]
-    assert dispatch["receiver"] == "akkiabot-dispatch"
-    assert dispatch["continue"] is True
-    assert dispatch["group_by"] == ["..."]
-    # The rules that emailed through the root still email, dispatch-only ones do not.
-    assert email["receiver"] == "grafana-default-email"
-    assert ["dispatch_only", "!=", "true"] in email["object_matchers"]
-    assert ["drill", "!=", "true"] in email["object_matchers"]
-    assert "continue" not in email
-    assert foreign == EXISTING_TREE["routes"][0]
+    merged = grafana_sync.merge_policy_tree(tree, config)
+    assert merged["receiver"] == tree["receiver"]
+    assert merged.get("group_by") == tree.get("group_by")
+    assert merged["routes"][0]["receiver"] == "akkiabot-dispatch"
+    assert merged["routes"][0]["continue"] is True
+    assert merged["routes"][0]["group_by"] == ["..."]
+    # Other routes keep their content and order, right after the webhook route.
+    assert merged["routes"][1 : 1 + len(tree["routes"])] == tree["routes"]
+    for alert in ALERTS:
+        before = _route(tree, alert)
+        ours = (
+            alert["akkiabot_rule"].startswith("akkiabot-") and alert.get("akkiabot_sync") != "off"
+        )
+        webhook_only = alert.get("dispatch_only") == "true" or alert.get("drill") == "true"
+        expected = list(before)
+        if ours and webhook_only and before == [tree["receiver"]]:
+            expected = []
+        if ours:
+            expected = ["akkiabot-dispatch", *expected]
+        assert _route(merged, alert) == expected, alert
     # Idempotent: a second merge replaces our routes instead of stacking them.
-    assert grafana_sync.merge_policy_tree(merged, config["routes"]) == merged
+    assert grafana_sync.merge_policy_tree(merged, config) == merged
     assert "$" not in (OBSERVABILITY / "alerting" / "notifications.yaml").read_text(
         encoding="utf-8"
     )
+
+
+def test_policy_merge_refuses_continue_routes_it_cannot_negate() -> None:
+    config = grafana_sync.load_notifications()
+    legacy = {"receiver": "e", "routes": [{"receiver": "x", "matchers": ["a=b"], "continue": True}]}
+    with pytest.raises(SyncError, match="object_matchers"):
+        grafana_sync.merge_policy_tree(legacy, config)
 
 
 class NotifyGrafana(FakeGrafana):
@@ -601,6 +673,17 @@ def test_notifications_are_optional(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("GRAFANA_DISPATCH_WEBHOOK_URL", raising=False)
+    fake = NotifyGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
+    assert "nothing changed" in capsys.readouterr().out
+    assert fake.requests == []
+
+
+def test_notifications_skip_without_any_grafana_settings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("GRAFANA_URL", "GRAFANA_SA_TOKEN", "GRAFANA_DISPATCH_WEBHOOK_URL"):
+        monkeypatch.delenv(name, raising=False)
     fake = NotifyGrafana(contact_exists=False)
     assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
     assert "nothing changed" in capsys.readouterr().out

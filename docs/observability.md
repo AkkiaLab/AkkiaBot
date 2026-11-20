@@ -138,23 +138,24 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 
 ### 5.1 可选的签名 webhook
 
-需要把告警再发给外部系统时，`grafana-sync notifications` 会按 `alerting/notifications.yaml` 写入一个 webhook contact point（uid `akkiabot-dispatch`），并把两条子路由合并到通知策略树最前面，根和其他子路由原样保留：
+需要把告警再发给外部系统时，`grafana-sync notifications` 会按 `alerting/notifications.yaml` 写入一个 webhook contact point（uid `akkiabot-dispatch`），并在通知策略树的根下加入自己的子路由；根和其他子路由的内容与顺序保持不变：
 
-| 顺序 | 匹配 | receiver | 说明 |
+| 位置 | 匹配 | receiver | 说明 |
 | --- | --- | --- | --- |
-| 1 | `akkiabot_rule =~ akkiabot-.+` | webhook | 每个告警实例单独通知（`group_by: [...]`），`repeat_interval: 24h`，`continue: true` |
-| 2 | 同上，且 `dispatch_only != true`、`drill != true` | 根的 receiver（邮件） | 继承根的分组和间隔 |
+| 最前 | `akkiabot_rule =~ akkiabot-.+` | webhook | 每个告警实例单独通知（`group_by: [...]`），`repeat_interval: 24h`，`continue: true` |
+| 最后 | 同上，且 `dispatch_only != true`、`drill != true`，并排除其他 `continue` 子路由已匹配的告警 | 根的 receiver（邮件） | 继承根的分组和间隔 |
 
-- 为什么要第 2 条：Alertmanager 中只要有子路由匹配，父路由的 receiver 就不再使用。没有它，原来经根路由发邮件的规则就只剩 webhook。第 2 条让它们照旧发邮件；只给 webhook 接收方用的规则（标签 `dispatch_only: "true"` 或 `drill: "true"`）不发邮件。
+- 两条（或多条）路由都带标记匹配 `akkiabot_sync != off`，工具只替换带这个标记的路由，部署者自己的路由（包括按 `akkiabot_rule` 匹配的值班路由）不动。给告警加标签 `akkiabot_sync: "off"` 可让它不进入这些路由。
+- 为什么要补发邮件：Alertmanager 中只要有子路由匹配，父路由的 receiver 就不再使用。webhook 路由带 `continue`，不影响其他子路由的匹配，但会让原来落到根的告警不再发邮件。补发邮件路由只接管这部分告警：它排在其他子路由之后，被不带 `continue` 的子路由匹配的告警到不了它；被带 `continue` 的子路由匹配的告警原本也不会到根，所以按这些子路由的匹配条件取反后排除（取反拆成互不重叠的几条路由，一个告警最多匹配一条）。只给 webhook 接收方用的规则（标签 `dispatch_only: "true"` 或 `drill: "true"`）不发邮件。带 `continue` 的子路由若使用旧式 `matchers` 写法，命令会报错退出，不做修改。
 - 签名：webhook 使用 Grafana 的 `hmacConfig`，签名头 `X-Grafana-Alerting-Signature` = HMAC-SHA256(`<X-Grafana-Alerting-Timestamp>:<原始 body>`)。接收方应校验签名和时间戳，并按 `fingerprint`、`startsAt`、`status` 对重发去重；载荷中的 `values`、`annotations` 带真实取值，接收方不应原样外传。
-- 可选：未设置 `GRAFANA_DISPATCH_WEBHOOK_URL` 时命令什么也不改。地址必须是 https；写入出错时只报告操作和 HTTP 状态，不回显请求内容。
-- 策略树写入时带 `X-Disable-Provenance`，Grafana 网页上仍可修改邮件相关设置；匹配 `akkiabot_rule` 的子路由每次执行都会被替换。contact point 由 API 预置，在网页上只读。
+- 可选：未设置 `GRAFANA_DISPATCH_WEBHOOK_URL` 时命令什么也不改，也不需要 Grafana 地址和 token。地址必须是 https；写入出错时只报告操作和 HTTP 状态，不回显请求内容。
+- 策略树写入时带 `X-Disable-Provenance`，Grafana 网页上仍可修改邮件相关设置；带 `akkiabot_sync != off` 标记的子路由每次执行都会被替换。contact point 由 API 预置，在网页上只读。
 
 ```bash
 op run --env-file deploy/observability/grafana-notify.env.tpl -- just grafana-sync notifications
 ```
 
-停用：删除通知策略中匹配 `akkiabot_rule` 的两条子路由，akkiabot 规则会回到根路由发邮件。
+停用：删除通知策略中带 `akkiabot_sync != off` 标记的子路由，akkiabot 规则回到原来的路由。
 
 验证告警（只在预发布环境做）：停掉 redis 制造一次 `/readyz` 失败，大约 3 分钟后 `/readyz 失败` 进入 Firing，然后恢复：
 

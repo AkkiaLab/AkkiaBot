@@ -51,7 +51,6 @@ DASHBOARDS = OBSERVABILITY / "dashboards"
 ALERT_RULES = OBSERVABILITY / "alerting" / "akkiabot.yaml"
 ENV_MISSING = OBSERVABILITY / "alerting" / "env-missing.yaml"
 NOTIFICATIONS = OBSERVABILITY / "alerting" / "notifications.yaml"
-ROOT_RECEIVER_PLACEHOLDER = "__ROOT_RECEIVER__"
 #: Every rule carries its uid as a label: notifications drop internal labels
 #: (``__alert_rule_uid__``); webhook routes and receivers can match on it.
 RULE_LABEL = "akkiabot_rule"
@@ -302,24 +301,56 @@ def load_notifications(path: Path = NOTIFICATIONS) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _owned_route(route: dict[str, Any]) -> bool:
-    """Routes this script manages: they match on the rule-uid label."""
-    return any(m and m[0] == RULE_LABEL for m in route.get("object_matchers") or [])
+NEGATED_OP = {"=": "!=", "!=": "=", "=~": "!~", "!~": "=~"}
 
 
-def merge_policy_tree(tree: dict[str, Any], routes: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """Put our routes first under the root, keep every other route and the root."""
+def _owned_route(route: dict[str, Any], marker: list[str]) -> bool:
+    """Routes this script manages carry the marker matcher."""
+    return marker in (route.get("object_matchers") or [])
+
+
+def _not_matched_by(route: dict[str, Any]) -> list[list[list[str]]]:
+    """Disjoint matcher sets whose union is "this route does not match".
+
+    NOT(m1 AND m2 AND m3) = [!m1] | [m1, !m2] | [m1, m2, !m3]; the parts never
+    overlap, so at most one of the routes built from them matches an alert.
+    """
+    if route.get("matchers") or route.get("match") or route.get("match_re"):
+        raise SyncError(
+            "通知策略中有使用旧式 matchers 的 continue 子路由，无法自动合并，请改为 object_matchers"
+        )
+    matchers = [list(m) for m in route.get("object_matchers") or []]
+    parts = []
+    for i, (name, op, value) in enumerate(matchers):
+        if op not in NEGATED_OP:
+            raise SyncError(f"通知策略中 continue 子路由的匹配运算符无法识别：{op}")
+        parts.append([*matchers[:i], [name, NEGATED_OP[op], value]])
+    return parts
+
+
+def merge_policy_tree(tree: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch route first, other routes untouched, root email fallback last.
+
+    The email routes take over exactly the akkiabot alerts that used to reach
+    the root receiver: they come after every other route (so a matching route
+    without `continue` still stops them) and exclude alerts matched by other
+    routes with `continue`, which never reached the root either.
+    """
     merged = copy.deepcopy(tree)
     root_receiver = merged.get("receiver")
     if not root_receiver:
         raise SyncError("notification policy 没有根 receiver")
-    ours = json.loads(
-        json.dumps(list(routes)).replace(
-            f'"{ROOT_RECEIVER_PLACEHOLDER}"', json.dumps(root_receiver)
-        )
-    )
-    others = [r for r in merged.get("routes") or [] if not _owned_route(r)]
-    merged["routes"] = [*ours, *others]
+    marker = list(config["marker"])
+    others = [r for r in merged.get("routes") or [] if not _owned_route(r, marker)]
+    dispatch = copy.deepcopy(config["dispatch_route"])
+    dispatch["object_matchers"] = [*dispatch["object_matchers"], marker]
+    base = [*config["email_route"]["object_matchers"], marker]
+    combos: list[list[list[str]]] = [[]]
+    for route in others:
+        if route.get("continue"):
+            combos = [c + part for c in combos for part in _not_matched_by(route)]
+    emails = [{"receiver": root_receiver, "object_matchers": base + combo} for combo in combos]
+    merged["routes"] = [dispatch, *others, *emails]
     return merged
 
 
@@ -334,13 +365,14 @@ def notifications(grafana: Grafana, *, url: str, secret: str) -> list[str]:
     contact_point["settings"]["hmacConfig"]["secret"] = secret
     existing = {c.get("uid") for c in grafana.contact_points()}
     grafana.put_contact_point(contact_point, exists=contact_point["uid"] in existing)
-    tree = merge_policy_tree(grafana.policies(), config["routes"])
+    tree = merge_policy_tree(grafana.policies(), config)
     grafana.put_policies(tree)
-    kept = len(tree["routes"]) - len(config["routes"])
+    marker = list(config["marker"])
+    owned = sum(_owned_route(r, marker) for r in tree["routes"])
     return [
         f"contact point {contact_point['uid']}: {'updated' if contact_point['uid'] in existing else 'created'}",
-        f"notification policy: {len(config['routes'])} webhook routes first, "
-        f"{kept} other routes and root receiver {tree['receiver']} kept",
+        f"notification policy: webhook route first, {owned - 1} email fallback route(s) last, "
+        f"{len(tree['routes']) - owned} other routes and root receiver {tree['receiver']} kept",
     ]
 
 
@@ -421,19 +453,21 @@ def main(argv: Sequence[str] | None = None, transport: httpx.BaseTransport | Non
         help="可选：写入签名 webhook contact point 并合并通知策略路由（未配置地址时跳过）",
     )
     args = parser.parse_args(argv)
+    if (
+        args.command == "notifications"
+        and not os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip()
+    ):
+        print("notifications: GRAFANA_DISPATCH_WEBHOOK_URL not set, nothing changed")
+        return 0
     try:
         with client_from_env(transport) as client:
             grafana = Grafana(client)
             if args.command == "discover":
                 print(json.dumps(discover(grafana), ensure_ascii=False, indent=2))
             elif args.command == "notifications":
-                url = os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip()
-                if not url:
-                    print("notifications: GRAFANA_DISPATCH_WEBHOOK_URL not set, nothing changed")
-                    return 0
                 for line in notifications(
                     grafana,
-                    url=url,
+                    url=os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip(),
                     secret=os.environ.get("GRAFANA_DISPATCH_HMAC_SECRET", "").strip(),
                 ):
                     print(line)

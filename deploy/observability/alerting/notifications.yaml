@@ -4,16 +4,18 @@
 #
 # - The webhook URL and HMAC secret are not here: they come from the
 #   environment (see grafana-notify.env.tpl).
-# - Routes are merged into the existing notification policy tree as the first
-#   children of the root; every other route and the root itself (the default
-#   email receiver) are kept as they are. Routes that match on `akkiabot_rule`
-#   are owned by this file and replaced on every run.
+# - Only routes carrying the marker matcher `akkiabot_sync != off` are owned
+#   by this file and replaced on every run. Every other route, their order,
+#   and the root (the default email receiver) are kept as they are. An alert
+#   labelled `akkiabot_sync: "off"` skips both routes below.
+# - `dispatch_route` goes first with `continue`, so it sees every akkiabot
+#   alert without changing how the other routes match.
 # - Alertmanager semantics: once a child route matches, the parent's receiver
-#   is no longer used. So the akkiabot rules that used to email through the
-#   root get an explicit email route after the webhook route (`continue`),
-#   with the root's own receiver and grouping. Rules labelled
-#   `dispatch_only: "true"` or `drill: "true"` (meant only for the webhook
-#   receiver) skip email.
+#   is no longer used. `email_route` restores the root email for exactly the
+#   akkiabot alerts that used to fall through to the root: it goes last
+#   (after routes that stop matching) and excludes alerts matched by other
+#   `continue` routes. Rules labelled `dispatch_only: "true"` or
+#   `drill: "true"` (meant only for the webhook receiver) skip email.
 # Avoid dollar signs: kept consistent with the provisioning files.
 contact_point:
   uid: akkiabot-dispatch
@@ -26,19 +28,21 @@ contact_point:
     hmacConfig:
       header: X-Grafana-Alerting-Signature
       timestampHeader: X-Grafana-Alerting-Timestamp
-routes:
-  - receiver: akkiabot-dispatch
-    object_matchers: [[akkiabot_rule, "=~", "akkiabot-.+"]]
-    # One notification per alert instance.
-    group_by: ["..."]
-    group_wait: 30s
-    group_interval: 5m
-    # Receivers are expected to de-duplicate repeats of one firing episode
-    # (same fingerprint and startsAt); a long interval just saves requests.
-    repeat_interval: 24h
-    continue: true
-  - receiver: __ROOT_RECEIVER__
-    object_matchers:
-      - [akkiabot_rule, "=~", "akkiabot-.+"]
-      - [dispatch_only, "!=", "true"]
-      - [drill, "!=", "true"]
+marker: [akkiabot_sync, "!=", "off"]
+dispatch_route:
+  receiver: akkiabot-dispatch
+  object_matchers: [[akkiabot_rule, "=~", "akkiabot-.+"]]
+  # One notification per alert instance.
+  group_by: ["..."]
+  group_wait: 30s
+  group_interval: 5m
+  # Receivers are expected to de-duplicate repeats of one firing episode
+  # (same fingerprint and startsAt); a long interval just saves requests.
+  repeat_interval: 24h
+  continue: true
+email_route:
+  # The receiver is filled in with the root's receiver.
+  object_matchers:
+    - [akkiabot_rule, "=~", "akkiabot-.+"]
+    - [dispatch_only, "!=", "true"]
+    - [drill, "!=", "true"]
