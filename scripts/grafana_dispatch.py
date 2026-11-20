@@ -99,7 +99,7 @@ W_REGRESSION_PENDING = "grafana_watch_regression_pending"
 W_WAKEUP = "grafana_watch_wakeup"
 #: The new deadline while the one-time extension is being written; a retry
 #: resumes the extension instead of reaching a verdict on the old deadline.
-W_EXTENDING = "grafana_watch_extending"
+W_EXTENDING = "grafana_watch_extending"  # "<watch started>|<new deadline>"
 W_RESULT = "grafana_watch_result"
 ACTIVE_WATCH = ("active", "extended")
 
@@ -121,6 +121,11 @@ PATTERNS = {
         r"AKKIA-\d{1,6}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     ),
 }
+
+
+def extension_tag(meta: dict[str, Any], new_deadline: str) -> str:
+    """Identifies one watch's extension wakeup / comment (scoped by its start time)."""
+    return f"grafana-watch:deadline:{meta.get(W_STARTED)}:{new_deadline}"
 
 
 class DispatchError(RuntimeError):
@@ -855,6 +860,7 @@ class Dispatcher:
                 W_EXERCISED: "",
                 W_REGRESSION: "",
                 W_RESULT: "",
+                W_EXTENDING: "",
             }
             for key, value in values.items():
                 if value:
@@ -891,9 +897,19 @@ class Dispatcher:
             meta = task.get("metadata") or {}
             if meta.get(W_STATUS) not in ACTIVE_WATCH:
                 return f"watch_not_active {ident}"
-            if meta.get(W_WAKEUP):
+            wakeups = [meta.get(W_WAKEUP)]
+            owner, _, pending = (meta.get(W_EXTENDING) or "").partition("|")
+            if pending and owner == meta.get(W_STARTED):
+                # A half-written extension may have created a wakeup not yet recorded.
                 with contextlib.suppress(DispatchError):
-                    self.tasks.wakeup_disable(task["id"], meta[W_WAKEUP])
+                    wakeups.append(self.tasks.find_wakeup(task["id"], extension_tag(meta, pending)))
+            for wakeup in {w for w in wakeups if w}:
+                with contextlib.suppress(DispatchError):
+                    self.tasks.wakeup_disable(task["id"], wakeup)
+            if W_EXTENDING in meta:
+                # Scoped by start time anyway; removing it keeps the record clean.
+                with contextlib.suppress(DispatchError):
+                    self.tasks.delete_metadata(task["id"], W_EXTENDING)
             self.tasks.set_metadata(task["id"], W_RESULT, "stopped")
             self.tasks.set_metadata(task["id"], W_STATUS, "ended")
             self.tasks.comment(task["id"], f"修复后观察已手动结束：{reason}")
@@ -907,9 +923,12 @@ class Dispatcher:
             status = meta.get(W_STATUS)
             if status not in ACTIVE_WATCH:
                 return f"watch_not_active {ident}"
-            pending = meta.get(W_EXTENDING)
-            if pending:
-                if status == "extended" and meta.get(W_DEADLINE) == pending:
+            if W_EXTENDING in meta:
+                owner, _, pending = (meta.get(W_EXTENDING) or "").partition("|")
+                if owner != meta.get(W_STARTED) or not pending:
+                    # Left over from an earlier watch on this issue: never applies here.
+                    self.tasks.delete_metadata(task["id"], W_EXTENDING)
+                elif status == "extended" and meta.get(W_DEADLINE) == pending:
                     # Fully written; only the marker cleanup was lost.
                     self.tasks.delete_metadata(task["id"], W_EXTENDING)
                 else:
@@ -949,8 +968,9 @@ class Dispatcher:
                 if new_deadline <= now:
                     new_deadline = now + timedelta(days=DEFAULT_WATCH_DAYS)
                 # Intent first: from here on a retry resumes this extension.
-                self.tasks.set_metadata(task["id"], W_EXTENDING, iso(new_deadline))
-                meta = {**meta, W_EXTENDING: iso(new_deadline)}
+                marker_value = f"{meta.get(W_STARTED)}|{iso(new_deadline)}"
+                self.tasks.set_metadata(task["id"], W_EXTENDING, marker_value)
+                meta = {**meta, W_EXTENDING: marker_value}
                 return self._extend(task, meta, ident, iso(new_deadline))
             else:
                 result = "unobserved"
@@ -981,7 +1001,7 @@ class Dispatcher:
         self, task: dict[str, Any], meta: dict[str, Any], ident: str, new_deadline: str
     ) -> str:
         """Write the one-time extension; every step is safe to repeat."""
-        tag = f"grafana-watch:deadline:{new_deadline}"
+        tag = extension_tag(meta, new_deadline)
         wakeup = self.tasks.find_wakeup(task["id"], tag) or self.tasks.wakeup_at(
             task["id"],
             new_deadline,

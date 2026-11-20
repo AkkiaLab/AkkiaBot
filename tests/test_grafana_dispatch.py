@@ -33,7 +33,8 @@ class FakeTasks:
         self.fail_wakeup_once = False
         self.wakeup_lands_but_fails_once = False
         self.fail_comment_once = False
-        self.fail_metadata_once: str | None = None  # key whose next write/delete fails
+        self.fail_metadata_once: str | None = None  # key whose next write fails
+        self.fail_delete_once: str | None = None  # key whose next delete fails
         self._ids = itertools.count(100)
 
     def add(self, status: str = "in_progress", **metadata: str) -> dict[str, Any]:
@@ -89,7 +90,9 @@ class FakeTasks:
         self._by(task_id)["metadata"][key] = value
 
     def delete_metadata(self, task_id: str, key: str) -> None:
-        self._maybe_fail_metadata(key)
+        if self.fail_delete_once == key:
+            self.fail_delete_once = None
+            raise gd.DispatchError("multica issue metadata delete failed (exit 1)")
         self._by(task_id)["metadata"].pop(key, None)
 
     def find_wakeup(self, task_id: str, tag: str) -> str | None:
@@ -837,7 +840,6 @@ def test_conclude_retry_does_not_repeat_the_extension(env) -> None:
         ("metadata", gd.W_WAKEUP),
         ("metadata", gd.W_DEADLINE),
         ("metadata", gd.W_STATUS),  # the last field write
-        ("delete", gd.W_EXTENDING),  # the marker cleanup
     ],
 )
 def test_extension_partial_failure_is_resumed(env, failure: tuple[str, str]) -> None:
@@ -845,8 +847,10 @@ def test_extension_partial_failure_is_resumed(env, failure: tuple[str, str]) -> 
     fix = start_watch(d, tasks)
     clock.now = T0 + timedelta(days=7)
     kind, key = failure
-    if kind in {"metadata", "delete"}:
+    if kind == "metadata":
         tasks.fail_metadata_once = key
+    elif kind == "delete":
+        tasks.fail_delete_once = key
     elif kind == "wakeup":
         tasks.wakeup_lands_but_fails_once = True
     else:
@@ -872,3 +876,67 @@ def test_extension_partial_failure_is_resumed(env, failure: tuple[str, str]) -> 
     assert d.watch_conclude(fix["identifier"]).startswith(
         f"concluded {fix['identifier']}: unobserved"
     )
+
+
+# ---------------------------------- review round 4: extension scoped to its watch
+
+
+def _extend_with_failure(d, tasks, clock, fix, *, kind: str, key: str = "") -> None:
+    clock.now = T0 + timedelta(days=7)
+    if kind == "delete":
+        tasks.fail_delete_once = key
+    elif kind == "metadata":
+        tasks.fail_metadata_once = key
+    with pytest.raises(gd.DispatchError):
+        d.watch_conclude(fix["identifier"])
+
+
+def test_marker_cleanup_failure_only_fails_the_delete(env) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    _extend_with_failure(d, tasks, clock, fix, kind="delete", key=gd.W_EXTENDING)
+    meta = fix["metadata"]
+    # Everything but the cleanup was written by the failed attempt.
+    assert (meta[gd.W_STATUS], meta[gd.W_DEADLINE]) == ("extended", "2026-12-04T08:00:00Z")
+    assert meta[gd.W_EXTENDING].endswith("|2026-12-04T08:00:00Z")
+    # Retry on the same watch: the marker is cleaned up and the extension is not redone.
+    assert d.watch_conclude(fix["identifier"]).startswith(f"not_due {fix['identifier']}")
+    assert gd.W_EXTENDING not in meta
+    assert len(tasks.wakeups) == 2
+
+
+@pytest.mark.parametrize(
+    ("kind", "key"),
+    [("delete", gd.W_EXTENDING), ("metadata", gd.W_WAKEUP), ("metadata", gd.W_STATUS)],
+)
+def test_stale_extension_never_touches_a_restarted_watch(env, kind: str, key: str) -> None:
+    d, tasks, clock = env
+    fix = start_watch(d, tasks)
+    _extend_with_failure(d, tasks, clock, fix, kind=kind, key=key)
+    old_extension = [w for w in tasks.wakeups if w["at"] == "2026-12-04T08:00:00Z"]
+    assert len(old_extension) == 1
+    # Stopped mid-way, then a new watch is opened on the same issue.
+    clock.now = T0 + timedelta(days=7, hours=1)
+    d.watch_stop(fix["identifier"], "fictional: target was wrong")
+    assert old_extension[0]["id"] in tasks.disabled  # even if it was never recorded
+    clock.now = T0 + timedelta(days=8)
+    d.watch_start(fix["identifier"], env="production", handler="command:spam", command="spam",
+                  owner=OWNER, concluder=CONCLUDER)  # fmt: skip
+    meta = fix["metadata"]
+    new_deadline = "2026-12-05T08:00:00Z"
+    assert (meta[gd.W_STATUS], meta[gd.W_DEADLINE]) == ("active", new_deadline)
+    new_wakeup = meta[gd.W_WAKEUP]
+    # The new watch is concluded on its own deadline with its own wakeup.
+    clock.now = T0 + timedelta(days=7, hours=12)
+    assert d.watch_conclude(fix["identifier"]).startswith(f"not_due {fix['identifier']}")
+    clock.now = T0 + timedelta(days=15)
+    assert (
+        d.watch_conclude(fix["identifier"])
+        == f"extended {fix['identifier']} until 2026-12-12T08:00:00Z"
+    )
+    assert meta[gd.W_DEADLINE] == "2026-12-12T08:00:00Z"
+    assert meta[gd.W_WAKEUP] not in {old_extension[0]["id"], new_wakeup}
+    assert [w["at"] for w in tasks.wakeups if w["id"] == meta[gd.W_WAKEUP]] == [
+        "2026-12-12T08:00:00Z"
+    ]
+    assert gd.W_EXTENDING not in meta
