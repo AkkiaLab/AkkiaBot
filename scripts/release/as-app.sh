@@ -5,7 +5,8 @@
 # Needed where the release rulesets only let the App write: creating release
 # branches (required checks are enforced on creation) and v* tags.
 # The token is requested with exactly the release permissions (same set as
-# PURPOSES["release"] in scripts/reviewer_gh.py and the release-setup action).
+# RELEASE_PERMISSIONS in scripts/release/app_permissions.py and the release-setup
+# action).
 # The App id and private key come from 1Password (AkkiaBot/release-app) through
 # the machine's service account token (same file as the acceptance tool). The
 # installation token is passed to gh (GH_TOKEN) and git (http.extraheader via
