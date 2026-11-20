@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run a command as the workspace agent App akkialab-agent with a *release*
-# purpose token (docs/release.md §1, §7; AKKIA-25), e.g.
+# Run a command as the GitHub App akkialab-agent with a *release*
+# purpose token (docs/release.md §1, §7), e.g.
 #   scripts/release/as-app.sh uv run python -m scripts.release create v1.4.1
 # Needed where the release rulesets only let the App write: creating release
 # branches (required checks are enforced on creation) and v* tags.

@@ -32,8 +32,7 @@ runs:
           echo "::error::release App not configured: ${missing[*]} (docs/release.md §7, BOT-40)"
           exit 1
         fi
-    # The App is the workspace agent App (akkialab-agent, AKKIA-25), shared with the
-    # Reviewer. Request exactly the release permissions, never "whatever the
+    # The App (akkialab-agent) also has non-release uses. Request exactly the release permissions, never "whatever the
     # installation has": same set as RELEASE_PERMISSIONS in
     # scripts/release/app_permissions.py and scripts/release/as-app.sh
     # (tests/release/test_app_permissions.py).

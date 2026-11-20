@@ -198,7 +198,7 @@ class FakeGitHub:
 
     def notify(self, payload: dict[str, Any]) -> str:
         self.notified.append(payload)
-        return "已通知 Multica（fake）"
+        return "已发送发布通知（fake）"
 
 
 @pytest.fixture

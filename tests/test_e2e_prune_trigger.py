@@ -1,4 +1,4 @@
-"""Weekly prune trigger: call the Multica webhook only after a staging release (BOT-30)."""
+"""Weekly prune trigger: call the optional prune webhook only after a staging release."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from scripts.e2e_prune_trigger import iso_week, recent_releases, run
 NOW = datetime(2026, 11, 16, 3, 17, tzinfo=UTC)
 REPO = "AkkiaLab/AkkiaBot"
 # mock: 人工构造的不可用 webhook 地址，不是凭据。
-MOCK_WEBHOOK_URL = "https://multica.example.test/api/webhooks/autopilots/fake-token-for-tests"
+MOCK_WEBHOOK_URL = "https://webhook.example.test/hooks/fake-token-for-tests"
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "e2e-prune-trigger.yml"
 
 
@@ -107,7 +107,7 @@ def test_release_triggers_the_webhook_once_per_week() -> None:
     )
     post = FakePost()
     lines: list[str] = []
-    assert run(env(MULTICA_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, post, NOW, lines.append) == 0
+    assert run(env(E2E_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, post, NOW, lines.append) == 0
     ((url, body, headers),) = post.calls
     assert url == MOCK_WEBHOOK_URL
     assert headers["Idempotency-Key"] == "akkiabot-e2e-prune-2026-W47"
@@ -143,7 +143,7 @@ def test_incomplete_scan_fails_instead_of_reporting_no_release() -> None:
     lines: list[str] = []
     gh = FakeGitHub(filler(3))
     gh.errors = [{"message": "API rate limit exceeded"}]
-    assert run(env(MULTICA_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, post, NOW, lines.append) == 1
+    assert run(env(E2E_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, post, NOW, lines.append) == 1
     assert "无法完整判断" in lines[-1]
     assert "rate limit" in lines[-1]
 
@@ -154,17 +154,19 @@ def test_incomplete_scan_fails_instead_of_reporting_no_release() -> None:
     assert post.calls == []
 
 
-def test_missing_secret_or_failed_call_fails_the_job() -> None:
+def test_missing_secret_skips_and_failed_call_fails_the_job() -> None:
     gh = FakeGitHub([("c" * 40, [status("staging-acceptance", "2026-11-15T01:20:00Z")])])
     lines: list[str] = []
-    assert run(env(), gh, FakePost(), NOW, lines.append) == 1
-    assert "MULTICA_PRUNE_WEBHOOK_URL" in lines[-1]
+    post = FakePost()
+    assert run(env(), gh, post, NOW, lines.append) == 0
+    assert post.calls == []
+    assert lines[-1].startswith("::notice::")
+    assert "E2E_PRUNE_WEBHOOK_URL" in lines[-1]
     lines.clear()
     assert (
-        run(env(MULTICA_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, FakePost(404), NOW, lines.append)
-        == 1
+        run(env(E2E_PRUNE_WEBHOOK_URL=MOCK_WEBHOOK_URL), gh, FakePost(404), NOW, lines.append) == 1
     )
-    assert lines[-1] == "::error::调用 Multica webhook 失败：HTTP 404"
+    assert lines[-1] == "::error::调用清理 webhook 失败：HTTP 404"
 
 
 def test_iso_week() -> None:
@@ -179,4 +181,5 @@ def test_workflow_is_weekly_manual_and_read_only() -> None:
     assert data["permissions"] == {"contents": "read", "statuses": "read"}
     step = data["jobs"]["check"]["steps"][-1]
     assert step["run"] == "python3 scripts/e2e_prune_trigger.py"
-    assert step["env"]["MULTICA_PRUNE_WEBHOOK_URL"] == "${{ secrets.MULTICA_PRUNE_WEBHOOK_URL }}"
+    # New secret name first; the old name is a fallback until the rename is done.
+    assert step["env"]["E2E_PRUNE_WEBHOOK_URL"].startswith("${{ secrets.E2E_PRUNE_WEBHOOK_URL || ")

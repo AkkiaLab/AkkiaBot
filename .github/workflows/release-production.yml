@@ -6,9 +6,10 @@ name: Release to production
 #             and the `production` environment really requires a reviewer;
 #   image   — the backend image of that sha exists (built if missing);
 #   approve — environment `production`: waits for the owner's approval;
-#   handoff — tells Multica to deploy on the runtime machine
-#             (`just release-deploy production <tag>`), which refuses to run
-#             unless this run's `approve` job was approved.
+#   handoff — posts `release-production-approved` to the optional release
+#             notification webhook, whose receiver runs the deploy on the
+#             deploy host (`just release-deploy production <tag>`); that command
+#             refuses to run unless this run's `approve` job was approved.
 # Nothing here touches the servers; the Mini App follows via webapp-promote.yml.
 
 run-name: 生产发布 ${{ inputs.tag }}
@@ -96,17 +97,18 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           SHA: ${{ needs.verify.outputs.sha }}
-          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; the second secret name is a fallback until the rename is done.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           echo "- 运行机执行：\`just release-deploy production $TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          if [[ -z "$MULTICA_RELEASE_WEBHOOK_URL" ]]; then
-            echo "::notice::MULTICA_RELEASE_WEBHOOK_URL not configured; start the production deploy manually"
+          if [[ -z "$RELEASE_NOTIFY_WEBHOOK_URL" ]]; then
+            echo "::notice::RELEASE_NOTIFY_WEBHOOK_URL not configured; start the production deploy manually"
             exit 0
           fi
           payload="$(jq -n --arg tag "$TAG" --arg sha "$SHA" --arg run "$RUN_URL" \
             '{kind: "release-production-approved", tag: $tag, sha: $sha, run: $run}')"
           code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-            --data "$payload" "$MULTICA_RELEASE_WEBHOOK_URL")"
-          echo "Multica webhook: HTTP $code"
+            --data "$payload" "$RELEASE_NOTIFY_WEBHOOK_URL")"
+          echo "Release notification webhook: HTTP $code"
           [[ "$code" =~ ^2 ]]

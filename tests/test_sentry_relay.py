@@ -1,4 +1,4 @@
-"""Runs the Sentry relay Worker's node:test suite (deploy/sentry-relay, BOT-55)."""
+"""Runs the Sentry relay Worker's node:test suite (deploy/sentry-relay)."""
 
 from __future__ import annotations
 
