@@ -56,10 +56,11 @@ def _exprs(panels: list[dict[str, Any]], ds_type: str) -> list[str]:
     return [t["expr"] for p in panels if p["datasource"]["type"] == ds_type for t in p["targets"]]
 
 
-def _rule_exprs() -> list[str]:
+def _rule_exprs(*, include_dispatch_only: bool = True) -> list[str]:
     return [
         q["model"]["expr"]
         for rule in load_rule_group()["rules"]
+        if include_dispatch_only or rule["labels"].get("dispatch_only") != "true"
         for q in rule["data"]
         if q["datasourceUid"] != "__expr__"
     ]
@@ -138,10 +139,13 @@ def test_alert_rules_cover_required_conditions() -> None:
         ref_ids = {q["refId"] for q in rule["data"]}
         assert rule["condition"] in ref_ids
         for query in rule["data"]:
-            assert query["datasourceUid"] in {"prometheus", "__expr__"}
+            assert query["datasourceUid"] in {"prometheus", "loki", "__expr__"}
             assert query["model"]["refId"] == query["refId"]
         assert rule["annotations"]["summary"]
-        assert parse_duration(rule["for"]) >= 60
+        # Webhook receivers tell environments apart by this label.
+        assert rule["labels"].get("env", "production") in {"production", "staging"}
+        if rule["labels"].get("dispatch_only") != "true":
+            assert parse_duration(rule["for"]) >= 60
     # Monitoring down (no probe data) must page too.
     assert rules["akkiabot-readyz-failing"]["noDataState"] == "Alerting"
 
@@ -149,7 +153,7 @@ def test_alert_rules_cover_required_conditions() -> None:
 def test_alert_rule_metrics_exist() -> None:
     used = {m for expr in _rule_exprs() for m in METRIC.findall(expr)}
     assert used <= _exported_series(), sorted(used - _exported_series())
-    for expr in _rule_exprs():
+    for expr in _rule_exprs(include_dispatch_only=False):
         assert "by (env)" in expr, "alerts fire per environment"
 
 
@@ -245,6 +249,7 @@ def test_rule_group_payload_swaps_datasource() -> None:
         assert rule["ruleGroup"] == "akkiabot"
         uids = {q["datasourceUid"] for q in rule["data"]}
         assert uids == {"grafanacloud-prom", "__expr__"}
+        assert rule["labels"]["akkiabot_rule"] == rule["uid"]
     # The loaded file is not mutated.
     assert {q["datasourceUid"] for q in load_rule_group()["rules"][0]["data"]} == {
         "prometheus",
@@ -317,6 +322,7 @@ def test_sync_uploads_dashboards_and_rules(capsys: pytest.CaptureFixture[str]) -
     _, _, rules = fake.requests[4]
     uids = [r["uid"] for r in rules["rules"]]
     assert len(uids) == 6
+    assert all(r["labels"]["akkiabot_rule"] == r["uid"] for r in rules["rules"])
     assert uids[-2:] == [  # default expected envs
         "akkiabot-env-missing-staging",
         "akkiabot-env-missing-production",
@@ -431,3 +437,282 @@ def test_sync_env_option_overrides_expected_envs() -> None:
     assert uids[-1] == "akkiabot-env-missing-staging"
     assert "akkiabot-env-missing-production" not in uids
     assert all(r["ruleGroup"] == "akkiabot" for r in rules["rules"])
+
+
+# ------------------------------------------------- optional webhook notifications
+
+
+def test_rule_group_payload_maps_loki_and_refuses_unmapped_loki() -> None:
+    group = {
+        "name": "g",
+        "interval": "1m",
+        "rules": [
+            {
+                "uid": "akkiabot-fictional",
+                "title": "t",
+                "condition": "A",
+                "data": [{"refId": "A", "datasourceUid": "loki", "model": {"refId": "A"}}],
+                "noDataState": "OK",
+                "execErrState": "Error",
+                "for": "0s",
+            }
+        ],
+    }
+    payload = rule_group_payload(group, "grafanacloud-prom", "grafanacloud-logs")
+    assert payload["rules"][0]["data"][0]["datasourceUid"] == "grafanacloud-logs"
+    with pytest.raises(SyncError, match="Loki"):
+        rule_group_payload(group, "grafanacloud-prom")
+
+
+EXISTING_TREE = {
+    "receiver": "grafana-default-email",
+    "group_by": ["grafana_folder", "alertname"],
+    "routes": [
+        {"receiver": "someone-else", "object_matchers": [["team", "=", "fictional"]]},
+    ],
+}
+
+# Fictional deployer routes: an on-call route keyed on our rule label, one keyed
+# on another label (both stop matching), and a `continue` route with two
+# matchers that also lets alerts fall through.
+ONCALL_TREE = {
+    "receiver": "grafana-default-email",
+    "routes": [
+        {"receiver": "oncall", "object_matchers": [["akkiabot_rule", "=", "akkiabot-readyz"]]},
+        {"receiver": "pager", "object_matchers": [["severity", "=", "critical"]]},
+        {
+            "receiver": "audit",
+            "object_matchers": [["env", "=", "production"], ["team", "=~", "ops|sre"]],
+            "continue": True,
+        },
+    ],
+}
+
+
+def _matches(alert: dict[str, str], matchers: list[list[str]]) -> bool:
+    for name, op, value in matchers:
+        actual = alert.get(name, "")
+        ok = {
+            "=": actual == value,
+            "!=": actual != value,
+            "=~": re.fullmatch(value, actual) is not None,
+            "!~": re.fullmatch(value, actual) is None,
+        }[op]
+        if not ok:
+            return False
+    return True
+
+
+def _route(tree: dict[str, Any], alert: dict[str, str]) -> list[str]:
+    """Alertmanager routing over the top-level children."""
+    hit = []
+    for route in tree.get("routes") or []:
+        if _matches(alert, route.get("object_matchers") or []):
+            hit.append(route["receiver"])
+            if not route.get("continue"):
+                break
+    return hit or [tree["receiver"]]
+
+
+ALERTS = [
+    {"akkiabot_rule": rule, **extra}
+    for rule in ("akkiabot-readyz", "akkiabot-errors", "other-rule", "")
+    for extra in (
+        {},
+        {"severity": "critical"},
+        {"env": "production", "team": "ops"},
+        {"env": "production", "team": "dev"},
+        {"env": "staging", "team": "sre"},
+        {"team": "fictional"},
+        {"dispatch_only": "true"},
+        {"drill": "true", "env": "production", "team": "sre"},
+        {"akkiabot_sync": "off"},
+    )
+]
+
+
+@pytest.mark.parametrize("tree", [EXISTING_TREE, ONCALL_TREE], ids=["simple", "oncall"])
+def test_policy_merge_keeps_every_other_delivery(tree: dict[str, Any]) -> None:
+    config = grafana_sync.load_notifications()
+    merged = grafana_sync.merge_policy_tree(tree, config)
+    assert merged["receiver"] == tree["receiver"]
+    assert merged.get("group_by") == tree.get("group_by")
+    assert merged["routes"][0]["receiver"] == "akkiabot-dispatch"
+    assert merged["routes"][0]["continue"] is True
+    assert merged["routes"][0]["group_by"] == ["..."]
+    # Other routes keep their content and order, right after the webhook route.
+    assert merged["routes"][1 : 1 + len(tree["routes"])] == tree["routes"]
+    for alert in ALERTS:
+        before = _route(tree, alert)
+        ours = (
+            alert["akkiabot_rule"].startswith("akkiabot-") and alert.get("akkiabot_sync") != "off"
+        )
+        webhook_only = alert.get("dispatch_only") == "true" or alert.get("drill") == "true"
+        expected = list(before)
+        if ours and webhook_only and before == [tree["receiver"]]:
+            expected = []
+        if ours:
+            expected = ["akkiabot-dispatch", *expected]
+        assert _route(merged, alert) == expected, alert
+    # Idempotent: a second merge replaces our routes instead of stacking them.
+    assert grafana_sync.merge_policy_tree(merged, config) == merged
+    assert "$" not in (OBSERVABILITY / "alerting" / "notifications.yaml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_policy_merge_refuses_continue_routes_it_cannot_negate() -> None:
+    config = grafana_sync.load_notifications()
+    legacy = {"receiver": "e", "routes": [{"receiver": "x", "matchers": ["a=b"], "continue": True}]}
+    with pytest.raises(SyncError, match="object_matchers"):
+        grafana_sync.merge_policy_tree(legacy, config)
+
+
+class NotifyGrafana(FakeGrafana):
+    def __init__(self, *, contact_exists: bool) -> None:
+        super().__init__()
+        self.contact_exists = contact_exists
+        self.headers: list[httpx.Headers] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.headers.append(request.headers)
+        match request.method, request.url.path:
+            case "GET", "/api/v1/provisioning/contact-points":
+                self.requests.append(("GET", request.url.path, None))
+                points = [{"uid": "", "name": "email receiver", "type": "email"}]
+                if self.contact_exists:
+                    points.append({"uid": "akkiabot-dispatch", "name": "akkiabot-dispatch"})
+                return httpx.Response(200, json=points)
+            case "GET", "/api/v1/provisioning/policies":
+                self.requests.append(("GET", request.url.path, None))
+                return httpx.Response(200, json=EXISTING_TREE)
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+@pytest.mark.parametrize("exists", [False, True])
+def test_notifications_writes_contact_point_and_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], exists: bool
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://hook.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = NotifyGrafana(contact_exists=exists)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
+    calls = [(m, p) for m, p, _ in fake.requests]
+    write = (
+        ("PUT", "/api/v1/provisioning/contact-points/akkiabot-dispatch")
+        if exists
+        else ("POST", "/api/v1/provisioning/contact-points")
+    )
+    assert calls == [
+        ("GET", "/api/v1/provisioning/policies"),
+        ("GET", "/api/v1/provisioning/contact-points"),
+        write,
+        ("PUT", "/api/v1/provisioning/policies"),
+    ]
+    contact = fake.requests[2][2]
+    assert contact["type"] == "webhook"
+    assert contact["settings"]["url"] == "https://hook.example.invalid/"
+    assert contact["settings"]["hmacConfig"] == {
+        "header": "X-Grafana-Alerting-Signature",
+        "timestampHeader": "X-Grafana-Alerting-Timestamp",
+        "secret": mock_secret,
+    }
+    assert fake.headers[-1]["X-Disable-Provenance"] == "true"
+    assert fake.requests[3][2]["routes"][0]["receiver"] == "akkiabot-dispatch"
+    out = capsys.readouterr().out
+    assert mock_secret not in out
+    assert "hook.example" not in out
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_notifications_require_https(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "http://insecure.example.invalid/")
+    fake = NotifyGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    assert "https" in capsys.readouterr().err
+    assert fake.requests == []
+
+
+class EchoingGrafana(NotifyGrafana):
+    """Answers the contact point write with an error body that echoes the request."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith(
+            "/api/v1/provisioning/contact-points"
+        ) and request.method in {
+            "POST",
+            "PUT",
+        }:
+            return httpx.Response(400, text=request.content.decode())
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_contact_point_errors_do_not_echo_the_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://hook.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = EchoingGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    captured = capsys.readouterr()
+    assert "HTTP 400" in captured.err
+    for leaked in (mock_secret, "hook.example"):
+        assert leaked not in captured.err + captured.out
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_notifications_are_optional(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("GRAFANA_DISPATCH_WEBHOOK_URL", raising=False)
+    fake = NotifyGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
+    assert "nothing changed" in capsys.readouterr().out
+    assert fake.requests == []
+
+
+def test_notifications_skip_without_any_grafana_settings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("GRAFANA_URL", "GRAFANA_SA_TOKEN", "GRAFANA_DISPATCH_WEBHOOK_URL"):
+        monkeypatch.delenv(name, raising=False)
+    fake = NotifyGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
+    assert "nothing changed" in capsys.readouterr().out
+    assert fake.requests == []
+
+
+class LegacyPolicyGrafana(NotifyGrafana):
+    """Policy tree with a `continue` route in the legacy `matchers` form."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/provisioning/policies":
+            self.requests.append(("GET", request.url.path, None))
+            tree = {
+                "receiver": "grafana-default-email",
+                "routes": [{"receiver": "x", "matchers": ["team=fictional"], "continue": True}],
+            }
+            return httpx.Response(200, json=tree)
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_refused_policy_tree_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://hook.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = LegacyPolicyGrafana(contact_exists=True)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    assert "object_matchers" in capsys.readouterr().err
+    assert [m for m, _, _ in fake.requests if m != "GET"] == []

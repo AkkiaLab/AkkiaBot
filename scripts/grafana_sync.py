@@ -6,7 +6,11 @@ makes a Grafana Cloud stack match it:
 * ``discover`` — print the stack's Prometheus / Loki data sources and the
   push endpoints Alloy needs (URLs and instance ids, no secrets);
 * ``sync`` — create the ``AkkiaBot`` folder, upload every dashboard
-  (overwriting) and replace the ``akkiabot`` alert rule group.
+  (overwriting) and replace the ``akkiabot`` alert rule group;
+* ``notifications`` — optional: create or update a signed webhook contact
+  point and merge its routes into the notification policy tree
+  (``alerting/notifications.yaml``, docs/observability.md §5.1). Skipped when
+  no webhook URL is configured.
 
 Credentials come from the environment, never from arguments::
 
@@ -19,6 +23,10 @@ Typical use (1Password item ``staging-grafana``)::
     op run --env-file deploy/observability/grafana-sync.env.tpl -- just grafana-sync sync
 
 Local grafana/otel-lgtm needs no token: ``GRAFANA_URL=http://127.0.0.1:3000``.
+
+``notifications`` reads the webhook endpoint and its HMAC secret from
+``GRAFANA_DISPATCH_WEBHOOK_URL`` / ``GRAFANA_DISPATCH_HMAC_SECRET`` (see
+``grafana-notify.env.tpl``); without a URL it changes nothing.
 """
 
 from __future__ import annotations
@@ -42,13 +50,18 @@ OBSERVABILITY = ROOT / "deploy" / "observability"
 DASHBOARDS = OBSERVABILITY / "dashboards"
 ALERT_RULES = OBSERVABILITY / "alerting" / "akkiabot.yaml"
 ENV_MISSING = OBSERVABILITY / "alerting" / "env-missing.yaml"
+NOTIFICATIONS = OBSERVABILITY / "alerting" / "notifications.yaml"
+#: Every rule carries its uid as a label: notifications drop internal labels
+#: (``__alert_rule_uid__``); webhook routes and receivers can match on it.
+RULE_LABEL = "akkiabot_rule"
 ENV_PLACEHOLDER = "__ENV__"
 _ENV_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 FOLDER_UID = "akkiabot"
 FOLDER_TITLE = "AkkiaBot"
-#: Data source uid the rule file uses (the one grafana/otel-lgtm provisions).
+#: Data source uids the rule files use (the ones grafana/otel-lgtm provisions).
 LOCAL_PROMETHEUS_UID = "prometheus"
+LOCAL_LOKI_UID = "loki"
 
 _DURATION = re.compile(r"^(\d+)([smh])$")
 _SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -148,15 +161,22 @@ def pin_datasources(dashboard: dict[str, Any], uids: dict[str, DataSource]) -> d
     return pinned
 
 
-def rule_group_payload(group: dict[str, Any], prometheus_uid: str) -> dict[str, Any]:
+def rule_group_payload(
+    group: dict[str, Any], prometheus_uid: str, loki_uid: str | None = None
+) -> dict[str, Any]:
     """Convert a file-provisioning rule group into the provisioning API body."""
+    swap = {LOCAL_PROMETHEUS_UID: prometheus_uid}
+    if loki_uid:
+        swap[LOCAL_LOKI_UID] = loki_uid
     rules = []
     for rule in group["rules"]:
         data = []
         for query in rule["data"]:
             query = copy.deepcopy(query)
-            if query["datasourceUid"] == LOCAL_PROMETHEUS_UID:
-                query["datasourceUid"] = prometheus_uid
+            if query["datasourceUid"] in swap:
+                query["datasourceUid"] = swap[query["datasourceUid"]]
+            elif query["datasourceUid"] == LOCAL_LOKI_UID:
+                raise SyncError(f"规则 {rule['uid']} 使用 Loki，需要 Loki 数据源 uid")
             data.append(query)
         rules.append(
             {
@@ -167,7 +187,7 @@ def rule_group_payload(group: dict[str, Any], prometheus_uid: str) -> dict[str, 
                 "noDataState": rule["noDataState"],
                 "execErrState": rule["execErrState"],
                 "for": rule["for"],
-                "labels": rule.get("labels", {}),
+                "labels": {**rule.get("labels", {}), RULE_LABEL: rule["uid"]},
                 "annotations": rule.get("annotations", {}),
                 "folderUID": FOLDER_UID,
                 "ruleGroup": group["name"],
@@ -231,6 +251,132 @@ class Grafana:
             f"上传告警规则组 {payload['title']}",
         )
 
+    def delete_rule_group(self, name: str) -> bool:
+        response = self.client.delete(
+            f"/api/v1/provisioning/folder/{FOLDER_UID}/rule-groups/{name}"
+        )
+        if response.status_code == 404:
+            return False
+        self._check(response, f"删除告警规则组 {name}")
+        return True
+
+    def contact_points(self) -> list[dict[str, Any]]:
+        return self._check(
+            self.client.get("/api/v1/provisioning/contact-points"), "读取 contact point"
+        ).json()
+
+    def put_contact_point(self, contact_point: dict[str, Any], *, exists: bool) -> None:
+        if exists:
+            response = self.client.put(
+                f"/api/v1/provisioning/contact-points/{contact_point['uid']}", json=contact_point
+            )
+        else:
+            response = self.client.post("/api/v1/provisioning/contact-points", json=contact_point)
+        # The request carries the webhook URL and HMAC secret, and an error body
+        # may echo request fields: report the operation and status only.
+        if response.is_error:
+            raise SyncError(
+                f"写入 contact point {contact_point['uid']} 失败：HTTP {response.status_code}"
+            )
+
+    def policies(self) -> dict[str, Any]:
+        return self._check(
+            self.client.get("/api/v1/provisioning/policies"), "读取 notification policy"
+        ).json()
+
+    def put_policies(self, tree: dict[str, Any]) -> None:
+        # Without provenance the tree stays editable in the Grafana UI (the
+        # owner's email routing); the next run re-applies only our routes.
+        self._check(
+            self.client.put(
+                "/api/v1/provisioning/policies",
+                json=tree,
+                headers={"X-Disable-Provenance": "true"},
+            ),
+            "写入 notification policy",
+        )
+
+
+def load_notifications(path: Path = NOTIFICATIONS) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+NEGATED_OP = {"=": "!=", "!=": "=", "=~": "!~", "!~": "=~"}
+
+
+def _owned_route(route: dict[str, Any], marker: list[str]) -> bool:
+    """Routes this script manages carry the marker matcher."""
+    return marker in (route.get("object_matchers") or [])
+
+
+def _not_matched_by(route: dict[str, Any]) -> list[list[list[str]]]:
+    """Disjoint matcher sets whose union is "this route does not match".
+
+    NOT(m1 AND m2 AND m3) = [!m1] | [m1, !m2] | [m1, m2, !m3]; the parts never
+    overlap, so at most one of the routes built from them matches an alert.
+    """
+    if route.get("matchers") or route.get("match") or route.get("match_re"):
+        raise SyncError(
+            "通知策略中有使用旧式 matchers 的 continue 子路由，无法自动合并，请改为 object_matchers"
+        )
+    matchers = [list(m) for m in route.get("object_matchers") or []]
+    parts = []
+    for i, (name, op, value) in enumerate(matchers):
+        if op not in NEGATED_OP:
+            raise SyncError(f"通知策略中 continue 子路由的匹配运算符无法识别：{op}")
+        parts.append([*matchers[:i], [name, NEGATED_OP[op], value]])
+    return parts
+
+
+def merge_policy_tree(tree: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch route first, other routes untouched, root email fallback last.
+
+    The email routes take over exactly the akkiabot alerts that used to reach
+    the root receiver: they come after every other route (so a matching route
+    without `continue` still stops them) and exclude alerts matched by other
+    routes with `continue`, which never reached the root either.
+    """
+    merged = copy.deepcopy(tree)
+    root_receiver = merged.get("receiver")
+    if not root_receiver:
+        raise SyncError("notification policy 没有根 receiver")
+    marker = list(config["marker"])
+    others = [r for r in merged.get("routes") or [] if not _owned_route(r, marker)]
+    dispatch = copy.deepcopy(config["dispatch_route"])
+    dispatch["object_matchers"] = [*dispatch["object_matchers"], marker]
+    base = [*config["email_route"]["object_matchers"], marker]
+    combos: list[list[list[str]]] = [[]]
+    for route in others:
+        if route.get("continue"):
+            combos = [c + part for c in combos for part in _not_matched_by(route)]
+    emails = [{"receiver": root_receiver, "object_matchers": base + combo} for combo in combos]
+    merged["routes"] = [dispatch, *others, *emails]
+    return merged
+
+
+def notifications(grafana: Grafana, *, url: str, secret: str) -> list[str]:
+    if not url.startswith("https://"):
+        raise SyncError("GRAFANA_DISPATCH_WEBHOOK_URL 必须是 https 地址")
+    if not secret:
+        raise SyncError("缺少环境变量 GRAFANA_DISPATCH_HMAC_SECRET")
+    config = load_notifications()
+    contact_point = copy.deepcopy(config["contact_point"])
+    contact_point["settings"]["url"] = url
+    contact_point["settings"]["hmacConfig"]["secret"] = secret
+    # Read and validate everything before the first write, so a refused
+    # policy tree leaves Grafana untouched.
+    tree = merge_policy_tree(grafana.policies(), config)
+    existing = {c.get("uid") for c in grafana.contact_points()}
+    grafana.put_contact_point(contact_point, exists=contact_point["uid"] in existing)
+    grafana.put_policies(tree)
+    marker = list(config["marker"])
+    owned = sum(_owned_route(r, marker) for r in tree["routes"])
+    return [
+        f"contact point {contact_point['uid']}: {'updated' if contact_point['uid'] in existing else 'created'}",
+        f"notification policy: webhook route first, {owned - 1} email fallback route(s) last, "
+        f"{len(tree['routes']) - owned} other routes and root receiver {tree['receiver']} kept",
+    ]
+
 
 def discover(grafana: Grafana) -> dict[str, dict[str, str]]:
     sources = grafana.datasources()
@@ -265,7 +411,7 @@ def sync(
     expected = list(envs) if envs else list(template["environments"])
     group = load_rule_group()
     group["rules"] = [*group["rules"], *env_missing_rules(template, expected)]
-    payload = rule_group_payload(group, picked["prometheus"].uid)
+    payload = rule_group_payload(group, picked["prometheus"].uid, picked["loki"].uid)
     grafana.put_rule_group(payload)
     report.append(
         f"alert rule group {payload['title']}: {len(payload['rules'])} rules "
@@ -304,12 +450,29 @@ def main(argv: Sequence[str] | None = None, transport: httpx.BaseTransport | Non
         dest="envs",
         help="必须持续上报的环境（可重复），默认取 alerting/env-missing.yaml 的 environments",
     )
+    sub.add_parser(
+        "notifications",
+        help="可选：写入签名 webhook contact point 并合并通知策略路由（未配置地址时跳过）",
+    )
     args = parser.parse_args(argv)
+    if (
+        args.command == "notifications"
+        and not os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip()
+    ):
+        print("notifications: GRAFANA_DISPATCH_WEBHOOK_URL not set, nothing changed")
+        return 0
     try:
         with client_from_env(transport) as client:
             grafana = Grafana(client)
             if args.command == "discover":
                 print(json.dumps(discover(grafana), ensure_ascii=False, indent=2))
+            elif args.command == "notifications":
+                for line in notifications(
+                    grafana,
+                    url=os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip(),
+                    secret=os.environ.get("GRAFANA_DISPATCH_HMAC_SECRET", "").strip(),
+                ):
+                    print(line)
             else:
                 for line in sync(
                     grafana,
