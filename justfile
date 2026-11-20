@@ -33,6 +33,10 @@ lint-web:
 secret-scan:
     uv run pre-commit run gitleaks-history --hook-stage manual --all-files
 
+# Fast-forward public releases/* into the private pre-review repo (adds the `internal` remote)
+internal-sync:
+    python3 scripts/internal_review.py sync
+
 # Auto-format and apply safe fixes
 fmt:
     uv run ruff check --fix .
