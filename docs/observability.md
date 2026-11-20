@@ -32,6 +32,8 @@ flowchart LR
 | `alerting/env-missing.yaml` | “环境停止上报”规则模板和预期环境列表（`environments`），由同步脚本按环境展开，追加到同一个规则组。 |
 | `dev/dashboards.yaml` | 本地 `grafana/otel-lgtm` 的 dashboard provider。 |
 | `grafana-sync.env.tpl` | `scripts/grafana_sync.py` 的 1Password 引用（`staging-grafana`）。 |
+| `alerting/notifications.yaml` | 可选的签名 webhook contact point 与通知路由（`grafana-sync notifications`，§5.1）。 |
+| `grafana-notify.env.tpl` | `grafana-sync notifications` 的 1Password 引用（另含 `grafana-webhook`）。 |
 
 ### 1.1 日志
 
@@ -93,7 +95,7 @@ op run --env-file deploy/observability/grafana-sync.env.tpl -- just grafana-sync
 ```
 
 - `discover` 打印 stack 的 Prometheus 和 Loki 数据源（uid、Alloy 推送地址、实例 ID），不包含任何密钥。
-- `sync` 会把 `env-missing.yaml` 按预期环境展开，与 `akkiabot.yaml` 一起作为规则组上传；`sync` 会创建文件夹 `AkkiaBot`（uid `akkiabot`），覆盖上传 dashboard，并把 dashboard 的数据源变量预选为本 stack 的 `grafanacloud-*-prom`、`grafanacloud-*-logs`；然后整体替换告警规则组 `akkiabot`，同时把规则里的数据源 uid `prometheus` 换成本 stack 的 Prometheus uid。
+- `sync` 给每条规则加上标签 `akkiabot_rule=<规则 uid>`（通知里不包含 Grafana 内部的规则 uid，webhook 路由和接收方按它识别规则），会把 `env-missing.yaml` 按预期环境展开，与 `akkiabot.yaml` 一起作为规则组上传；`sync` 会创建文件夹 `AkkiaBot`（uid `akkiabot`），覆盖上传 dashboard，并把 dashboard 的数据源变量预选为本 stack 的 `grafanacloud-*-prom`、`grafanacloud-*-logs`；然后整体替换告警规则组 `akkiabot`，同时把规则里的数据源 uid `prometheus` 换成本 stack 的 Prometheus uid。
 - 数据源无法自动识别时，用 `--prometheus-uid`、`--loki-uid` 指定。
 
 在 dashboard 里编辑后，想保存回仓库：在 Grafana 中选择 Export → Export as JSON，**不要**勾选 “Export for sharing externally”，覆盖 `dashboards/akkiabot.json`，再执行 `pnpm exec biome format --write deploy/observability/dashboards`。`tests/test_observability_config.py` 会检查面板引用的指标都确实存在、查询都带有 `env="$env"`。
@@ -132,7 +134,27 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 
 为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中：`staging` 和 `production`（生产栈于 M10 切换时开始上报，BOT-16）。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
 
-通知走 Grafana Cloud 默认的 notification policy 和 contact point（stack 所有者的邮箱）。需要发到其他渠道（例如 Telegram）时，在 Grafana 中新增 contact point，并修改 notification policy；这部分目前不纳入版本管理。
+通知默认走 Grafana Cloud 的默认 notification policy 和 contact point（stack 所有者的邮箱）。另外可以选配一个签名 webhook，见 §5.1。
+
+### 5.1 可选的签名 webhook
+
+需要把告警再发给外部系统时，`grafana-sync notifications` 会按 `alerting/notifications.yaml` 写入一个 webhook contact point（uid `akkiabot-dispatch`），并把两条子路由合并到通知策略树最前面，根和其他子路由原样保留：
+
+| 顺序 | 匹配 | receiver | 说明 |
+| --- | --- | --- | --- |
+| 1 | `akkiabot_rule =~ akkiabot-.+` | webhook | 每个告警实例单独通知（`group_by: [...]`），`repeat_interval: 24h`，`continue: true` |
+| 2 | 同上，且 `dispatch_only != true`、`drill != true` | 根的 receiver（邮件） | 继承根的分组和间隔 |
+
+- 为什么要第 2 条：Alertmanager 中只要有子路由匹配，父路由的 receiver 就不再使用。没有它，原来经根路由发邮件的规则就只剩 webhook。第 2 条让它们照旧发邮件；只给 webhook 接收方用的规则（标签 `dispatch_only: "true"` 或 `drill: "true"`）不发邮件。
+- 签名：webhook 使用 Grafana 的 `hmacConfig`，签名头 `X-Grafana-Alerting-Signature` = HMAC-SHA256(`<X-Grafana-Alerting-Timestamp>:<原始 body>`)。接收方应校验签名和时间戳，并按 `fingerprint`、`startsAt`、`status` 对重发去重；载荷中的 `values`、`annotations` 带真实取值，接收方不应原样外传。
+- 可选：未设置 `GRAFANA_DISPATCH_WEBHOOK_URL` 时命令什么也不改。地址必须是 https；写入出错时只报告操作和 HTTP 状态，不回显请求内容。
+- 策略树写入时带 `X-Disable-Provenance`，Grafana 网页上仍可修改邮件相关设置；匹配 `akkiabot_rule` 的子路由每次执行都会被替换。contact point 由 API 预置，在网页上只读。
+
+```bash
+op run --env-file deploy/observability/grafana-notify.env.tpl -- just grafana-sync notifications
+```
+
+停用：删除通知策略中匹配 `akkiabot_rule` 的两条子路由，akkiabot 规则会回到根路由发邮件。
 
 验证告警（只在预发布环境做）：停掉 redis 制造一次 `/readyz` 失败，大约 3 分钟后 `/readyz 失败` 进入 Firing，然后恢复：
 

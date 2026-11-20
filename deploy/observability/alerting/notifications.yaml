@@ -1,0 +1,44 @@
+# Optional signed webhook for alert notifications, applied by
+# `scripts/grafana_sync.py notifications` (docs/observability.md §5.1). Nothing
+# is changed when no webhook URL is configured.
+#
+# - The webhook URL and HMAC secret are not here: they come from the
+#   environment (see grafana-notify.env.tpl).
+# - Routes are merged into the existing notification policy tree as the first
+#   children of the root; every other route and the root itself (the default
+#   email receiver) are kept as they are. Routes that match on `akkiabot_rule`
+#   are owned by this file and replaced on every run.
+# - Alertmanager semantics: once a child route matches, the parent's receiver
+#   is no longer used. So the akkiabot rules that used to email through the
+#   root get an explicit email route after the webhook route (`continue`),
+#   with the root's own receiver and grouping. Rules labelled
+#   `dispatch_only: "true"` or `drill: "true"` (meant only for the webhook
+#   receiver) skip email.
+# Avoid dollar signs: kept consistent with the provisioning files.
+contact_point:
+  uid: akkiabot-dispatch
+  name: akkiabot-dispatch
+  type: webhook
+  disableResolveMessage: false
+  settings:
+    httpMethod: POST
+    maxAlerts: "20"
+    hmacConfig:
+      header: X-Grafana-Alerting-Signature
+      timestampHeader: X-Grafana-Alerting-Timestamp
+routes:
+  - receiver: akkiabot-dispatch
+    object_matchers: [[akkiabot_rule, "=~", "akkiabot-.+"]]
+    # One notification per alert instance.
+    group_by: ["..."]
+    group_wait: 30s
+    group_interval: 5m
+    # Receivers are expected to de-duplicate repeats of one firing episode
+    # (same fingerprint and startsAt); a long interval just saves requests.
+    repeat_interval: 24h
+    continue: true
+  - receiver: __ROOT_RECEIVER__
+    object_matchers:
+      - [akkiabot_rule, "=~", "akkiabot-.+"]
+      - [dispatch_only, "!=", "true"]
+      - [drill, "!=", "true"]
