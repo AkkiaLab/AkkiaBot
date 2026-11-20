@@ -34,8 +34,9 @@ runs:
         fi
     # The App is the workspace agent App (akkialab-agent, AKKIA-25), shared with the
     # Reviewer. Request exactly the release permissions, never "whatever the
-    # installation has": same set as PURPOSES["release"] in scripts/reviewer_gh.py
-    # and scripts/release/as-app.sh (tests/release/test_app_permissions.py).
+    # installation has": same set as RELEASE_PERMISSIONS in
+    # scripts/release/app_permissions.py and scripts/release/as-app.sh
+    # (tests/release/test_app_permissions.py).
     - id: app
       uses: actions/create-github-app-token@v2
       with:

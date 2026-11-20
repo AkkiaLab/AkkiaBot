@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.reviewer_gh import PURPOSES
+from scripts.release.app_permissions import RELEASE_PERMISSIONS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/release/as-app.sh"
@@ -109,12 +109,12 @@ def test_success_hands_token_via_environment_only(env: dict[str, str]) -> None:
     for secret in ("Authorization", "Bearer", "BEGIN", "mock-op-service-account-token"):
         assert secret not in args
     # The token is requested for the release purpose only (AKKIA-25), with the same
-    # permission set the release-setup action and reviewer_gh.PURPOSES declare.
+    # permission set the release-setup action and app_permissions declare.
     body = next(line for line in args.splitlines() if "access_tokens" in line)
     requested = json.loads(body.split("-d ", 1)[1].rsplit(" ", 1)[0])
     assert requested == {
         "repositories": ["mock-repo"],
-        "permissions": dict(PURPOSES["release"]),
+        "permissions": dict(RELEASE_PERMISSIONS),
     }
     # The JWT reached curl through its stdin config, once per API call.
     assert Path(env["FAKE_STDIN"]).read_text().count('header = "Authorization: Bearer ') == 2

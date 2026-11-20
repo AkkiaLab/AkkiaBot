@@ -1,5 +1,7 @@
 """The release-purpose token permissions are declared in three places (AKKIA-25);
-they must stay identical so no path silently gets more (or less) than the others."""
+they must stay identical so no path silently gets more (or less) than the others.
+The Reviewer's narrower review / merge purposes are tested in the workspace's
+private tools repository together with reviewer-gh (AKKIA-34)."""
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.reviewer_gh import ALLOWED_PERMISSIONS, PURPOSES
+from scripts.release.app_permissions import RELEASE_PERMISSIONS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,23 +24,11 @@ def test_release_setup_action_requests_release_permissions() -> None:
         for key, value in step["with"].items()
         if key.startswith("permission-")
     }
-    assert requested == dict(PURPOSES["release"])
+    assert requested == dict(RELEASE_PERMISSIONS)
 
 
 def test_as_app_requests_release_permissions() -> None:
     script = (ROOT / "scripts/release/as-app.sh").read_text()
     match = re.search(r"^permissions='(\{.*\})'$", script, re.M)
     assert match
-    assert json.loads(match.group(1)) == dict(PURPOSES["release"])
-
-
-def test_review_purpose_cannot_merge_or_administer() -> None:
-    review = PURPOSES["review"]
-    assert review["contents"] == "read"
-    assert "administration" not in review
-    assert review.get("actions") != "write"
-    merge = PURPOSES["merge"]
-    assert "administration" not in merge
-    assert "actions" not in merge
-    # The installation may hold exactly the release set (a superset of the others).
-    assert dict(ALLOWED_PERMISSIONS) == dict(PURPOSES["release"])
+    assert json.loads(match.group(1)) == dict(RELEASE_PERMISSIONS)
