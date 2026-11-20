@@ -5,7 +5,7 @@ import pytest
 from scripts.release.branches import create_release
 from scripts.release.cascade import Hop, land_forward_pr, plan, run_cascade
 from scripts.release.git import Git
-from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, REVIEWER_LOGIN, PullRequest
+from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, REVIEWER, PullRequest
 from scripts.release.versions import ReleaseError, Version
 from tests.release.conftest import FakeGitHub, Repo
 
@@ -209,10 +209,10 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     with pytest.raises(ReleaseError, match="准出"):
         land_forward_pr(repo.git, gh, 7)
     # Reviewer approved an older head: not enough.
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", "0" * 40, "2026-11-15T10:01:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", "0" * 40, "2026-11-15T10:01:00Z"))
     with pytest.raises(ReleaseError, match="准出"):
         land_forward_pr(repo.git, gh, 7)
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:02:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", head, "2026-11-15T10:02:00Z"))
     # Approved, but a review thread is still open.
     gh.unresolved[7] = 1
     with pytest.raises(ReleaseError, match="未解决的评审线程"):
@@ -222,7 +222,7 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     gh.pr_comments[7] = [("Copilot", "2026-11-15T10:05:00Z"), ("AkkiaS7", "2026-11-15T10:06:00Z")]
     with pytest.raises(ReleaseError, match="Copilot"):
         land_forward_pr(repo.git, gh, 7)
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:07:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", head, "2026-11-15T10:07:00Z"))
     # Someone still requests changes.
     gh.reviews[7].append(("someone", "CHANGES_REQUESTED", head, "2026-11-15T10:08:00Z"))
     with pytest.raises(ReleaseError, match="Request changes"):

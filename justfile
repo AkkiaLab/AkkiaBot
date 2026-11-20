@@ -172,7 +172,7 @@ grafana-sync *args:
 release *args:
     uv run python -m scripts.release {{ args }}
 
-# Release flow CLI as the release App (needed for `create`: only the App may create release branches)
+# Release flow CLI as the workspace agent App with a release-purpose token (needed for `create`: only the App may create release branches)
 release-app *args:
     scripts/release/as-app.sh uv run python -m scripts.release {{ args }}
 
