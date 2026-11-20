@@ -19,9 +19,9 @@ MOCK_TITLE_MARKER = "MOCK-TITLE-MARKER-9c1e"
 @pytest.mark.parametrize(
     ("title", "body"),
     [
-        ("BOT-6: 搭建 monorepo 骨架与 CI", "Closes BOT-6\n\n正文"),
-        ("BOT-12: 修复", "说明\r\nCloses BOT-12\r\n"),
-        ("BOT-7: x", "Closes BOT-7 and more"),
+        ("AKKIA-6: 搭建 monorepo 骨架与 CI", "Closes AKKIA-6\n\n正文"),
+        ("AKKIA-12: 修复", "说明\r\nCloses AKKIA-12\r\n"),
+        ("AKKIA-7: x", "Closes AKKIA-7 and more"),
     ],
 )
 def test_valid(title: str, body: str) -> None:
@@ -31,14 +31,18 @@ def test_valid(title: str, body: str) -> None:
 @pytest.mark.parametrize(
     ("title", "body", "fragment"),
     [
-        ("搭建 monorepo 骨架", "Closes BOT-6", "PR 标题"),
-        ("bot-6: lower case", "Closes BOT-6", "PR 标题"),
-        ("BOT-6 missing colon", "Closes BOT-6", "PR 标题"),
-        ("BOT-6:", "Closes BOT-6", "PR 标题"),
-        ("BOT-6: ok", "", "Closes BOT-"),
-        ("BOT-6: ok", "关联 BOT-6", "Closes BOT-"),
-        ("BOT-6: ok", "Closes BOT-7", "不一致"),
-        ("BOT-6: ok", "Closes BOT-60", "不一致"),
+        ("搭建 monorepo 骨架", "Closes AKKIA-6", "PR 标题"),
+        ("akkia-6: lower case", "Closes AKKIA-6", "PR 标题"),
+        ("AKKIA-6 missing colon", "Closes AKKIA-6", "PR 标题"),
+        ("AKKIA-6:", "Closes AKKIA-6", "PR 标题"),
+        ("AKKIA-6: ok", "", "Closes AKKIA-"),
+        ("AKKIA-6: ok", "关联 AKKIA-6", "Closes AKKIA-"),
+        ("AKKIA-6: ok", "Closes AKKIA-7", "不一致"),
+        ("AKKIA-6: ok", "Closes AKKIA-60", "不一致"),
+        # The old workspace prefix is no longer accepted, in the title or the body.
+        ("BOT-6: ok", "Closes AKKIA-6", "PR 标题"),
+        ("AKKIA-6: ok", "Closes BOT-6", "Closes AKKIA-"),
+        ("BOT-6: ok", "Closes BOT-6", "Closes AKKIA-"),
     ],
 )
 def test_invalid(title: str, body: str, fragment: str) -> None:
@@ -75,7 +79,7 @@ def _assert_no_leak(result: subprocess.CompletedProcess[str]) -> None:
 
 
 def test_cli_passes(tmp_path: Path) -> None:
-    result = _run(tmp_path, _pr("BOT-6: 搭建骨架", f"Closes BOT-6\n\n{MOCK_BODY_MARKER}"))
+    result = _run(tmp_path, _pr("AKKIA-6: 搭建骨架", f"Closes AKKIA-6\n\n{MOCK_BODY_MARKER}"))
     assert result.returncode == 0
     _assert_no_leak(result)
 
@@ -83,13 +87,13 @@ def test_cli_passes(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("title", "body"),
     [
-        (f"{MOCK_TITLE_MARKER} 搭建骨架", f"Closes BOT-6\n{MOCK_BODY_MARKER}"),
-        ("BOT-6: ok", f"{MOCK_BODY_MARKER}"),
-        ("BOT-6: ok", f"Closes BOT-7\n{MOCK_BODY_MARKER}"),
+        (f"{MOCK_TITLE_MARKER} 搭建骨架", f"Closes AKKIA-6\n{MOCK_BODY_MARKER}"),
+        ("AKKIA-6: ok", f"{MOCK_BODY_MARKER}"),
+        ("AKKIA-6: ok", f"Closes AKKIA-7\n{MOCK_BODY_MARKER}"),
         # Shell metacharacters stay plain data: nothing is expanded or executed.
         (
-            f"BOT-6: $(echo {MOCK_TITLE_MARKER})",
-            f"Closes BOT-6\n`echo {MOCK_BODY_MARKER}` ${{{{ x }}}}",
+            f"AKKIA-6: $(echo {MOCK_TITLE_MARKER})",
+            f"Closes AKKIA-6\n`echo {MOCK_BODY_MARKER}` ${{{{ x }}}}",
         ),
     ],
 )
@@ -101,9 +105,9 @@ def test_cli_never_echoes_title_or_body(tmp_path: Path, title: str, body: str) -
 @pytest.mark.parametrize(
     ("title", "body"),
     [
-        (f"{MOCK_TITLE_MARKER} 搭建骨架", f"Closes BOT-6\n{MOCK_BODY_MARKER}"),
-        ("BOT-6: ok", MOCK_BODY_MARKER),
-        ("BOT-6: ok", f"Closes BOT-7\n{MOCK_BODY_MARKER}"),
+        (f"{MOCK_TITLE_MARKER} 搭建骨架", f"Closes AKKIA-6\n{MOCK_BODY_MARKER}"),
+        ("AKKIA-6: ok", MOCK_BODY_MARKER),
+        ("AKKIA-6: ok", f"Closes AKKIA-7\n{MOCK_BODY_MARKER}"),
     ],
 )
 def test_cli_fails_with_rule_only_message(tmp_path: Path, title: str, body: str) -> None:
@@ -114,9 +118,9 @@ def test_cli_fails_with_rule_only_message(tmp_path: Path, title: str, body: str)
 
 
 def test_cli_null_body_is_treated_as_empty(tmp_path: Path) -> None:
-    result = _run(tmp_path, _pr("BOT-6: ok", None))
+    result = _run(tmp_path, _pr("AKKIA-6: ok", None))
     assert result.returncode == 1
-    assert "Closes BOT-" in result.stdout
+    assert "Closes AKKIA-" in result.stdout
 
 
 def test_cli_ignores_legacy_env(tmp_path: Path) -> None:
@@ -125,8 +129,8 @@ def test_cli_ignores_legacy_env(tmp_path: Path) -> None:
         [sys.executable, str(SCRIPT)],
         env={
             "PATH": "/usr/bin:/bin",
-            "PR_TITLE": "BOT-6: ok",
-            "PR_BODY": f"Closes BOT-6 {MOCK_BODY_MARKER}",
+            "PR_TITLE": "AKKIA-6: ok",
+            "PR_BODY": f"Closes AKKIA-6 {MOCK_BODY_MARKER}",
         },
         capture_output=True,
         text=True,
