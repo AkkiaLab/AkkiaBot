@@ -114,18 +114,19 @@ def test_run_never_found_raises() -> None:
         gh.run_and_wait("webapp-deploy.yml", {}, "staging x n", timeout=30)
 
 
-#: The Reviewer App as the real GraphQL API reports it (read from PR #53, 2026-11-20):
-#: type Bot, login WITHOUT the ``[bot]`` suffix that REST and the UI show, and
-#: ``databaseId`` equal to the REST ``user.id``.
+#: The Reviewer App as the real GraphQL API reports it (shape read from PR #53,
+#: 2026-11-20): type Bot, login WITHOUT the ``[bot]`` suffix that REST and the UI
+#: show, and ``databaseId`` equal to the REST ``user.id``.
 REVIEWER_GRAPHQL = {
     "__typename": "Bot",
-    "login": "akkiabot-reviewer",
+    "login": "akkialab-agent",
     "databaseId": REVIEWER_BOT_ID,
 }
-#: The same App after the rename to ``akkialab-agent`` (AKKIA-25): same ID, new login.
+#: The same App under any other name (the App was renamed once already, AKKIA-25):
+#: same ID, different login. Hypothetical name, not a real App.
 RENAMED_REVIEWER_GRAPHQL = {
     "__typename": "Bot",
-    "login": "akkialab-agent",
+    "login": "renamed-agent-app",
     "databaseId": REVIEWER_BOT_ID,
 }
 COPILOT_GRAPHQL = {
@@ -215,10 +216,9 @@ def test_review_gate_queries_bot_ids_for_every_author() -> None:
 @pytest.mark.parametrize(
     "author",
     [
-        _user("akkiabot-reviewer"),  # a user squatting the App's name is not the App
+        _user("akkialab-agent"),  # a user squatting the App's name is not the App
         _user("akkialab-agent[bot]"),
-        # Another App with the Reviewer's (old or new) name but a different ID.
-        {"__typename": "Bot", "login": "akkiabot-reviewer", "databaseId": 1},
+        # Another App with the Reviewer's name but a different ID.
         {"__typename": "Bot", "login": "akkialab-agent", "databaseId": 1},
         # A user whose account ID happens to equal the bot's: only a Bot counts.
         {"__typename": "User", "login": "someone", "databaseId": REVIEWER_BOT_ID},
