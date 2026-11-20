@@ -15,6 +15,7 @@ from scripts.internal_review import (
     GitError,
     check_push,
     check_sync_remote,
+    classify,
     git,
     install_guard,
     latest_verdict,
@@ -415,3 +416,99 @@ def test_git_error_hides_args_and_stderr(repo: Path) -> None:
         git("ls-remote", mock_url)
     assert "mock-not-a-token" not in str(exc.value)
     assert "example.invalid" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("url", "kind"),
+    [
+        ("https://github.com/AkkiaLab/AkkiaBot.git", "public"),
+        ("https://github.com:443/AkkiaLab/AkkiaBot", "public"),
+        ("https://x-access-token@github.com/AkkiaLab/AkkiaBot.git", "public"),
+        ("git@github.com:AkkiaLab/AkkiaBot.git", "public"),
+        ("ssh://git@github.com/AkkiaLab/AkkiaBot.git", "public"),
+        # GitHub's official SSH-over-HTTPS-port endpoint
+        ("ssh://git@ssh.github.com:443/AkkiaLab/AkkiaBot.git", "public"),
+        ("git@ssh.github.com:AkkiaLab/AkkiaBot.git", "public"),
+        ("ssh://git@ssh.github.com:443/akkialab/akkibot-typo.git", "other"),
+        ("https://github.com/AkkiaLab/AkkiaBot-internal.git", "other"),
+        ("git@ssh.github.com:AkkiaLab/AkkiaBot-internal.git", "other"),
+        ("/srv/git/AkkiaBot.git", "other"),
+        # Path names the public repo but the host cannot be confirmed: refuse.
+        ("gh-alias:AkkiaLab/AkkiaBot.git", "unknown"),
+        ("ssh://git@proxy.example.invalid:2222/AkkiaLab/AkkiaBot.git", "unknown"),
+        ("https://mirror.example.invalid/AkkiaLab/AkkiaBot", "unknown"),
+    ],
+)
+def test_classify_destination(url: str, kind: str) -> None:
+    assert classify(url) == kind
+
+
+SSH_443_URL = "ssh://git@ssh.github.com:443/AkkiaLab/AkkiaBot.git"
+
+
+def test_ssh_443_push_is_gated(repo: Path, fake_cli: tuple[Path, Path]) -> None:
+    cli, _ = fake_cli
+    new = run_git(repo, "rev-parse", "HEAD")
+    old = run_git(repo, "rev-parse", "HEAD~1")
+    assert not check_push(push_env(repo, cli, PRE_COMMIT_REMOTE_URL=SSH_443_URL))[0]
+    assert not ref_guard(SSH_443_URL, guard_lines(("a", old), ("akkia-7-fixture", new)))[0]
+
+
+def test_ssh_443_remote_counts_as_public_for_new_commits(repo: Path) -> None:
+    run_git(repo, "remote", "set-url", "origin", SSH_443_URL)
+    env = push_env(
+        repo,
+        None,
+        PRE_COMMIT_REMOTE_URL=SSH_443_URL,
+        PRE_COMMIT_TO_REF=run_git(repo, "rev-parse", "HEAD~1"),
+    )
+    assert check_push(env)[0]
+
+
+def test_unknown_public_destination_rejected(repo: Path, fake_cli: tuple[Path, Path]) -> None:
+    cli, data = fake_cli
+    head = run_git(repo, "rev-parse", "HEAD")
+    data.write_text(
+        json.dumps([comment(REVIEWER, "2026-01-01T00:00:01Z", approval(head))]), "utf-8"
+    )
+    alias = "gh-alias:AkkiaLab/AkkiaBot.git"
+    allowed, message = check_push(push_env(repo, cli, PRE_COMMIT_REMOTE_URL=alias))
+    assert not allowed
+    assert "无法确认" in message
+    assert not ref_guard(alias, guard_lines(("akkia-7-fixture", head)))[0]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # A fence followed by other text is not a closing fence (CommonMark).
+        "```\n{line}\n``` 后面有字\n{line}\n```",
+        "```\n```python\n{line}\n```",
+        # Closer shorter than opener, or of the other fence character.
+        "````\n```\n{line}\n````",
+        "~~~\n```\n{line}\n~~~",
+        # Indented closer by 4+ spaces is content.
+        "```\n    ```\n{line}\n```",
+        # Unclosed fence runs to the end of the comment.
+        "```text\n{line}",
+    ],
+)
+def test_fence_close_rules(content: str) -> None:
+    line = approval("f" * 40)
+    comments = [comment(REVIEWER, "2026-01-01T00:00:01Z", content.format(line=line))]
+    assert latest_verdict(comments, {REVIEWER}) is None
+
+
+def test_verdict_after_properly_closed_fence_counts() -> None:
+    line = approval("f" * 40)
+    content = f"```text\n示例\n```  \n{line}"
+    verdict = latest_verdict([comment(REVIEWER, "2026-01-01T00:00:01Z", content)], {REVIEWER})
+    assert verdict is not None
+    assert verdict.approved
+
+
+def test_backtick_info_with_backtick_is_not_a_fence() -> None:
+    line = approval("f" * 40)
+    content = f"``` 行内 `代码` ```\n{line}"
+    verdict = latest_verdict([comment(REVIEWER, "2026-01-01T00:00:01Z", content)], {REVIEWER})
+    assert verdict is not None

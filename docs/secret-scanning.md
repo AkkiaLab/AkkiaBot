@@ -42,12 +42,13 @@
    - `预审通过：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`
    - 撤销：`预审撤销：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`
 
-   引用（`>` 开头）、代码块（```` ``` ```` / `~~~` 围起）和行内代码中的同样文字都不算结论，所以回复中引用旧批准不会让撤销失效。
+   引用（`>` 开头）、代码块（```` ``` ```` / `~~~` 围起，按 CommonMark 规则：关闭围栏只能是不短于开头的同种围栏字符加空白，后面带文字的不算关闭，未关闭的代码块延续到评论末尾）和行内代码中的同样文字都不算结论，所以回复中引用旧批准不会让撤销失效。
 5. 实现者把**这个 SHA** 推到公开库（`git push origin <分支>`），pre-push 钩子核对通过后按现行规则开公开 PR，后续评审合并、CI 与评审线程处理不变。公开侧需要修改时回到第 3 步。
 6. 公开 PR 合并后关闭私有 PR，删除私有分支。
 
 **`preapproval-check` 钩子的判定**（`scripts/internal_review.py check-push`）
 
+- 公开仓库按 GitHub 地址识别：`https://github.com/…`、`git@github.com:…`、`ssh://git@github.com/…`，以及官方 SSH 443 入口 `ssh.github.com`（端口和用户名不影响识别）。路径是 `AkkiaLab/AkkiaBot` 但主机无法确认（SSH 别名、代理、镜像等）时，守卫和预审核对都直接拒绝，请改用上述地址。
 - 目标不是公开仓库（例如推私有库）、删除分支：放行。
 - 先由多 ref 守卫检查完整的推送输入（见下一条），再进入 pre-commit 的单个 ref 判定。
 - 待推送的提交都已在公开 remote 上（如发布分支、上合、已公开提交的新分支名）：放行。

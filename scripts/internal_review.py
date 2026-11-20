@@ -66,7 +66,10 @@ ISSUE_RE = re.compile(r"akkia-([1-9][0-9]*)", re.IGNORECASE)
 VERDICT_RE = re.compile(
     r"^预审(?P<verdict>通过|撤销)：" + re.escape(INTERNAL_REPO) + r"@(?P<sha>[0-9a-f]{40})$"
 )
-FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# CommonMark fenced code: an opener may carry an info string (no backticks after a
+# backtick fence); a closer is only fence characters plus trailing spaces.
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<mark>`{3,}|~{3,})(?P<info>.*)$")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(?P<mark>`{3,}|~{3,})[ \t]*$")
 ZERO_SHA = re.compile(r"^0+$")
 
 
@@ -87,22 +90,61 @@ def git(*args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def repo_slug(url: str) -> str | None:
-    """Return ``owner/name`` for a GitHub remote URL, or None for anything else."""
+GITHUB_HOSTS = frozenset({"github.com", "www.github.com", "ssh.github.com"})
+
+
+def split_url(url: str) -> tuple[str, list[str]]:
+    """Return (lower-case host without user/port, path segments) of a git URL.
+
+    Handles ``scheme://[user@]host[:port]/path`` and scp-like ``[user@]host:path``;
+    local paths give an empty host.
+    """
+    url = url.strip()
     match = re.match(
-        r"^(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
-        r"(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$",
-        url.strip(),
+        r"^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^@/]*@)?(?P<host>[^/:]*)(?::\d*)?(?P<path>/.*)?$", url
     )
-    return match.group("slug") if match else None
+    if match is None:
+        match = re.match(r"^(?:[^@/:]+@)?(?P<host>[^/:]+):(?P<path>.*)$", url)
+    if match is None:
+        host, path = "", url
+    else:
+        host, path = match.group("host") or "", match.group("path") or ""
+    path = re.sub(r"\.git/?$", "", path.rstrip("/"))
+    return host.lower(), [seg for seg in path.split("/") if seg]
+
+
+def repo_slug(url: str) -> str | None:
+    """Return ``owner/name`` for a GitHub remote URL (incl. SSH over port 443), else None."""
+    host, segments = split_url(url)
+    if host not in GITHUB_HOSTS or len(segments) != 2:
+        return None
+    return "/".join(segments)
 
 
 def is_repo(url: str, repo: str) -> bool:
     return (repo_slug(url) or "").lower() == repo.lower()
 
 
+def classify(url: str) -> str:
+    """``public`` for the public repository, ``unknown`` when the path names it but
+    the host is not a recognised GitHub endpoint (SSH host alias, proxy, mirror…),
+    ``other`` otherwise. Hooks must treat ``unknown`` as a refusal, not a pass."""
+    if is_repo(url, PUBLIC_REPO):
+        return "public"
+    _, segments = split_url(url)
+    if "/".join(segments[-2:]).lower() == PUBLIC_REPO.lower():
+        return "unknown"
+    return "other"
+
+
 def is_public(url: str) -> bool:
-    return is_repo(url, PUBLIC_REPO)
+    return classify(url) == "public"
+
+
+UNKNOWN_DEST = (
+    "目的地路径指向公开仓库，但主机不是可识别的 GitHub 地址，无法确认目的地，拒绝推送；"
+    "请改用 https://github.com/、git@github.com: 或 ssh://git@ssh.github.com:443/ 地址"
+)
 
 
 def public_remotes() -> list[str]:
@@ -127,15 +169,18 @@ def verdict_lines(content: str) -> Iterable[re.Match[str]]:
     """Formal verdict lines of one comment, skipping fenced code and quotes."""
     fence: str | None = None
     for line in content.splitlines():
-        opener = FENCE_RE.match(line)
-        if opener is not None:
-            mark = opener.group(1)
-            if fence is None:
-                fence = mark
-            elif mark[0] == fence[0] and len(mark) >= len(fence):
-                fence = None
-            continue
         if fence is not None:
+            closer = FENCE_CLOSE_RE.match(line)
+            if closer is not None:
+                mark = closer.group("mark")
+                if mark[0] == fence[0] and len(mark) >= len(fence):
+                    fence = None
+            continue
+        opener = FENCE_OPEN_RE.match(line)
+        if opener is not None and not (
+            opener.group("mark")[0] == "`" and "`" in opener.group("info")
+        ):
+            fence = opener.group("mark")
             continue
         match = VERDICT_RE.match(line.rstrip())
         if match is not None:
@@ -199,7 +244,10 @@ def guard_installed() -> bool:
 
 def ref_guard(url: str, lines: Iterable[str]) -> tuple[bool, str]:
     """Check the complete pre-push input (``<local ref> <sha> <remote ref> <sha>`` lines)."""
-    if not is_public(url):
+    kind = classify(url)
+    if kind == "unknown":
+        return False, f"ref-guard: {UNKNOWN_DEST}"
+    if kind != "public":
         return True, "ref-guard: 目标不是公开仓库，跳过"
     updates: list[tuple[str, str]] = []
     for line in lines:
@@ -220,7 +268,10 @@ def ref_guard(url: str, lines: Iterable[str]) -> tuple[bool, str]:
 def check_push(env: Mapping[str, str]) -> tuple[bool, str]:
     """Decide one pre-commit pre-push invocation. Returns (allowed, message)."""
     url = env.get("PRE_COMMIT_REMOTE_URL", "")
-    if not is_public(url):
+    kind = classify(url)
+    if kind == "unknown":
+        return False, f"preapproval: {UNKNOWN_DEST}"
+    if kind != "public":
         return True, "preapproval: 目标不是公开仓库，跳过"
 
     target = env.get("PRE_COMMIT_TO_REF") or env.get("PRE_COMMIT_LOCAL_BRANCH") or "HEAD"
