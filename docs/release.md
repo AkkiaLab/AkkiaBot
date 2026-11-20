@@ -163,7 +163,7 @@ flowchart LR
 - 远端没有任何 `v*` tag，也没有 `releases/*` 分支；只有 master 和一个历史任务分支。
 - 当前生产版本（BOT-16 切换）是 master 上的 `5f5227a`，其 `staging-acceptance=success`；之后 master 上的提交尚未经过 staging 发版验收。
 - master 规则集“master 保护”：禁止删除和强制推送，只允许 squash 合并的 PR、需要解决评审线程、必需检查 `ci-ok` / `secret-scan`，**没有绕过者**；仓库只允许 squash 合并。
-- 已安装的 App：`akkiabot-reviewer`（Reviewer 专用，不复用）、`multica-ai`（只读）、Cloudflare Pages；没有发布 App。环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
+- 已安装的 App：Reviewer 专用 App（当时独立于发布）、`multica-ai`（只读）、Cloudflare Pages；没有发布 App。（AKKIA-25 起，Reviewer App 改名为工作区共用 App `akkialab-agent`，同时负责评审和发布，见 §7。）环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
 
 建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若负责人另有编号偏好，在创建前说明即可，工具不会自动推导首个版本。
 
