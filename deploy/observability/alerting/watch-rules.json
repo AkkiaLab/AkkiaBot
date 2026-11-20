@@ -1,0 +1,102 @@
+{
+  "_comment": [
+    "Generic post-fix watch rules (AKKIA-28, docs/grafana-alerting.md). Not a provisioning file:",
+    "scripts/grafana_dispatch.py renders them into the rule group akkiabot-watch from the watch list",
+    "(issue metadata), replacing __ENVS__ / __HANDLERS__ / __COMMANDS__ with regexes of the watched",
+    "targets, so only watched handlers / commands can ever fire. With no watch the group is deleted.",
+    "Datasource uids prometheus / loki are swapped for the stack's own, like grafana_sync.py does."
+  ],
+  "group": "akkiabot-watch",
+  "interval": 60,
+  "rules": {
+    "regression": {
+      "uid": "akkiabot-watch-regression",
+      "title": "修复后观察：handler 失败（复发信号）",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "relativeTimeRange": { "from": 600, "to": 0 },
+          "datasourceUid": "loki",
+          "queryType": "instant",
+          "model": {
+            "refId": "A",
+            "queryType": "instant",
+            "expr": "sum by (env, handler) (count_over_time({service=\"app\", env=~`__ENVS__`} |= `handler failed` | handler=~`__HANDLERS__` [10m]))"
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": { "refId": "B", "type": "reduce", "expression": "A", "reducer": "last" }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [{ "evaluator": { "type": "gt", "params": [0] } }]
+          }
+        }
+      ],
+      "noDataState": "OK",
+      "execErrState": "Error",
+      "for": "0s",
+      "labels": {
+        "severity": "warning",
+        "service": "akkiabot",
+        "dispatch_only": "true",
+        "watch_kind": "regression"
+      },
+      "annotations": {
+        "summary": "被观察的 handler 在 10 分钟内记录了 handler failed 日志（Loki 计数，不受容器重启时计数器归零影响）"
+      }
+    },
+    "exercised": {
+      "uid": "akkiabot-watch-exercised",
+      "title": "修复后观察：命令成功执行（自然事件）",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "relativeTimeRange": { "from": 7200, "to": 0 },
+          "datasourceUid": "prometheus",
+          "model": {
+            "refId": "A",
+            "instant": true,
+            "expr": "(sum by (env, command) (increase(akkiabot_command_total{result=\"ok\", env=~`__ENVS__`, command=~`__COMMANDS__`}[1h])) > 0) or sum by (env, command) (akkiabot_command_total{result=\"ok\", env=~`__ENVS__`, command=~`__COMMANDS__`} unless akkiabot_command_total{result=\"ok\", env=~`__ENVS__`, command=~`__COMMANDS__`} offset 1h)"
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": { "refId": "B", "type": "reduce", "expression": "A", "reducer": "last" }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [{ "evaluator": { "type": "gt", "params": [0] } }]
+          }
+        }
+      ],
+      "noDataState": "OK",
+      "execErrState": "Error",
+      "for": "0s",
+      "labels": {
+        "severity": "info",
+        "service": "akkiabot",
+        "dispatch_only": "true",
+        "watch_kind": "exercised"
+      },
+      "annotations": {
+        "summary": "被观察的命令在最近 1 小时内成功执行过（含容器重启后新出现的序列）"
+      }
+    }
+  }
+}
