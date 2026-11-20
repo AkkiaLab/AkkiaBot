@@ -2,6 +2,8 @@
 
 本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复、DNS 和预发布环境，以及从 Go 版正式切换（§9）。日志、指标、dashboard 与告警见 `docs/observability.md`。前端 Mini App 部署在 Cloudflare Pages（M7），不在本文范围内。架构依据见 `docs/architecture.md` §4、§6，任务范围见 `docs/migration-plan.md` M8。
 
+> 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
+
 ## 1. 总览
 
 ```mermaid
@@ -417,7 +419,7 @@ curl -fsS https://staging.akkiabot-webapp.pages.dev/version.json   # sha 应为 
 
 ## 9. 正式切换（M10）
 
-本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、健康检查与观测核对、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在 BOT-4 中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
+本节说明从 Go 版 botlab-core 切换到 AkkiaBot 的步骤：前置检查、版本锁定、配置导入、切换、健康检查与观测核对、回滚，以及之后的旧仓库归档。范围见 `docs/migration-plan.md` M10。**停止旧服务、导入生产数据、用正式 bot 启动生产栈、归档旧仓库，每一步都要先在负责该切换的 Multica 任务中请求负责人确认后再执行**；本节只是操作手册，本身不构成授权。
 
 ### 9.1 前置检查
 
@@ -540,7 +542,7 @@ echo "exit=$?"
    - 非 Telegram 检查：`/readyz`、tunnel、日志中的 `bot started` 和持续的 getUpdates；`https://bot.akkia.moe/version.json` 的 sha；必要时在生产容器内做不经过 Telegram 的后端调用（例如 whois 查询、LLM 判定）。
    - Telegram 能力（私聊命令、群管理命令、入群验证、反垃圾、入群申请提示等）：用自然流量的日志、指标、链路和告警观测，按 `chat_id` 等条件检索；逐项记录**已观测**和**未观测**，未观测不算通过，也不因缺少测试账号阻塞收尾，后续有自然流量时再补记。
    - Grafana：dashboard 中 `production` 环境有 update 量、handler 耗时等数据；Sentry：`production` 环境能看到本次版本（release `akkiabot@<本次部署的完整 sha>`，§3）的事件。没有自然产生的错误时，是否人为制造一次错误由负责人决定。
-   结果记录到 BOT-16，包括版本 sha、已观测与未观测的能力。
+   结果记录到负责该切换的 Multica 任务，包括版本 sha、已观测与未观测的能力。
 
 ### 9.5 回滚
 
@@ -549,17 +551,17 @@ echo "exit=$?"
 1. 停止新服务：`cd /opt/akkiabot/production && docker compose stop app cloudflared`。
 2. 在旧部署目录重新启动 Go 版：`docker compose start core`（本地镜像不在时，用 9.1 记录的 digest 拉取）。旧库在切换期间没有被修改，配置和警告数仍是切换前的状态；新系统运行期间产生的警告、禁言记录不会回写到旧库。
 3. Mini App 地址：如果在 BotFather 中改过，改回旧地址；`bot.akkia.moe` 可以保留，旧版不会使用它。
-4. 用 `/start`、`/help` 确认旧 bot 恢复响应，并在 BOT-16 记录回滚原因。
+4. 用 `/start`、`/help` 确认旧 bot 恢复响应，并在负责该切换的 Multica 任务中记录回滚原因。
 
 再次切换时从 9.4 第 1 步重新开始，用新的停服副本重新导入（新库已有数据时，导入只更新四项群配置和警告数，报告中会列出原值）。
 
 ### 9.6 旧仓库归档
 
-切换上线并稳定运行一段时间（时长由负责人决定）之后：在 BOT-16 中**再请求一次确认**，然后在 5 个旧仓库（botlab-core、botlab-telegram、botlab-llm、botlab-fe、Toolbox-py）的 README 顶部注明“已迁移到 AkkiaLab/AkkiaBot”，再把它们归档（GitHub Settings → Archive）。旧服务器上的 Go 版服务和旧库保留到负责人决定清理为止。
+切换上线并稳定运行一段时间（时长由负责人决定）之后：在负责该事项的 Multica 任务中**再请求一次确认**，然后在 5 个旧仓库（botlab-core、botlab-telegram、botlab-llm、botlab-fe、Toolbox-py）的 README 顶部注明“已迁移到 AkkiaLab/AkkiaBot”，再把它们归档（GitHub Settings → Archive）。旧服务器上的 Go 版服务和旧库保留到负责人决定清理为止。
 
 ### 9.7 版本记录
 
-切换完成后，在 BOT-16 记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、健康检查与观测核对结果（已观测/未观测）、旧版镜像 digest。
+切换完成后，在负责该切换的 Multica 任务中记录：生产后端/前端 sha、旧库副本的 sha256、dry-run 与正式导入报告的统计摘要（不贴群标题和用户 id）、健康检查与观测核对结果（已观测/未观测）、旧版镜像 digest。
 
 ### 9.8 备选方案
 

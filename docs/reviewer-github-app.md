@@ -1,6 +1,6 @@
 # Reviewer 的 GitHub App 身份（运维说明）
 
-实现类智能体使用 `AkkiaS7` 提交 PR。Reviewer 智能体使用 GitHub App `akkiabot-reviewer`，在 PR 上显示为 `akkiabot-reviewer[bot]`。由于身份不同，Reviewer 可以对 AkkiaS7 的 PR 执行 Approve 或 Request changes、解决评审线程，并执行 squash merge。来源：BOT-3。
+实现类智能体使用 `AkkiaS7` 提交 PR。Reviewer 智能体使用 GitHub App `akkiabot-reviewer`，在 PR 上显示为 `akkiabot-reviewer[bot]`。由于身份不同，Reviewer 可以对 AkkiaS7 的 PR 执行 Approve 或 Request changes、解决评审线程，并执行 squash merge。来源：BOT-3（旧工作区编号，已不可访问）。
 
 ## 组成
 
@@ -16,7 +16,7 @@
 
 ## 授权仓库范围
 
-`scripts/reviewer_gh.py` 中的 `AUTHORIZED_REPOS` 是 App 安装范围的唯一依据，每个仓库都注明了记录授权的 issue：
+`scripts/reviewer_gh.py` 中的 `AUTHORIZED_REPOS` 是 App 安装范围的唯一依据，每个仓库都注明了记录授权的 issue（`BOT-<编号>` 为旧工作区编号，已不可访问；新增条目使用 `AKKIA-<编号>`）：
 
 | 仓库 | 来源 |
 | --- | --- |

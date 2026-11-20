@@ -67,7 +67,9 @@ DEFAULT_REPO = "AkkiaLab/AkkiaBot"
 # a long review never runs with a token that expires half way through.
 MIN_REMAINING = 15 * 60
 # Repositories the owner explicitly authorised for the App installation, with
-# the issue that recorded the decision. ``check`` fails if the installation
+# the issue that recorded the decision (``BOT-<n>`` ids belong to the retired
+# Multica workspace and are no longer accessible; new entries use ``AKKIA-<n>``).
+# ``check`` fails if the installation
 # reaches any repository outside this set; an authorised repository that is not
 # (yet) installed is only reported. Tokens are minted for listed repos only.
 AUTHORIZED_REPOS: Mapping[str, str] = {
