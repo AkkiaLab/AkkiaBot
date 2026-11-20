@@ -500,6 +500,7 @@ def test_policy_merge_keeps_root_and_foreign_routes() -> None:
     # The rules that emailed through the root still email, dispatch-only ones do not.
     assert email["receiver"] == "grafana-default-email"
     assert ["dispatch_only", "!=", "true"] in email["object_matchers"]
+    assert ["drill", "!=", "true"] in email["object_matchers"]
     assert "continue" not in email
     assert foreign == EXISTING_TREE["routes"][0]
     # Idempotent: a second merge replaces our routes instead of stacking them.

@@ -11,7 +11,7 @@
 #   is no longer used. So the akkiabot rules that used to email through the
 #   root get an explicit email route after the dispatch route (`continue`),
 #   with the root's own receiver and grouping. Dispatch-only rules (watch
-#   rules, heartbeat, drills) skip email.
+#   rules, heartbeat) and drill alerts skip email.
 # Avoid dollar signs: kept consistent with the provisioning files.
 contact_point:
   uid: akkiabot-dispatch
@@ -39,3 +39,4 @@ routes:
     object_matchers:
       - [akkiabot_rule, "=~", "akkiabot-.+"]
       - [dispatch_only, "!=", "true"]
+      - [drill, "!=", "true"]

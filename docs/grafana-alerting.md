@@ -34,10 +34,10 @@ flowchart LR
 | 顺序 | 匹配 | receiver | 说明 |
 | --- | --- | --- | --- |
 | 1 | `akkiabot_rule =~ akkiabot-.+` | `akkiabot-dispatch`（webhook） | `group_by: [...]`，每个告警实例单独通知；`repeat_interval: 24h`；`continue: true` |
-| 2 | 同上，且 `dispatch_only != true` | 根的 receiver（邮件） | 不设分组和间隔，继承根的设置 |
+| 2 | 同上，且 `dispatch_only != true`、`drill != true` | 根的 receiver（邮件） | 不设分组和间隔，继承根的设置 |
 | 其后 | 原有子路由 | 不变 | |
 
-- 为什么要第 2 条：Alertmanager 的语义是，只要有子路由匹配，父路由的 receiver 就不再使用。没有第 2 条时，原来经根路由发邮件的 akkiabot 规则会只剩 webhook。第 2 条让它们照旧发邮件，而观察规则、心跳这类只给分派用的规则不发邮件。
+- 为什么要第 2 条：Alertmanager 的语义是，只要有子路由匹配，父路由的 receiver 就不再使用。没有第 2 条时，原来经根路由发邮件的 akkiabot 规则会只剩 webhook。第 2 条让它们照旧发邮件，而观察规则、心跳这类只给分派用的规则和演练告警不发邮件。
 - 匹配 `akkiabot_rule` 的子路由归本文件所有，每次执行都会整体替换；策略树写入时带 `X-Disable-Provenance`，负责人仍可在 Grafana 网页上改邮件相关设置。contact point 由 API 预置，在网页上只读。
 
 ## 3. 分派规则（`scripts/grafana_dispatch.py alert`）
