@@ -6,7 +6,8 @@ name: Release cascade
 # compensates any event GitHub did not deliver. Runs are serialised; a queued
 # run replaced by a newer one loses nothing because the newer run reconciles
 # everything. Conflicts pause that one direction, open a
-# `release-forward-conflict` issue and notify Multica (squad task) once.
+# `release-forward-conflict` issue and post to the optional release
+# notification webhook once.
 #
 # Writes need the release App (bypass on releases/** and master, BOT-40). The
 # tooling always comes from master; `pull_request_target` never checks out PR code.
@@ -68,6 +69,7 @@ jobs:
         if: steps.boot.outputs.active == 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
-          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; the second secret name is a fallback until the rename is done.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
           TRIGGER: "${{ github.event_name == 'pull_request_target' && format('PR #{0}', github.event.pull_request.number) || format('{0} {1}', github.event_name, github.ref_name) }}"
         run: python3 -m scripts.release cascade --trigger "$TRIGGER"

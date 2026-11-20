@@ -1,22 +1,21 @@
 """Weekly check: was there a staging release this week? If so, trigger the group clean-up.
 
-Used by ``.github/workflows/e2e-prune-trigger.yml`` (BOT-30). Every staging
+Used by ``.github/workflows/e2e-prune-trigger.yml``. Every staging
 release acceptance (``just e2e-staging --record-status <sha>``) creates a test
 group and writes the commit status ``staging-acceptance``. This script asks the
 GitHub GraphQL API whether any such status was written in the last
 ``WINDOW_DAYS`` days, scanning the whole master history page by page; an
 incomplete scan fails the job instead of reporting "no release".
 
-* Yes: POST to the Multica autopilot webhook (URL from the
-  ``MULTICA_PRUNE_WEBHOOK_URL`` secret), which starts an Engineer task that runs
-  ``just e2e-prune-groups`` on the machine holding the test account sessions.
-* No: exit without calling anything, so a quiet week costs no Multica run.
+* Yes: POST to the optional prune webhook (URL from the ``E2E_PRUNE_WEBHOOK_URL``
+  secret); its receiver runs ``just e2e-prune-groups`` on the machine holding the
+  test account sessions. Without the secret the job only reports the releases.
+* No: exit without calling anything, so a quiet week triggers nothing.
 
 CI never touches Telegram sessions. The webhook URL is a secret: it is never
 printed, and errors only report the HTTP status.
 
-Environment: ``GITHUB_TOKEN``, ``GITHUB_REPOSITORY``, ``MULTICA_PRUNE_WEBHOOK_URL``
-(only needed when there was a release), optional ``GITHUB_API_URL``,
+Environment: ``GITHUB_TOKEN``, ``GITHUB_REPOSITORY``, optional ``E2E_PRUNE_WEBHOOK_URL``, optional ``GITHUB_API_URL``,
 ``GITHUB_RUN_ID``, ``GITHUB_SERVER_URL``.
 """
 
@@ -34,6 +33,7 @@ from typing import Any
 
 STATUS_CONTEXT = "staging-acceptance"
 WINDOW_DAYS = 7
+WEBHOOK_ENV = "E2E_PRUNE_WEBHOOK_URL"
 PAGE_SIZE = 100
 #: Upper bound on history pages (100 commits each). Exceeding it fails the job
 #: instead of reporting "no release" from an incomplete scan.
@@ -162,10 +162,10 @@ def run(
     out(f"过去 {WINDOW_DAYS} 天有 {len(releases)} 次 staging 发版验收：")
     for r in releases:
         out(f"- {r.sha[:12]} {r.state} {r.created_at.isoformat()}")
-    url = env.get("MULTICA_PRUNE_WEBHOOK_URL", "").strip()
+    url = env.get(WEBHOOK_ENV, "").strip()
     if not url:
-        out("::error::缺少 Actions secret MULTICA_PRUNE_WEBHOOK_URL，无法触发清理任务")
-        return 1
+        out(f"::notice::未配置 {WEBHOOK_ENV}，不触发清理，请手动执行 just e2e-prune-groups")
+        return 0
     run_url = ""
     if env.get("GITHUB_RUN_ID"):
         server = env.get("GITHUB_SERVER_URL", "https://github.com")
@@ -177,9 +177,9 @@ def run(
     }
     status = post(url, webhook_payload(releases, repo, now, run_url), headers)
     if not 200 <= status < 300:
-        out(f"::error::调用 Multica webhook 失败：HTTP {status}")
+        out(f"::error::调用清理 webhook 失败：HTTP {status}")
         return 1
-    out(f"已触发 Multica 清理任务（HTTP {status}）。")
+    out(f"已触发清理 webhook（HTTP {status}）。")
     return 0
 
 

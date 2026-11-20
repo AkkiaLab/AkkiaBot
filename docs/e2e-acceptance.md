@@ -8,7 +8,7 @@
 
 ## 1. 环境隔离：只使用 Telegram 测试环境
 
-Telegram 测试环境与生产环境是两套独立的系统，账号、群、bot、BotFather 和 token 互不相通。负责人于 2026-11-14 决定：验收一律在测试环境进行，不连接生产环境的账号、群或 BotFather。
+Telegram 测试环境与生产环境是两套独立的系统，账号、群、bot、BotFather 和 token 互不相通。验收一律在测试环境进行，不连接生产环境的账号、群或 BotFather。
 
 | 层 | 测试环境端点 | 检查方式 | 无法使用时 |
 | --- | --- | --- | --- |
@@ -31,9 +31,9 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 
 | 可以自动化 | 需要人工 / 不覆盖 |
 | --- | --- |
-| 测试账号登录后，通过测试环境的 BotFather 创建测试 bot，并把 token 和用户名写回 1Password | 第三方客户端**不能注册新账号**（Telethon 的 `sign_up` 已被 Telegram 禁止）。测试环境账号需要负责人用官方客户端的测试模式注册，首次登录时由负责人输入验证码和两步验证密码 |
+| 测试账号登录后，通过测试环境的 BotFather 创建测试 bot，并把 token 和用户名写回 1Password | 第三方客户端**不能注册新账号**（Telethon 的 `sign_up` 已被 Telegram 禁止）。测试环境账号需要维护者用官方客户端的测试模式注册，首次登录时由维护者输入验证码和两步验证密码 |
 | 建立或复用专用的私有测试超级群，邀请 bot 并授予管理员权限；新群的 id 写回 1Password | 真实 Turnstile 挑战的完成及其后的解除禁言：需要真人在浏览器中完成。工具不求解真实挑战；`m7.captcha`（staging 的真实 widget）把它列为“未自动化”，不计入通过。本地 `m7.captcha-test-keys` 用 Cloudflare 官方测试 key 跑通的通过/拒绝链路是另一类证据（6.4 节），不能替代它 |
-| 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 清理历史消息、删除常驻测试群：工具从不执行。唯一例外是 6.3 节按负责人授权的范围每周清理旧的 staging 发版验收群 |
+| 普通成员账号发送 `/help`、`/id`、回复群主消息的 `/id`、`/ip 1.1.1.1`，以及回复带标签 IP 的消息执行 `/ip` | 清理历史消息、删除常驻测试群：工具从不执行。唯一例外是 6.3 节按授权范围每周清理旧的 staging 发版验收群 |
 | 群主在群内发 `/config`，用深链在与 bot 的私聊中打开配置菜单并点击开关按钮；群主回复成员消息执行 `/warn`、`/ban`，检查封禁状态和历史消息删除，然后解除封禁、由群主把成员拉回群 | 开关回调被越权调用（例如伪造按钮数据）：用户账号只能点击自己收到的按钮，由单元测试覆盖 |
 | 检查回复文本和行内代码实体（确认 MarkdownV2 已正确渲染，没有残留反斜杠） | |
 | 成员退群后再入群，检查两条系统消息都被 bot 删除 | |
@@ -45,11 +45,11 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 
 ## 3. 1Password：权限边界与字段
 
-- 所有环境共用一个 vault `AkkiaBot`（负责人于 2026-11-14 决定，取代此前的独立测试 vault `AkkiaBot-Staging`）。条目按 `<环境>-<用途>` 命名：`e2e-*` 是 Telegram 测试环境验收专用，`staging-*` 同时供本地开发（dev）和预发布环境使用，`prod-*` 是生产环境专用。
+- 所有环境共用一个 vault `AkkiaBot`（取代此前的独立测试 vault `AkkiaBot-Staging`）。条目按 `<环境>-<用途>` 命名：`e2e-*` 是 Telegram 测试环境验收专用，`staging-*` 同时供本地开发（dev）和预发布环境使用，`prod-*` 是生产环境专用。
 - Cloudflare：dev/staging 共用一个 token（`staging-cloudflare/api_token`，包含 DNS、Tunnel、Pages、Turnstile 权限），prod 使用另一个 token（`prod-cloudflare/api_token`）。
-- **权限边界**（负责人于 2026-11-14 决定）：
+- **权限边界**：
   - 服务账号对 vault **可以读写**，工具会自动写回会话、测试 bot token、群 id 等配置。
-  - 测试和预发布密钥**可以在 Multica 内部共享**（智能体之间、issue 交接）。
+  - 测试和预发布密钥只在维护者之间经受控渠道共享。
   - **仓库是公开的**：仓库、PR、CI 日志和工具输出中都不能出现任何凭据，凭据值也不能出现在命令行参数中。
   - 本工具只读写 `e2e-*` 条目，引用 `staging-services`，从不涉及 `prod-*`。
 - 工具读写 vault 的流程：
@@ -68,8 +68,8 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | `staging-services` | dev/staging 共用的第三方服务配置（见下表） |
 | `staging-bot` | 预发布环境的 bot：`bot_token`、`bot_username`、`environment`（与 `e2e-bot` 不是同一个 bot） |
 | `staging-cloudflare` | dev/staging 共用的 Cloudflare：`api_token`、`account_id`，以及预发布 tunnel 的 `cloudflared_token`、`tunnel_id` |
-| `prod-cloudflare` | 生产环境 Cloudflare：`api_token`（负责人填写）、`account_id` |
-| `prod-bot` | 生产 bot：`bot_token`（负责人填写） |
+| `prod-cloudflare` | 生产环境 Cloudflare：`api_token`（维护者填写）、`account_id` |
+| `prod-bot` | 生产 bot：`bot_token`（维护者填写） |
 
 ### 条目 `staging-services`（dev/staging 共用的第三方服务）
 
@@ -110,11 +110,11 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
    - 轮换令牌后执行 `just e2e-token-init --force`。撤销某台机器的访问权限时，先在 1Password 中删除对应的服务账号，再删除该文件。
 4. 执行 `just e2e-check-env`，确认能连上测试环境。
 
-## 5. 首次准备（需要负责人配合一次）
+## 5. 首次准备（需要维护者配合一次）
 
 ### 5.1 用官方客户端在测试环境注册两个账号
 
-测试环境的账号与生产账号相互独立，可以用负责人自己的手机号注册。需要两个账号：
+测试环境的账号与生产账号相互独立，可以用维护者自己的手机号注册。需要两个账号：
 - 群主/管理员：建群、授权、创建 bot、发锚点消息；
 - 普通成员：发命令。
 
@@ -249,7 +249,7 @@ M3 合并到 master 之前，在 master 上运行 `m3.*` 会失败（bot 还没�
 
 M5 场景排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用数据库长期保留的外部 bot 时，加 `--fresh-group` 让每次运行使用新建的专用群（`just e2e-staging` 已默认加上），否则成员在旧群中的发言数会累计，`m5.spam` 会因豁免而失败（见 6.2 节“持久化被测 bot 的数据准备”）。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，M5 的反垃圾场景记为跳过（⏭️，原因“缺少凭据或配置”），整次运行不算通过；只验收其他里程碑时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
 
-反垃圾的异步副作用（BOT-47）：bot 在后台处理群消息，LLM 判定最长可用 `ANTISPAM_TIMEOUT`（默认 45 秒，超时则放行），命中后删除广告、禁言并发通知，再过 `ANTISPAM_PURGE_DELAY`（默认 5 秒）清理该成员已记录的全部历史消息（包括这期间新发的消息），通知在 `ANTISPAM_NOTICE_TTL` 后自删。`m5.spam` 因此不以 `E2E_REPLY_TIMEOUT` 判定广告处理，而是等到 `E2E_ANTISPAM_TIMEOUT`（被测 bot 的判定预算加 Telegram 调用余量，改动 bot 的 `ANTISPAM_TIMEOUT` 时须同步调大）；并以探针被清理作为“这次处理已全部结束”的信号。场景失败时同样先确认结束：预算内 bot 一直没有处理广告，视为已放行、不会再有迟到动作，后续场景照常执行；bot 处理了广告但清理没有在窗口内出现，则无法确认副作用已结束，该场景记为失败（同时保留原失败原因），其余场景以“运行中止”跳过，本次运行不会写 `success`。确认过程本身出错（例如读取消息或成员状态时网络、RPC 失败），或结束时解除禁言失败，同样按“未确认结束”中止，报告保留原失败原因。不要用加长固定等待或调换场景顺序来规避：判定慢于 `E2E_REPLY_TIMEOUT` 却仍在预算内时，过早放弃会让迟到的禁言和清理落进后续场景；即使 `m5.spam` 通过，延迟的历史清理也会删掉后续场景刚发的消息。被禁言的成员仍在群里，恢复成员时先解除禁言，不会把它当作已退群再拉人。广告处理耗时超过 `E2E_REPLY_TIMEOUT` 时只在报告中记录，是否需要调整 LLM 延迟由反垃圾的指标（`antispam_llm_*`）和负责人判断，验收工具不改被测 bot 的配置。
+反垃圾的异步副作用（BOT-47）：bot 在后台处理群消息，LLM 判定最长可用 `ANTISPAM_TIMEOUT`（默认 45 秒，超时则放行），命中后删除广告、禁言并发通知，再过 `ANTISPAM_PURGE_DELAY`（默认 5 秒）清理该成员已记录的全部历史消息（包括这期间新发的消息），通知在 `ANTISPAM_NOTICE_TTL` 后自删。`m5.spam` 因此不以 `E2E_REPLY_TIMEOUT` 判定广告处理，而是等到 `E2E_ANTISPAM_TIMEOUT`（被测 bot 的判定预算加 Telegram 调用余量，改动 bot 的 `ANTISPAM_TIMEOUT` 时须同步调大）；并以探针被清理作为“这次处理已全部结束”的信号。场景失败时同样先确认结束：预算内 bot 一直没有处理广告，视为已放行、不会再有迟到动作，后续场景照常执行；bot 处理了广告但清理没有在窗口内出现，则无法确认副作用已结束，该场景记为失败（同时保留原失败原因），其余场景以“运行中止”跳过，本次运行不会写 `success`。确认过程本身出错（例如读取消息或成员状态时网络、RPC 失败），或结束时解除禁言失败，同样按“未确认结束”中止，报告保留原失败原因。不要用加长固定等待或调换场景顺序来规避：判定慢于 `E2E_REPLY_TIMEOUT` 却仍在预算内时，过早放弃会让迟到的禁言和清理落进后续场景；即使 `m5.spam` 通过，延迟的历史清理也会删掉后续场景刚发的消息。被禁言的成员仍在群里，恢复成员时先解除禁言，不会把它当作已退群再拉人。广告处理耗时超过 `E2E_REPLY_TIMEOUT` 时只在报告中记录，是否需要调整 LLM 延迟由反垃圾的指标（`antispam_llm_*`）和维护者判断，验收工具不改被测 bot 的配置。
 
 `m4.warn`、`m4.ban`、`m5.spam-command` 会真实封禁普通成员账号，并在场景结束时（包括失败时）解除封禁、由群主账号直接把成员拉回群，后续场景不受影响。不用邀请链接的原因：Telegram 按账号限制短时间内通过链接入群的次数（BOT-27、BOT-28），而群主拉人不占用成员账号的入群额度。只有 `m7.captcha`、`m2.service-message` 保留成员通过邀请链接入群，因为这两项要验证的就是真实入群。`m2.join-request` 只用需审批的链接提交申请（申请随后被拒绝，成员由群主拉回），不算链接入群，但同样是成员账号的一次链接操作，报告中单独计数。群主拉人失败时，该场景记为失败，其余场景以“运行中止”跳过，不回退为链接入群。如果运行被强行中断，成员可能停留在封禁状态；下次运行的准备阶段会先解除封禁再由群主拉成员入群，并在报告的准备步骤中注明。
 
@@ -276,7 +276,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
 ### 6.2 staging 发版验收（差异）
 
-按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异（负责人于 BOT-16 决定，BOT-34 实现）：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
+按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异（BOT-16 决定，BOT-34 实现）：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
 
 版本流程（`docs/release.md` §4.1）下，第 1–3 步和第 5 步由 `just release-staging <RC tag> <场景>` 在同一把 staging 锁内完成；以下是它执行的内容和手动执行时的步骤。
 
@@ -307,7 +307,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
    差异验收的报告写明基线 `BASE`、执行的场景和未执行的场景数；status 描述形如“差异验收（基线 2814ea1）：1/1 个选中场景通过（运行 …）；15 个未涉及差异、未执行；场景 m2.join-request”（超过 GitHub 的 140 字上限时截断场景列表，完整列表见报告）。`--record-status` 不能与 `--serve` 同时使用。
 6. 把 `report.md` 贴到发版记录（对应的 issue）中，写明 `SHA`、基线、后端镜像、结果，以及按规则跳过的场景和原因。报告中的“未自动化”项要原样保留。
-7. 生产：RC 通过后封版并打正式 tag，`release-production.yml` 等待负责人审批，后端由 `just release-deploy production <tag>` 部署，随后自动触发 `webapp-promote.yml -f sha=SHA`，由负责人在 GitHub 中审批 `webapp-production` 部署（`docs/release.md` §4.2–4.3）。只有 `staging-acceptance=success` 的 commit 能通过检查；`success` 可能来自全量或差异验收，差异验收的含义见第 5 步。
+7. 生产：RC 通过后封版并打正式 tag，`release-production.yml` 等待维护者审批，后端由 `just release-deploy production <tag>` 部署，随后自动触发 `webapp-promote.yml -f sha=SHA`，由维护者在 GitHub 中审批 `webapp-production` 部署（`docs/release.md` §4.2–4.3）。只有 `staging-acceptance=success` 的 commit 能通过检查；`success` 可能来自全量或差异验收，差异验收的含义见第 5 步。
 
 写 commit status 需要本机 `gh` 已登录，且对仓库有写权限。
 
@@ -325,12 +325,12 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 
 ### 6.3 每周清理旧的 staging 发版验收群
 
-负责人已授权（BOT-28/BOT-30）：每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
+经维护者授权（BOT-28/BOT-30），每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
 
 **触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub GraphQL API 逐页检查 master 的全部提交，看过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态（不按提交时间截断，重新验收旧提交也算）。API 出错或提交数超出检查上限时，workflow 直接失败，不会当作“无发版”：
 
-- 有，就 POST 调用 Multica autopilot 的 webhook，由小队成员在本机执行清理。URL 存在 Actions secret `MULTICA_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；
-- 没有，就直接结束，不占用 Multica 运行次数；
+- 有，就 POST 调用可选的清理 webhook，由接收方在持有测试账号会话的机器上执行清理。URL 存在 Actions secret `E2E_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；未配置该 secret 时只输出 notice 并跳过，需要手动清理；
+- 没有，就直接结束，不调用 webhook；
 - workflow 不接触 Telegram 会话。没有用 `--record-status` 的手动 staging 运行不会被检测到，它们留下的群会在下一次有发版的那周一并清理。
 
 **清理**（只能在持有测试账号会话的机器上执行）：
@@ -347,7 +347,7 @@ just e2e-prune-groups --apply    # 真正删除
 - 输出只包含数量和运行标识，不包含群 id；
 - 与 `run` 使用同一把验收锁，不会与正在进行的验收并发。
 
-**Multica autopilot**：「每周清理旧的 staging 发版验收群」（webhook 触发，create_issue，指派给开发小队，由 Leader 指定执行成员）。任务内容：先执行 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，把两次输出（数量和运行标识）报告到任务中。
+执行时先 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，两次输出（数量和运行标识）记录到受控的内部记录中。
 
 ### 6.4 本地官方测试 key 入群验证（`m7.captcha-test-keys`）
 
@@ -378,7 +378,7 @@ just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
 
 ## 7. 安全约束
 
-- **公开仓库中不出现任何凭据**：仓库只提交 `op://` 引用模板。真实的凭据、会话和验证码不提交到仓库，也不出现在 PR、CI 日志或工具输出中；测试凭据只在 Multica 内部共享。
+- **公开仓库中不出现任何凭据**：仓库只提交 `op://` 引用模板。真实的凭据、会话和验证码不提交到仓库，也不出现在 PR、CI 日志或工具输出中；测试凭据只在维护者之间经受控渠道共享。
 - **命令行参数中不出现任何凭据**：令牌通过环境变量传给 `op`，写入 vault 的值通过标准输入传递。不要使用 `op item edit ... "field[password]=值"` 这类赋值参数。
 - **显式脱敏**：工具在输出和写入报告前，会把已知密钥（会话、`api_hash`、bot token、ipinfo token、Sentry DSN、服务账号令牌）替换为 `[REDACTED]`；`Secret` 类型的 `repr` 不显示原值。这符合仓库的日志约定：由调用方改写已知密钥，日志模块本身不做自动识别或脱敏。
 - **第三方日志**：Telethon、`httpx`、`httpcore` 的日志级别固定为 WARNING（Bot API 的 URL 中含有 token）。被测 bot 沿用 M2 的做法（见 README），它的输出写入权限为 600 的 `server.log`。
@@ -388,14 +388,14 @@ just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
   - 超过上限时，停止本次验收，剩余场景标记为跳过（原因“限流中止”）；
   - 两次发送之间至少间隔 `E2E_SEND_INTERVAL`（默认 2 秒）；
   - 每次 FloodWait 的账号、方法、秒数和重试次数都写入报告（6 节“结果”），用于判断是哪类操作触发了限流。
-- **入群限流**：Telegram 按成员账号统计短时间内的入群次数（BOT-27：1 小时内 4 次全量运行后，每次链接入群需等待约 170 秒）。所以成员恢复和新群准备都改由群主拉人，只有 `m7.captcha`、`m2.service-message` 通过链接入群（`m2.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证）；PR 级和 staging 差异验收都只跑明确涉及的场景，通常不产生链接入群。入群次数减少后，两次验收之间不再要求固定间隔（负责人于 BOT-16 决定，取消此前“两次全量验收至少间隔约 1 小时”）。失败后先查清原因再重跑，不盲目连续重试；遇到 FloodWait 超过上限或群主拉人被限流（`PEER_FLOOD`）时如实报错停止，不回退为链接入群。
+- **入群限流**：Telegram 按成员账号统计短时间内的入群次数（BOT-27：1 小时内 4 次全量运行后，每次链接入群需等待约 170 秒）。所以成员恢复和新群准备都改由群主拉人，只有 `m7.captcha`、`m2.service-message` 通过链接入群（`m2.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证）；PR 级和 staging 差异验收都只跑明确涉及的场景，通常不产生链接入群。入群次数减少后，两次验收之间不再要求固定间隔（维护者于 BOT-16 决定，取消此前“两次全量验收至少间隔约 1 小时”）。失败后先查清原因再重跑，不盲目连续重试；遇到 FloodWait 超过上限或群主拉人被限流（`PEER_FLOOD`）时如实报错停止，不回退为链接入群。
 - **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；不清理历史消息。删除群只有 `prune-groups --apply` 一个入口，范围见 6.3 节。
 
 ## 8. Sentry
 
 Sentry 测试项目通过 Sentry 的 agent handoff 接入：
 
-1. 负责人在 Sentry 中生成一次性 handoff code。
+1. 维护者在 Sentry 中生成一次性 handoff code。
 2. 智能体按 <https://sentry.io/agent-handoff/> 的说明，把 code 放在请求体中，向该端点 POST 一次。
 3. 按返回的指引完成配置。
 4. 把 DSN 写入 `staging-services/sentry_dsn`，并发送一条测试事件进行验证。

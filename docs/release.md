@@ -1,17 +1,17 @@
 # 版本开发、逐级上合与发布流程
 
-本文是“按版本开发与自动发布”（负责人于 2026-11-15 确认）在仓库中的实现说明与运行手册。文中的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处（来源：BOT-38 方案、BOT-39 实现、BOT-40 平台接入与 staging 演练）。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
+本文是“按版本开发与自动发布”在仓库中的实现说明与运行手册。文中的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处（来源：BOT-38 方案、BOT-39 实现、BOT-40 平台接入与 staging 演练）。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
 
 工具入口：`just release <命令>`（即 `python -m scripts.release`，代码在 `scripts/release/`，只依赖 Python 标准库、`git` 和 `gh`）。GitHub Actions 与运行机执行同一份代码。
 
 ```mermaid
 flowchart LR
-  T[任务分支] -->|PR · Reviewer squash| R1[releases/v1.4.0]
+  T[任务分支] -->|PR · 评审后 squash| R1[releases/v1.4.0]
   P[补丁任务] -->|PR · squash| R0[releases/v1.3.1]
   R0 -->|上合 merge| R1 -->|上合 merge| R2[releases/v1.5.0] -->|上合 merge| M[master]
   R1 -->|发布日 18:00 冻结 · RC| RC[v1.4.0-rc.N] -->|同 sha 前后端| S[staging 差异验收]
   S -->|staging-acceptance=success| SEAL[封版：锁分支 → 回读 → 正式 tag v1.4.0]
-  SEAL --> PROD[release-production.yml：负责人审批 production] --> D[运行机部署后端 → webapp-promote]
+  SEAL --> PROD[release-production.yml：维护者审批 production] --> D[运行机部署后端 → webapp-promote]
 ```
 
 ## 1. 名称与来源
@@ -25,19 +25,19 @@ flowchart LR
 - x 只在重大迭代时变化；每个常规版本占用一个 y（`vX.Y.0`）；z 用于修复发版、加车等小版本。
 - 常规版本 `vX.Y.0` 从**最新 master** 创建；小版本 `vX.Y.Z`（Z>0）从**上一个正式 tag** `vX.Y.(Z-1)` 创建（v1.2.0 → v1.2.1 → v1.2.2），上一个正式 tag 不存在时拒绝创建。
 - 版本号严格校验（`v` 前缀、无前导零），已存在的版本（分支或 tag）不能复用，常规版本不能低于已存在的常规版本。版本按语义排序（v1.10.0 > v1.9.0）。
-- 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 DevOps 创建。
+- 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由维护者创建。
 - 只有智能体共用 App `akkialab-agent`（规则集绕过者，见 §7）能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app`（该 App 的发布私钥）换取**发布用途**的安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
 
 ## 2. 日常开发
 
-- 任务分支从**目标 release** 创建，PR 提向该 release：`git switch -c akkia-<编号>-<描述> origin/releases/vX.Y.Z`（PR 标题 `AKKIA-<编号>: …`，正文第一行 `Closes AKKIA-<编号>`）。原始实现 PR 照常由 Reviewer 评审后 squash 合并。不跟本期上线的任务从下一个 release 开发。
+- 任务分支从**目标 release** 创建，PR 提向该 release：`git switch -c <分支名> origin/releases/vX.Y.Z`。原始实现 PR 照常评审后 squash 合并。不跟本期上线的改动从下一个 release 开发。
 - `release-guard`（`.github/workflows/release-guard.yml`，规则来自 base 分支上的工具代码，不使用 PR 自身的代码，只读）检查：
   - 版本流程启用后（存在任意 `releases/*`），PR 不再直接提向 master；例外是带 `release-forward` 标签的上合冲突解决 PR。
   - base 已封版：拒绝。
   - base 是处于冻结期的当前常规版本：只接受带 `release:fix` 标签的修复（及上合冲突解决 PR）。
   - PR 分支必须从目标 release 创建：PR 新增的提交如果已经属于 master 或其他版本分支，判为基分支错误。
-- 冻结与下车：每周四、周日 18:00（UTC+8）起，**当前常规版本**（最低的未封版 `vX.Y.0`）冻结新增功能，直到封版或当天结束（当天未发布则顺延到下一窗口，冻结随之解除）。冻结任务把仍提向当前版本、没有 `release:fix` / `release-forward` 标签的 PR 自动改提到下一个常规版本（不存在就创建），并留言说明变基命令。小版本分支不受时钟冻结约束，由 Leader 控制加车内容。
-- 功能还是修复由标签决定：默认按功能处理（保守），修复由实现者加 `release:fix`，冻结期改回当前版本需 Leader 确认。
+- 冻结与下车：每周四、周日 18:00（UTC+8）起，**当前常规版本**（最低的未封版 `vX.Y.0`）冻结新增功能，直到封版或当天结束（当天未发布则顺延到下一窗口，冻结随之解除）。冻结任务把仍提向当前版本、没有 `release:fix` / `release-forward` 标签的 PR 自动改提到下一个常规版本（不存在就创建），并留言说明变基命令。小版本分支不受时钟冻结约束，由维护者控制加车内容。
+- 功能还是修复由标签决定：默认按功能处理（保守），修复由实现者加 `release:fix`，冻结期改回当前版本需维护者确认。
 
 ## 3. 逐级上合
 
@@ -59,7 +59,7 @@ flowchart LR
 
 - 某一跳合并冲突时：中止合并，**只暂停这一方向**，其他方向照常上合。
 - 去重：在仓库中创建一个带 `release-forward-conflict` 标签的 issue，正文含标记 `<!-- release-forward: 来源->目标 -->`。存在打开的同标记 issue 时不会重复创建，也不会重复通知。
-- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR、PR 标题中的 AKKIA 编号以及恢复步骤；同时向 Multica 自动化 webhook（secret `MULTICA_RELEASE_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷，由 autopilot 为开发小队创建任务。webhook 通知未送达（secret 未配置或 autopilot 停用）时，上合本身由 GitHub Actions 执行不受影响，冲突仍会在仓库 issue 中记录，需要人工关注。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
+- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR（含标题）以及恢复步骤；同时向可选的发布通知 webhook（secret `RELEASE_NOTIFY_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷。webhook 通知未送达（secret 未配置或接收方停用）时，上合本身由 GitHub Actions 执行不受影响，冲突仍会在仓库 issue 中记录，需要人工关注。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
 - 解决：
 
   ```bash
@@ -69,11 +69,11 @@ flowchart LR
   git push origin HEAD
   ```
 
-  向目标分支提 PR，标题仍按 `AKKIA-<编号>: …`（编号为冲突任务），加标签 `release-forward`，由 Reviewer 评审。**不要 squash**：Reviewer 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
+  向目标分支提 PR，加标签 `release-forward`，由评审者评审。**不要 squash**：评审 App 准出且检查通过后，上合流水线（定时对账，或手动 `release-cascade.yml -f land_pr=<PR 号>`）以快进方式把目标分支推到该 merge commit，GitHub 随即把 PR 标为已合并。App 拥有绕过权限，不受分支规则的合并门禁约束，所以落地前由工具自己逐项核对，任一不满足都不落地：
   - PR 打开、带 `release-forward` 标签、目标未封版、包含目标当前 HEAD 和一个处于暂停的来源；
-  - Reviewer（共用 App `akkialab-agent[bot]`，按 bot 用户 ID 356702926 识别，不按登录名，App 改名不影响）的最新评审是对**当前 head** 的 Approve（其他账号的批准不算，与它同名的用户或其他 App 也不算）；
+  - 评审 App（`akkialab-agent[bot]`，按 bot 用户 ID 356702926 识别，不按登录名，App 改名不影响）的最新评审是对**当前 head** 的 Approve（其他账号的批准不算，与它同名的用户或其他 App 也不算）；
   - 任何人的最新评审都不是 Request changes；所有评审线程已解决；
-  - Reviewer 准出之后，除 PR 作者和 Reviewer 外没有新的评论或评审（例如 Copilot 的后续意见）；有的话须处理后由 Reviewer 重新准出；
+  - 评审 App 准出之后，除 PR 作者和评审 App 外没有新的评论或评审（例如 Copilot 的后续意见）；有的话须处理后由评审 App 重新准出；
   - 以上信息逐页读全（评审线程、评审、评论分别分页，直到没有下一页）；超出页数上限或查询失败时拒绝落地；
   - 当前 head 的 `ci-ok`、`secret-scan`、`release-guard` 通过；
   - 推送前再读一次 PR，head、base、状态都没有变化。
@@ -110,31 +110,31 @@ flowchart LR
 
 - `verify`：只能从 master 运行；正式 tag 所在分支已封版、分支 HEAD 等于 tag、tag 在最新 RC 上、`staging-acceptance=success`；环境 `production` 必须配置了审批人（没有就失败，防止 GitHub 自动创建一个无保护的环境后直接放行）。
 - `image`：确保该 sha 的镜像存在。
-- `approve`：环境 `production`，等待负责人审批。智能体不审批。
-- `handoff`：通知 Multica 在运行机执行 `just release-deploy production vX.Y.Z`。该命令再次执行 `verify-formal`，并确认本次 tag 的 `生产发布 vX.Y.Z` 运行（master 上）`approve` 成功且有 `production` 环境的批准记录，否则不连接服务器。
+- `approve`：环境 `production`，等待维护者审批。智能体不审批。
+- `handoff`：向可选的发布通知 webhook 发送 `release-production-approved`，由接收方在运行机执行 `just release-deploy production vX.Y.Z`（未配置时手动执行）。该命令再次执行 `verify-formal`，并确认本次 tag 的 `生产发布 vX.Y.Z` 运行（master 上）`approve` 成功且有 `production` 环境的批准记录，否则不连接服务器。
 - 服务器侧 `deploy/upgrade.sh`（取自该 tag 的 commit，经 ssh 管道执行，生产目录 `~/akkiabot/production`）：
   1. 一次只允许一个升级（`flock`）；已在目标 sha 且健康时直接成功（失败重试同一版本是安全的）；
   2. 下载该 commit 的 compose、Alloy 配置、备份/恢复脚本和配置样例；
   3. 配置检查：新样例中的每个键在 `.env` / `app.env` 中都存在（只比较键名，不输出值）；
-  4. 迁移门禁：新旧版本之间 `db/migrations/versions/` 有变化（旧版本未知也视为有变化）时，必须带 `--allow-migration`，即负责人已确认本次迁移；
+  4. 迁移门禁：新旧版本之间 `db/migrations/versions/` 有变化（旧版本未知也视为有变化）时，必须带 `--allow-migration`，即维护者已确认本次迁移；
   5. 先用旧 compose 文件拉取新镜像；
   6. `backup.sh`，保存当前文件快照，替换文件和 `AKKIABOT_TAG`，`docker compose up -d --wait`；
   7. 回环 `/readyz` 健康检查；之后由工具检查公网 `/readyz`，失败时以退出码 9 结束（后端已切换，后续步骤停止，查因后重试同一 tag 或按 §4.4 回滚）；
   8. 切换后失败：无迁移时自动恢复快照并启动旧版本（退出码 7）；有迁移时**不回滚、不恢复数据库**，按 `docs/operations.md` §5.2 由人处理（退出码 6）；回滚也失败时退出码 8。
   9. 每次尝试追加到服务器上的 `releases.log`（权限 600，只在服务器，不进仓库或评论）。
-- 后端和公网检查都成功后才触发 `webapp-promote.yml -f sha=<sha>`（接受带正式 tag 的 commit），前端保留 `webapp-production` 的负责人审批。
+- 后端和公网检查都成功后才触发 `webapp-promote.yml -f sha=<sha>`（接受带正式 tag 的 commit），前端保留 `webapp-production` 的维护者审批。
 - 生产只做配置检查、健康检查和非 Telegram 冒烟；Telegram 能力靠自然流量观测（`AGENTS.md`）。正式 tag 不等于生产成功，实际结果以部署记录为准；失败后重试同一个 tag，不改 tag。
 
 ### 4.4 回滚入口
 
-- 回滚目标是一个确定的正式 tag（通常是上一个，例如 `v1.4.0` 出问题回到 `v1.3.1`）。入口与发布相同：`release-production.yml -f tag=<旧 tag>` → 负责人重新审批 → `just release-deploy production <旧 tag>`。部署门禁只认该 tag **最新一次**运行的审批，不复用当初发布时的审批。
-- 无迁移变化时 `upgrade.sh` 正常切回旧版本（同样先备份）。目标比当前版本旧且中间有迁移变化时，工具直接拒绝：需要恢复备份，按 `docs/operations.md` §5.2 人工执行并经负责人确认；流水线从不自动恢复数据库。
+- 回滚目标是一个确定的正式 tag（通常是上一个，例如 `v1.4.0` 出问题回到 `v1.3.1`）。入口与发布相同：`release-production.yml -f tag=<旧 tag>` → 维护者重新审批 → `just release-deploy production <旧 tag>`。部署门禁只认该 tag **最新一次**运行的审批，不复用当初发布时的审批。
+- 无迁移变化时 `upgrade.sh` 正常切回旧版本（同样先备份）。目标比当前版本旧且中间有迁移变化时，工具直接拒绝：需要恢复备份，按 `docs/operations.md` §5.2 人工执行并经维护者确认；流水线从不自动恢复数据库。
 
 ### 4.5 失败与恢复
 
 | 失败点 | 状态 | 恢复 |
 | --- | --- | --- |
-| 上合冲突 | 该方向暂停，issue + 小队任务 | §3.3 解决 PR，落地后自动继续 |
+| 上合冲突 | 该方向暂停，issue + 发布通知 | §3.3 解决 PR，落地后自动继续 |
 | 上合推送被拒 | 无变化 | 下次运行重新规划；持续被拒检查规则/App 权限 |
 | RC 过期（分支前进） | 旧 RC 不能部署/封版 | 出新 RC，按影响重新验收 |
 | staging 部署失败 | 前端失败时后端未改动；后端失败看 `upgrade.sh` 退出码；公网或版本检查失败为 9 / 10，不进入验收 | 查因后重跑 `just release-staging`（租约已释放） |
@@ -143,7 +143,7 @@ flowchart LR
 | 验收未通过 | `staging-acceptance=failure`，不能封版 | 修复进 release → 新 RC |
 | 封版锁定未生效 / 打 tag 失败 | 无正式 tag | 修复后重跑封版（幂等续做） |
 | 封版竞态 | 已撤销锁定，无正式 tag | 新 RC → 验收 → 封版 |
-| 生产审批未通过 | 不部署 | 负责人审批或重新运行同一 tag |
+| 生产审批未通过 | 不部署 | 维护者审批或重新运行同一 tag |
 | 生产部署失败 | 见退出码 4/5/6/7/8 | 4/5/7：查因后重试同一 tag；6/8：人工按 §5.2 |
 
 ## 5. 发布窗口与加车（`release-window.yml`）
@@ -152,20 +152,20 @@ flowchart LR
 - 准备：当前常规版本相对此前所有正式 tag 没有新提交时跳过本窗口；确保下一个常规版本存在（下车目标）。
 - 冻结：下车（§2），然后为当前版本出 RC 并触发 `release-rc.yml`（已有对应 HEAD 的 RC 时沿用）。
 - 发布：没有 RC、RC 过期或未通过验收时**停止并报错**，不封版；通过时触发 `release-seal.yml`，随后进入生产审批。已有正式 tag 时跳过。
-- 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release-app create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。Leader 汇总发布范围与加车理由；生产切换仍需负责人审批。
+- 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release-app create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。维护者汇总发布范围与加车理由；生产切换需维护者审批。
 
 ## 6. 首次引导（已完成）
 
-2026-11-16（BOT-40）已按负责人确认的方案（BOT-38）引导：`releases/v1.0.0` 从 master `3c0ed15` 创建，首个 RC `v1.0.0-rc.1` 的差异基线为 `5f5227a`。此后 master 不再接收实现 PR（`release-guard` 是 master 的必需检查）。以下为引导前的记录。
+2026-11-16（BOT-40）已按确认的方案（BOT-38）引导：`releases/v1.0.0` 从 master `3c0ed15` 创建，首个 RC `v1.0.0-rc.1` 的差异基线为 `5f5227a`。此后 master 不再接收实现 PR（`release-guard` 是 master 的必需检查）。以下为引导前的记录。
 
 2026-11-15 核对（只读）：
 
 - 远端没有任何 `v*` tag，也没有 `releases/*` 分支；只有 master 和一个历史任务分支。
 - 当前生产版本（BOT-16 切换）是 master 上的 `5f5227a`，其 `staging-acceptance=success`；之后 master 上的提交尚未经过 staging 发版验收。
 - master 规则集“master 保护”：禁止删除和强制推送，只允许 squash 合并的 PR、需要解决评审线程、必需检查 `ci-ok` / `secret-scan`，**没有绕过者**；仓库只允许 squash 合并。
-- 已安装的 App：Reviewer 专用 App（当时独立于发布）、`multica-ai`（只读）、Cloudflare Pages；没有发布 App。（AKKIA-25 起，Reviewer App 改名为工作区共用 App `akkialab-agent`，同时负责评审和发布，见 §7。）环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
+- 已安装的 App：评审专用 App（当时独立于发布，后改名为 `akkialab-agent`，同时负责评审和发布，见 §7）、只读集成 App、Cloudflare Pages；没有发布 App。环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
 
-建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若负责人另有编号偏好，在创建前说明即可，工具不会自动推导首个版本。
+建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若维护者另有编号偏好，在创建前说明即可，工具不会自动推导首个版本。
 
 引导步骤（BOT-40，平台接入完成后执行）：
 
@@ -177,20 +177,20 @@ flowchart LR
 
 | 项 | 需要的配置 | 说明 |
 | --- | --- | --- |
-| 智能体共用 GitHub App `akkialab-agent`（AKKIA-25 起承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（以 `scripts/release/app_permissions.py` 为准，`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体与之一致，由 `tests/release/test_app_permissions.py` 校验）。该 App 的 bot 用户 ID 为 356702926，工具按 ID 识别，不按登录名；Reviewer 的 token 另按用途缩权 | 权限变更需负责人确认。Reviewer 侧工具 `reviewer-gh`、App 绕过规则集的风险与工具侧补偿，见工作区私有工具仓库的 `docs/reviewer-github-app.md`（AKKIA-34 迁出）。改 release 权限时私有仓库要同步修改，它的 CI 会对照本仓库 master 校验 |
-| 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY`；运行机 1Password `AkkiaBot/release-app` | 共用 App 的 App ID 与**发布专用私钥**（与 Reviewer 私钥分开，经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功。轮换：App 设置页新建私钥 → 写入 1Password 与 secret（均经 stdin）→ 手动运行一次 `release-cascade.yml` 确认 → 删除旧私钥 |
+| GitHub App `akkialab-agent`（承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（以 `scripts/release/app_permissions.py` 为准，`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体与之一致，由 `tests/release/test_app_permissions.py` 校验）。该 App 的 bot 用户 ID 为 356702926，工具按 ID 识别，不按登录名；该 App 的其他用途（评审、合并）另按用途缩权，在本仓库之外维护 | 权限变更需维护者确认。改 release 权限时，同一 App 其他用途的工具要同步核对 |
+| 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY`；运行机 1Password `AkkiaBot/release-app` | 共用 App 的 App ID 与**发布专用私钥**（与其他用途的私钥分开，经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功。轮换：App 设置页新建私钥 → 写入 1Password 与 secret（均经 stdin）→ 手动运行一次 `release-cascade.yml` 确认 → 删除旧私钥 |
 | 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：`akkialab-agent`（App ID 5760780） | App 绕过用于上合 merge 与冲突解决的快进落地 |
 | master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入 `akkialab-agent` | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
 | 规则集 `releases 封版` | 目标 branch，include 初始为空（工具维护），规则 `update`、`deletion`、`non_fast_forward`，**无绕过者** | 名称须完全一致 |
 | tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅 `akkialab-agent`；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
-| secret `MULTICA_RELEASE_WEBHOOK_URL` | Multica autopilot webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`；autopilot 以开发小队为负责人建任务。未配置时只在运行摘要中提示 |
+| secret `RELEASE_NOTIFY_WEBHOOK_URL` | 可选的发布通知 webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`，由接收方自行处理。未配置时跳过，只在运行摘要中提示 |
 | 运行机 ssh | `~/.ssh/config` 中 `Host greencloud-tyo-01`（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥取自 1Password `AkkiaBot/shared-ssh`） | `just release-deploy production` 的默认目标；也可 `--ssh/--dir` 覆盖 |
 | 标签 | `release:fix`、`release-forward`、`release-forward-conflict` | 不存在时 GitHub 在首次使用时会报错，先创建 |
-| Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由 DevOps 另行确定接入方式（平台接入遗留项） |
+| Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由维护者另行确定接入方式（平台接入遗留项） |
 
 ## 8. 测试与已知限制
 
 - `tests/release/` 用真实的本地 git 仓库（bare origin）和内存版 GitHub 覆盖：版本解析与语义排序、常规/小版本来源、冻结分类、PR 基分支检查、下车、连续上合与 merge 关系、重复/延迟/并发推送、已封版目标跳过与来源补传播、冲突暂停/去重/上下文/恢复/落地门禁、RC 过期、谱系基线与补丁分叉、封版的验收/过期/锁定未生效/竞态/幂等续做、正式 tag 门禁、生产审批阻断与同 tag 重试、发布窗口的跳过/幂等/延迟；`deploy/upgrade.sh` 用假的 docker/curl/op 覆盖成功、幂等重试、配置缺项、迁移门禁、拉取/备份失败不改动、部分失败自动回滚、迁移后失败不回滚、回滚失败。
-- 真实 GitHub 规则集、App 权限、环境审批、Multica webhook、staging 部署与验收、ssh 生产通路都**未在本 PR 中实测**，在 BOT-40 中接入并演练；生产部署本身不在演练范围内。
+- 真实 GitHub 规则集、App 权限、环境审批、发布通知 webhook、staging 部署与验收、ssh 生产通路都**未在本 PR 中实测**，在 BOT-40 中接入并演练；生产部署本身不在演练范围内。
 - `e2e-prune-trigger.yml` 只扫描 master 历史中的 `staging-acceptance`：RC 在上合到 master 之前（例如处于冲突暂停）写入的状态，要等上合后才会被统计。

@@ -12,8 +12,8 @@ harmless: whatever run comes next sees the same gaps and closes them.
 
 A conflicting hop is paused, not retried blindly: an open GitHub issue
 labelled ``release-forward-conflict`` with a marker for ``source -> target``
-records the pause and deduplicates; Multica is notified once to create a squad
-task. The hop resumes when the source becomes an ancestor of the target (the
+records the pause and deduplicates; the optional release notification webhook is
+called once. The hop resumes when the source becomes an ancestor of the target (the
 resolution PR landed, see ``land_forward_pr``), and the issue is closed.
 """
 
@@ -38,8 +38,6 @@ MAX_HOPS = 50
 PUSH_ATTEMPTS = 3
 #: Checks the resolution PR head must have passed before it is landed.
 REQUIRED_CHECKS = ("ci-ok", "secret-scan", "release-guard")
-#: Multica issue ids (workspace prefix AKKIA) quoted in PR titles.
-ISSUE_ID_RE = re.compile(r"\bAKKIA-[1-9][0-9]*\b")
 MARKER_RE = re.compile(r"<!-- release-forward: (\S+)->(\S+) -->")
 
 
@@ -119,7 +117,6 @@ def conflict_body(
     target_prs: list[PullRequest],
     trigger: str,
 ) -> str:
-    tasks = sorted({m for pr in source_prs + target_prs for m in ISSUE_ID_RE.findall(pr.title)})
     src, tgt = node_name(hop.source), node_name(hop.target)
     lines = [
         hop.marker,
@@ -134,7 +131,6 @@ def conflict_body(
         *_pr_lines(source_prs),
         "- 目标侧改动过冲突文件的 PR：",
         *_pr_lines(target_prs),
-        f"- 相关任务：{', '.join(tasks) if tasks else '（PR 标题中未找到 AKKIA 编号）'}",
         "",
         "恢复（docs/release.md §3.3）：",
         "",

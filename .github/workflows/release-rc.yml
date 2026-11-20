@@ -80,7 +80,8 @@ jobs:
           TAG: ${{ needs.rc.outputs.tag }}
           SHA: ${{ needs.rc.outputs.sha }}
           BASELINE: ${{ needs.rc.outputs.baseline }}
-          MULTICA_RELEASE_WEBHOOK_URL: ${{ secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; the second secret name is a fallback until the rename is done.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
@@ -91,11 +92,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           payload="$(jq -n --arg tag "$TAG" --arg sha "$SHA" --arg baseline "$BASELINE" --arg run "$RUN_URL" \
             '{kind: "release-rc-ready", tag: $tag, sha: $sha, baseline: $baseline, run: $run}')"
-          if [[ -z "$MULTICA_RELEASE_WEBHOOK_URL" ]]; then
-            echo "::notice::MULTICA_RELEASE_WEBHOOK_URL not configured; start the staging acceptance manually"
+          if [[ -z "$RELEASE_NOTIFY_WEBHOOK_URL" ]]; then
+            echo "::notice::RELEASE_NOTIFY_WEBHOOK_URL not configured; start the staging acceptance manually"
             exit 0
           fi
           code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
-            --data "$payload" "$MULTICA_RELEASE_WEBHOOK_URL")"
-          echo "Multica webhook: HTTP $code"
+            --data "$payload" "$RELEASE_NOTIFY_WEBHOOK_URL")"
+          echo "Release notification webhook: HTTP $code"
           [[ "$code" =~ ^2 ]]

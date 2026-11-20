@@ -21,9 +21,9 @@ def _pr(
 ) -> PullRequest:
     return PullRequest(
         number,
-        f"AKKIA-{number}: x",
+        f"Change {number}",
         base,
-        ref or f"akkia-{number}",
+        ref or f"topic-{number}",
         head,
         "AkkiaS7",
         labels or set(),
@@ -73,20 +73,20 @@ def test_guard_rules(repo: Repo, gh: FakeGitHub) -> None:
     assert "封版" in sealed.messages[0]
 
     sh(repo.dev, "fetch", "-q", "origin")
-    sh(repo.dev, "checkout", "-q", "-B", "akkia-5", "origin/releases/v1.0.1")
+    sh(repo.dev, "checkout", "-q", "-B", "topic-5", "origin/releases/v1.0.1")
     (repo.dev / "fix.txt").write_text("fix\n")
     sh(repo.dev, "add", "fix.txt")
     sh(repo.dev, "commit", "-q", "-m", "fix")
-    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/akkia-5")
+    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/topic-5")
     head5 = sh(repo.dev, "rev-parse", "HEAD")
     assert guard_pr(repo.git, gh, _pr(repo, 5, "releases/v1.0.1", head5), FROZEN).ok
 
     # Branch cut from master but aimed at the patch release: wrong base.
-    sh(repo.dev, "checkout", "-q", "-B", "akkia-6", "origin/master")
+    sh(repo.dev, "checkout", "-q", "-B", "topic-6", "origin/master")
     (repo.dev / "feat.txt").write_text("feat\n")
     sh(repo.dev, "add", "feat.txt")
     sh(repo.dev, "commit", "-q", "-m", "feat")
-    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/akkia-6")
+    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/topic-6")
     head6 = sh(repo.dev, "rev-parse", "HEAD")
     wrong = guard_pr(repo.git, gh, _pr(repo, 6, "releases/v1.0.1", head6), OPEN)
     assert not wrong.ok
@@ -94,11 +94,11 @@ def test_guard_rules(repo: Repo, gh: FakeGitHub) -> None:
 
     # Feature freeze on the current regular release (v1.0.1 is a patch; seal it to make v1.1.0 current).
     gh.sealed.add("releases/v1.0.1")
-    sh(repo.dev, "checkout", "-q", "-B", "akkia-7", "origin/releases/v1.1.0")
+    sh(repo.dev, "checkout", "-q", "-B", "topic-7", "origin/releases/v1.1.0")
     (repo.dev / "f7.txt").write_text("f7\n")
     sh(repo.dev, "add", "f7.txt")
     sh(repo.dev, "commit", "-q", "-m", "f7")
-    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/akkia-7")
+    sh(repo.dev, "push", "-q", "origin", "HEAD:refs/heads/topic-7")
     head7 = sh(repo.dev, "rev-parse", "HEAD")
     assert guard_pr(repo.git, gh, _pr(repo, 7, "releases/v1.1.0", head7), OPEN).ok
     frozen = guard_pr(repo.git, gh, _pr(repo, 7, "releases/v1.1.0", head7), FROZEN)

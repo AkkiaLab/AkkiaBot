@@ -1,7 +1,8 @@
-// Sentry → Multica webhook relay (BOT-55), deployed as a Cloudflare Worker.
+// Sentry → outgoing webhook relay, deployed as a Cloudflare Worker.
 //
-// Multica's autopilot webhook can neither verify `Sentry-Hook-Signature` nor
-// trim payloads, so this relay sits in front of it:
+// The receiving webhook (authenticated only by a token in its URL) can neither
+// verify `Sentry-Hook-Signature` nor trim payloads, so this relay sits in front
+// of it:
 //
 //   1. Verifies the HMAC-SHA256 signature (client secret of the Sentry internal
 //      integration) over the raw body and rejects stale timestamps.
@@ -10,10 +11,11 @@
 //   3. Forwards a minimal, non-free-text payload. Titles, culprits, exception
 //      metadata, actors and stats never leave the relay; the dispatcher reads
 //      what it needs from the Sentry API with a read-only token.
-//   4. Sends `Idempotency-Key: sentry-<Request-ID>` so Multica stores a
+//   4. Sends `Idempotency-Key: sentry-<Request-ID>` so the receiver can store a
 //      redelivery only once.
 //
-// Secrets (Worker secrets, never logged): SENTRY_CLIENT_SECRET, MULTICA_WEBHOOK_URL.
+// Secrets (Worker secrets, never logged): SENTRY_CLIENT_SECRET, FORWARD_WEBHOOK_URL
+// (an older secret name is still read as a fallback, see forwardUrl).
 // Vars: ALLOWED_PROJECT_SLUGS (comma separated), SENTRY_INSTALLATION_UUID
 // (optional until the integration exists), MAX_SKEW_SECONDS (default 300).
 //
@@ -107,21 +109,28 @@ export function buildForward(resource, payload, env, requestId) {
   };
 }
 
-async function forwardToMultica(env, envelope, idempotencyKey, fetchImpl) {
+// Fallback name of the target URL secret until it is renamed in every deployment.
+const LEGACY_FORWARD_URL_KEY = "MULTICA_WEBHOOK_URL";
+
+function forwardUrl(env) {
+  return env.FORWARD_WEBHOOK_URL || env[LEGACY_FORWARD_URL_KEY];
+}
+
+async function forward(env, envelope, idempotencyKey, fetchImpl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
   try {
-    const res = await fetchImpl(env.MULTICA_WEBHOOK_URL, {
+    const res = await fetchImpl(forwardUrl(env), {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
       body: JSON.stringify(envelope),
       signal: controller.signal,
     });
     // Only the status is logged: the URL carries the trigger token.
-    if (!res.ok) console.error(`multica forward failed: HTTP ${res.status}`);
-    else console.log(`multica forward ok: HTTP ${res.status} ${envelope.event}`);
+    if (!res.ok) console.error(`forward failed: HTTP ${res.status}`);
+    else console.log(`forward ok: HTTP ${res.status} ${envelope.event}`);
   } catch (err) {
-    console.error(`multica forward failed: ${err?.name || "error"}`);
+    console.error(`forward failed: ${err?.name || "error"}`);
   } finally {
     clearTimeout(timer);
   }
@@ -138,7 +147,7 @@ export async function handle(request, env, ctx, deps = {}) {
   const now = deps.now || (() => Date.now());
 
   if (request.method !== "POST") return reply(405, { status: "rejected", reason: "method" });
-  if (!env.SENTRY_CLIENT_SECRET || !env.MULTICA_WEBHOOK_URL) {
+  if (!env.SENTRY_CLIENT_SECRET || !forwardUrl(env)) {
     return reply(503, { status: "rejected", reason: "not_configured" });
   }
 
@@ -178,7 +187,7 @@ export async function handle(request, env, ctx, deps = {}) {
     : `sentry-body-${await sha256Hex(body)}`;
   // Sentry gives up after ~1s, so the forward continues in the background; a
   // lost forward is picked up by the dispatcher's scheduled reconciliation.
-  const pending = forwardToMultica(env, result.forward, idempotencyKey, fetchImpl);
+  const pending = forward(env, result.forward, idempotencyKey, fetchImpl);
   if (ctx?.waitUntil) ctx.waitUntil(pending);
   else await pending;
   return reply(202, { status: "accepted", event: result.forward.event });

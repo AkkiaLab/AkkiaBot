@@ -122,8 +122,8 @@ REVIEWER_GRAPHQL = {
     "login": "akkialab-agent",
     "databaseId": REVIEWER_BOT_ID,
 }
-#: The same App under any other name (the App was renamed once already, AKKIA-25):
-#: same ID, different login. Hypothetical name, not a real App.
+#: The same App under any other name (the App was renamed once already): same ID,
+#: different login. Hypothetical name, not a real App.
 RENAMED_REVIEWER_GRAPHQL = {
     "__typename": "Bot",
     "login": "renamed-agent-app",

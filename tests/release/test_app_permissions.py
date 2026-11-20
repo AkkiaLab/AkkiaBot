@@ -1,7 +1,5 @@
-"""The release-purpose token permissions are declared in three places (AKKIA-25);
-they must stay identical so no path silently gets more (or less) than the others.
-The Reviewer's narrower review / merge purposes are tested in the workspace's
-private tools repository together with reviewer-gh (AKKIA-34)."""
+"""The release-purpose token permissions are declared in three places; they must
+stay identical so no path silently gets more (or less) than the others."""
 
 from __future__ import annotations
 
