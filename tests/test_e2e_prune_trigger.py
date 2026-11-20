@@ -181,5 +181,4 @@ def test_workflow_is_weekly_manual_and_read_only() -> None:
     assert data["permissions"] == {"contents": "read", "statuses": "read"}
     step = data["jobs"]["check"]["steps"][-1]
     assert step["run"] == "python3 scripts/e2e_prune_trigger.py"
-    # New secret name first; the old name is a fallback until the rename is done.
-    assert step["env"]["E2E_PRUNE_WEBHOOK_URL"].startswith("${{ secrets.E2E_PRUNE_WEBHOOK_URL || ")
+    assert step["env"]["E2E_PRUNE_WEBHOOK_URL"] == "${{ secrets.E2E_PRUNE_WEBHOOK_URL }}"

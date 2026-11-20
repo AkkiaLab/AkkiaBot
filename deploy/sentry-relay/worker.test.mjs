@@ -172,15 +172,6 @@ test("a forward failure is not surfaced to Sentry", async () => {
   assert.equal(res.status, 202);
 });
 
-test("reads the legacy URL secret name until it is renamed", async () => {
-  const { calls, deps } = recorder();
-  const { FORWARD_WEBHOOK_URL, ...rest } = env;
-  const legacy = { ...rest, MULTICA_WEBHOOK_URL: FORWARD_WEBHOOK_URL };
-  const res = await handle(signedRequest(issuePayload()), legacy, undefined, deps);
-  assert.equal(res.status, 202);
-  assert.equal(calls[0].url, MOCK_FORWARD_URL);
-});
-
 test("rejects when no target URL is configured", async () => {
   const { calls, deps } = recorder();
   const { FORWARD_WEBHOOK_URL: _unused, ...rest } = env;
