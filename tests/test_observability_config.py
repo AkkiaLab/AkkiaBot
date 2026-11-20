@@ -607,12 +607,12 @@ def test_notifications_writes_contact_point_and_policy(
         else ("POST", "/api/v1/provisioning/contact-points")
     )
     assert calls == [
+        ("GET", "/api/v1/provisioning/policies"),
         ("GET", "/api/v1/provisioning/contact-points"),
         write,
-        ("GET", "/api/v1/provisioning/policies"),
         ("PUT", "/api/v1/provisioning/policies"),
     ]
-    contact = fake.requests[1][2]
+    contact = fake.requests[2][2]
     assert contact["type"] == "webhook"
     assert contact["settings"]["url"] == "https://hook.example.invalid/"
     assert contact["settings"]["hmacConfig"] == {
@@ -688,3 +688,31 @@ def test_notifications_skip_without_any_grafana_settings(
     assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
     assert "nothing changed" in capsys.readouterr().out
     assert fake.requests == []
+
+
+class LegacyPolicyGrafana(NotifyGrafana):
+    """Policy tree with a `continue` route in the legacy `matchers` form."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/provisioning/policies":
+            self.requests.append(("GET", request.url.path, None))
+            tree = {
+                "receiver": "grafana-default-email",
+                "routes": [{"receiver": "x", "matchers": ["team=fictional"], "continue": True}],
+            }
+            return httpx.Response(200, json=tree)
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_refused_policy_tree_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://hook.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = LegacyPolicyGrafana(contact_exists=True)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    assert "object_matchers" in capsys.readouterr().err
+    assert [m for m, _, _ in fake.requests if m != "GET"] == []

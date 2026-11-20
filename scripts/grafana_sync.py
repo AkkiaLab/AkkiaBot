@@ -363,9 +363,11 @@ def notifications(grafana: Grafana, *, url: str, secret: str) -> list[str]:
     contact_point = copy.deepcopy(config["contact_point"])
     contact_point["settings"]["url"] = url
     contact_point["settings"]["hmacConfig"]["secret"] = secret
+    # Read and validate everything before the first write, so a refused
+    # policy tree leaves Grafana untouched.
+    tree = merge_policy_tree(grafana.policies(), config)
     existing = {c.get("uid") for c in grafana.contact_points()}
     grafana.put_contact_point(contact_point, exists=contact_point["uid"] in existing)
-    tree = merge_policy_tree(grafana.policies(), config)
     grafana.put_policies(tree)
     marker = list(config["marker"])
     owned = sum(_owned_route(r, marker) for r in tree["routes"])
