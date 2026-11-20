@@ -422,13 +422,15 @@ def check_installation(
         {"permissions": {"metadata": "read"}},
     )
     try:
-        repos = http("GET", f"{API}/installation/repositories", probe["token"], None)
+        # Org-wide installations span several pages (default 30 per page): read
+        # them all, or the target could look uninstalled and the count be low.
+        installed = _paged(http, f"{API}/installation/repositories", probe["token"], "repositories")
     finally:
         http("DELETE", f"{API}/installation/token", probe["token"], None)
     slug = app.get("slug") or ""
     bot = http("GET", f"{API}/users/{slug}%5Bbot%5D", record["token"], None) if slug else {}
 
-    repo_names = {r["full_name"] for r in repos.get("repositories", [])}
+    repo_names = {r["full_name"] for r in installed}
     others = len(repo_names - set(AUTHORIZED_REPOS))
     permissions: dict[str, str] = installation.get("permissions", {})
     print(f"App:              {slug} (bot 身份 {slug}[bot]，bot 用户 ID {bot.get('id')})")

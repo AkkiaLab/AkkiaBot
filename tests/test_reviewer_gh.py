@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,7 @@ class FakeGitHub:
         self.over_grant: dict[str, str] = {}
         self.revoked: list[str] = []
         self.routes: dict[tuple[str, str], Any] = {}
+        self.repo_pages = 0
 
     def __call__(self, method: str, url: str, bearer: str, body: dict[str, Any] | None) -> Any:
         self.calls.append((method, url, bearer, body))
@@ -116,8 +118,16 @@ class FakeGitHub:
                 "repository_selection": self.selection,
                 "permissions": self.permissions,
             }
-        if path == "/installation/repositories":
-            return {"repositories": [{"full_name": r} for r in self.repos]}
+        if path.split("?")[0] == "/installation/repositories":
+            # Paginated like GitHub: honour per_page (default 30) and page.
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+            per_page, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+            self.repo_pages += 1
+            chunk = self.repos[(page - 1) * per_page : page * per_page]
+            return {
+                "total_count": len(self.repos),
+                "repositories": [{"full_name": r} for r in chunk],
+            }
         if path == "/installation/token" and method == "DELETE":
             self.revoked.append(bearer)
             return None
@@ -295,6 +305,22 @@ def test_org_wide_installation_passes_without_naming_other_repos(
     # Tokens stay restricted to the single target repository.
     mint = next(c for c in gh.calls if c[1].endswith("/access_tokens"))
     assert (mint[3] or {})["repositories"] == ["AkkiaBot"]
+
+
+def test_check_reads_every_page_of_an_org_wide_installation(
+    paths: Paths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Target repo on a later page: still found, others counted, none named."""
+    others = [f"AkkiaLab/mock-private-{i:03d}" for i in range(230)]
+    gh = FakeGitHub(selection="all", repos=[*others, REPO, "AkkiaLab/akkiabot-release-drill"])
+    assert check_installation(paths, REPO, gh, refresh=False) == []
+    assert gh.repo_pages == 3  # 232 repositories at 100 per page
+    out = capsys.readouterr()
+    assert "其他仓库 230 个（不列名称）" in out.out
+    assert "已授权但未安装" not in out.out
+    assert "mock-private" not in out.out + out.err
+    # The unrestricted probe token is still revoked after all pages were read.
+    assert gh.revoked == [f"{MOCK_GH_TOKEN}-2"]
 
 
 def test_authorized_repos_are_the_two_public_ones() -> None:
