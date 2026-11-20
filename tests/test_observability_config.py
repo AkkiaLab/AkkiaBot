@@ -56,10 +56,11 @@ def _exprs(panels: list[dict[str, Any]], ds_type: str) -> list[str]:
     return [t["expr"] for p in panels if p["datasource"]["type"] == ds_type for t in p["targets"]]
 
 
-def _rule_exprs() -> list[str]:
+def _rule_exprs(*, include_dispatch_only: bool = True) -> list[str]:
     return [
         q["model"]["expr"]
         for rule in load_rule_group()["rules"]
+        if include_dispatch_only or rule["labels"].get("dispatch_only") != "true"
         for q in rule["data"]
         if q["datasourceUid"] != "__expr__"
     ]
@@ -133,15 +134,19 @@ def test_alert_rules_cover_required_conditions() -> None:
         "akkiabot-readyz-failing",
         "akkiabot-handler-error-rate",
         "akkiabot-llm-errors",
+        "akkiabot-dispatch-heartbeat",
     }
     for rule in rules.values():
         ref_ids = {q["refId"] for q in rule["data"]}
         assert rule["condition"] in ref_ids
         for query in rule["data"]:
-            assert query["datasourceUid"] in {"prometheus", "__expr__"}
+            assert query["datasourceUid"] in {"prometheus", "loki", "__expr__"}
             assert query["model"]["refId"] == query["refId"]
         assert rule["annotations"]["summary"]
-        assert parse_duration(rule["for"]) >= 60
+        # Every rule reaches the dispatch relay, which only accepts these envs.
+        assert rule["labels"].get("env", "production") in {"production", "staging"}
+        if rule["labels"].get("dispatch_only") != "true":
+            assert parse_duration(rule["for"]) >= 60
     # Monitoring down (no probe data) must page too.
     assert rules["akkiabot-readyz-failing"]["noDataState"] == "Alerting"
 
@@ -149,7 +154,7 @@ def test_alert_rules_cover_required_conditions() -> None:
 def test_alert_rule_metrics_exist() -> None:
     used = {m for expr in _rule_exprs() for m in METRIC.findall(expr)}
     assert used <= _exported_series(), sorted(used - _exported_series())
-    for expr in _rule_exprs():
+    for expr in _rule_exprs(include_dispatch_only=False):
         assert "by (env)" in expr, "alerts fire per environment"
 
 
@@ -245,6 +250,7 @@ def test_rule_group_payload_swaps_datasource() -> None:
         assert rule["ruleGroup"] == "akkiabot"
         uids = {q["datasourceUid"] for q in rule["data"]}
         assert uids == {"grafanacloud-prom", "__expr__"}
+        assert rule["labels"]["akkiabot_rule"] == rule["uid"]
     # The loaded file is not mutated.
     assert {q["datasourceUid"] for q in load_rule_group()["rules"][0]["data"]} == {
         "prometheus",
@@ -316,13 +322,14 @@ def test_sync_uploads_dashboards_and_rules(capsys: pytest.CaptureFixture[str]) -
     assert variables["loki"]["current"]["value"] == "grafanacloud-logs"
     _, _, rules = fake.requests[4]
     uids = [r["uid"] for r in rules["rules"]]
-    assert len(uids) == 6
+    assert len(uids) == 7
+    assert all(r["labels"]["akkiabot_rule"] == r["uid"] for r in rules["rules"])
     assert uids[-2:] == [  # default expected envs
         "akkiabot-env-missing-staging",
         "akkiabot-env-missing-production",
     ]
     out = capsys.readouterr().out
-    assert "6 rules" in out
+    assert "7 rules" in out
     assert "fake-grafana-token" not in out
 
 
@@ -431,3 +438,169 @@ def test_sync_env_option_overrides_expected_envs() -> None:
     assert uids[-1] == "akkiabot-env-missing-staging"
     assert "akkiabot-env-missing-production" not in uids
     assert all(r["ruleGroup"] == "akkiabot" for r in rules["rules"])
+
+
+# ------------------------------------------------- alert dispatch (AKKIA-28)
+
+
+def test_rule_group_payload_maps_loki_and_refuses_unmapped_loki() -> None:
+    group = {
+        "name": "g",
+        "interval": "1m",
+        "rules": [
+            {
+                "uid": "akkiabot-fictional",
+                "title": "t",
+                "condition": "A",
+                "data": [{"refId": "A", "datasourceUid": "loki", "model": {"refId": "A"}}],
+                "noDataState": "OK",
+                "execErrState": "Error",
+                "for": "0s",
+            }
+        ],
+    }
+    payload = rule_group_payload(group, "grafanacloud-prom", "grafanacloud-logs")
+    assert payload["rules"][0]["data"][0]["datasourceUid"] == "grafanacloud-logs"
+    with pytest.raises(SyncError, match="Loki"):
+        rule_group_payload(group, "grafanacloud-prom")
+
+
+def test_heartbeat_rule_needs_no_data_and_skips_email() -> None:
+    rules = {r["uid"]: r for r in load_rule_group()["rules"]}
+    heartbeat = rules["akkiabot-dispatch-heartbeat"]
+    (query,) = [q for q in heartbeat["data"] if q["datasourceUid"] == "prometheus"]
+    assert not METRIC.search(query["model"]["expr"])
+    assert heartbeat["labels"]["dispatch_only"] == "true"
+    assert heartbeat["noDataState"] == "OK"
+    # Every other rule keeps its email notification.
+    assert [u for u, r in rules.items() if r["labels"].get("dispatch_only")] == [
+        "akkiabot-dispatch-heartbeat"
+    ]
+
+
+EXISTING_TREE = {
+    "receiver": "grafana-default-email",
+    "group_by": ["grafana_folder", "alertname"],
+    "routes": [
+        {"receiver": "someone-else", "object_matchers": [["team", "=", "fictional"]]},
+        {"receiver": "stale", "object_matchers": [["akkiabot_rule", "=~", "old"]]},
+    ],
+}
+
+
+def test_policy_merge_keeps_root_and_foreign_routes() -> None:
+    config = grafana_sync.load_notifications()
+    merged = grafana_sync.merge_policy_tree(EXISTING_TREE, config["routes"])
+    assert merged["receiver"] == "grafana-default-email"
+    assert merged["group_by"] == ["grafana_folder", "alertname"]
+    dispatch, email, foreign = merged["routes"]
+    assert dispatch["receiver"] == "akkiabot-dispatch"
+    assert dispatch["continue"] is True
+    assert dispatch["group_by"] == ["..."]
+    # The rules that emailed through the root still email, dispatch-only ones do not.
+    assert email["receiver"] == "grafana-default-email"
+    assert ["dispatch_only", "!=", "true"] in email["object_matchers"]
+    assert "continue" not in email
+    assert foreign == EXISTING_TREE["routes"][0]
+    # Idempotent: a second merge replaces our routes instead of stacking them.
+    assert grafana_sync.merge_policy_tree(merged, config["routes"]) == merged
+    assert "$" not in (OBSERVABILITY / "alerting" / "notifications.yaml").read_text(
+        encoding="utf-8"
+    )
+
+
+class NotifyGrafana(FakeGrafana):
+    def __init__(self, *, contact_exists: bool) -> None:
+        super().__init__()
+        self.contact_exists = contact_exists
+        self.headers: list[httpx.Headers] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.headers.append(request.headers)
+        match request.method, request.url.path:
+            case "GET", "/api/v1/provisioning/contact-points":
+                self.requests.append(("GET", request.url.path, None))
+                points = [{"uid": "", "name": "email receiver", "type": "email"}]
+                if self.contact_exists:
+                    points.append({"uid": "akkiabot-dispatch", "name": "akkiabot-dispatch"})
+                return httpx.Response(200, json=points)
+            case "GET", "/api/v1/provisioning/policies":
+                self.requests.append(("GET", request.url.path, None))
+                return httpx.Response(200, json=EXISTING_TREE)
+        return super().__call__(request)
+
+
+@pytest.mark.usefixtures("grafana_env")
+@pytest.mark.parametrize("exists", [False, True])
+def test_notifications_writes_contact_point_and_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], exists: bool
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "https://relay.example.invalid/")
+    # mock: fictional HMAC secret, not a real credential
+    mock_secret = "mock-hmac-secret-for-tests"
+    monkeypatch.setenv("GRAFANA_DISPATCH_HMAC_SECRET", mock_secret)
+    fake = NotifyGrafana(contact_exists=exists)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 0
+    calls = [(m, p) for m, p, _ in fake.requests]
+    write = (
+        ("PUT", "/api/v1/provisioning/contact-points/akkiabot-dispatch")
+        if exists
+        else ("POST", "/api/v1/provisioning/contact-points")
+    )
+    assert calls == [
+        ("GET", "/api/v1/provisioning/contact-points"),
+        write,
+        ("GET", "/api/v1/provisioning/policies"),
+        ("PUT", "/api/v1/provisioning/policies"),
+    ]
+    contact = fake.requests[1][2]
+    assert contact["type"] == "webhook"
+    assert contact["settings"]["url"] == "https://relay.example.invalid/"
+    assert contact["settings"]["hmacConfig"] == {
+        "header": "X-Grafana-Alerting-Signature",
+        "timestampHeader": "X-Grafana-Alerting-Timestamp",
+        "secret": mock_secret,
+    }
+    assert fake.headers[-1]["X-Disable-Provenance"] == "true"
+    assert fake.requests[3][2]["routes"][0]["receiver"] == "akkiabot-dispatch"
+    out = capsys.readouterr().out
+    assert mock_secret not in out
+    assert "relay.example" not in out
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_notifications_requires_relay_settings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRAFANA_DISPATCH_WEBHOOK_URL", "http://insecure.example.invalid/")
+    fake = NotifyGrafana(contact_exists=False)
+    assert grafana_sync.main(["notifications"], transport=httpx.MockTransport(fake)) == 1
+    assert "https" in capsys.readouterr().err
+    assert fake.requests == []
+
+
+@pytest.mark.usefixtures("grafana_env")
+def test_drill_start_and_stop(capsys: pytest.CaptureFixture[str]) -> None:
+    fake = FakeGrafana(folder_exists=True)
+    argv = ["drill", "start", "--rule", "akkiabot-drill-alert"]
+    assert grafana_sync.main(argv, transport=httpx.MockTransport(fake)) == 0
+    (put,) = [b for m, p, b in fake.requests if m == "PUT"]
+    assert put["title"] == "akkiabot-drill"
+    (rule,) = put["rules"]
+    assert rule["labels"] == {
+        "severity": "warning",
+        "service": "akkiabot",
+        "env": "staging",
+        "drill": "true",
+        "akkiabot_rule": "akkiabot-drill-alert",
+    }
+    assert {q["datasourceUid"] for q in rule["data"]} == {"grafanacloud-prom", "__expr__"}
+    assert grafana_sync.main(["drill", "stop"], transport=httpx.MockTransport(fake)) == 0
+    assert fake.requests[-1][:2] == (
+        "DELETE",
+        "/api/v1/provisioning/folder/akkiabot/rule-groups/akkiabot-drill",
+    )
+    assert grafana_sync.main(["drill", "start", "--rule", "nope"]) == 1
+    drill = yaml.safe_load((OBSERVABILITY / "alerting" / "drill.yaml").read_text(encoding="utf-8"))
+    for item in drill["rules"]:
+        assert item["labels"]["env"] == "staging"

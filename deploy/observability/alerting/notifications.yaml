@@ -1,0 +1,41 @@
+# Alert notifications to the Multica dispatcher (AKKIA-28), applied by
+# `scripts/grafana_sync.py notifications` (see docs/grafana-alerting.md).
+#
+# - The contact point's URL (the relay) and HMAC secret are not here: they
+#   come from the environment (1Password item grafana-webhook).
+# - Routes are merged into the existing notification policy tree as the first
+#   children of the root; every other route and the root itself (the default
+#   email receiver) are kept as they are. Routes that match on `akkiabot_rule`
+#   are owned by this file and replaced on every run.
+# - Alertmanager semantics: once a child route matches, the parent's receiver
+#   is no longer used. So the akkiabot rules that used to email through the
+#   root get an explicit email route after the dispatch route (`continue`),
+#   with the root's own receiver and grouping. Dispatch-only rules (watch
+#   rules, heartbeat, drills) skip email.
+# Avoid dollar signs: kept consistent with the provisioning files.
+contact_point:
+  uid: akkiabot-dispatch
+  name: akkiabot-dispatch
+  type: webhook
+  disableResolveMessage: false
+  settings:
+    httpMethod: POST
+    maxAlerts: "20"
+    hmacConfig:
+      header: X-Grafana-Alerting-Signature
+      timestampHeader: X-Grafana-Alerting-Timestamp
+routes:
+  - receiver: akkiabot-dispatch
+    object_matchers: [[akkiabot_rule, "=~", "akkiabot-.+"]]
+    # One notification per alert instance: each is its own Multica event.
+    group_by: ["..."]
+    group_wait: 30s
+    group_interval: 5m
+    # Repeats of one firing episode share the relay's Idempotency-Key, so
+    # they never start a second run; a long interval just saves requests.
+    repeat_interval: 24h
+    continue: true
+  - receiver: __ROOT_RECEIVER__
+    object_matchers:
+      - [akkiabot_rule, "=~", "akkiabot-.+"]
+      - [dispatch_only, "!=", "true"]

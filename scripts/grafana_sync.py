@@ -6,7 +6,12 @@ makes a Grafana Cloud stack match it:
 * ``discover`` — print the stack's Prometheus / Loki data sources and the
   push endpoints Alloy needs (URLs and instance ids, no secrets);
 * ``sync`` — create the ``AkkiaBot`` folder, upload every dashboard
-  (overwriting) and replace the ``akkiabot`` alert rule group.
+  (overwriting) and replace the ``akkiabot`` alert rule group;
+* ``notifications`` — create or update the webhook contact point of the alert
+  dispatch relay and merge its routes into the notification policy tree
+  (``alerting/notifications.yaml``, docs/grafana-alerting.md);
+* ``drill start|stop`` — upload or remove the drill rule group
+  (``alerting/drill.yaml``) used to exercise the dispatch chain on staging.
 
 Credentials come from the environment, never from arguments::
 
@@ -19,6 +24,10 @@ Typical use (1Password item ``staging-grafana``)::
     op run --env-file deploy/observability/grafana-sync.env.tpl -- just grafana-sync sync
 
 Local grafana/otel-lgtm needs no token: ``GRAFANA_URL=http://127.0.0.1:3000``.
+
+``notifications`` also needs the relay endpoint and its HMAC secret
+(``GRAFANA_DISPATCH_WEBHOOK_URL``, ``GRAFANA_DISPATCH_HMAC_SECRET``, 1Password
+item ``grafana-webhook``, see ``grafana-notify.env.tpl``).
 """
 
 from __future__ import annotations
@@ -42,13 +51,20 @@ OBSERVABILITY = ROOT / "deploy" / "observability"
 DASHBOARDS = OBSERVABILITY / "dashboards"
 ALERT_RULES = OBSERVABILITY / "alerting" / "akkiabot.yaml"
 ENV_MISSING = OBSERVABILITY / "alerting" / "env-missing.yaml"
+NOTIFICATIONS = OBSERVABILITY / "alerting" / "notifications.yaml"
+DRILL = OBSERVABILITY / "alerting" / "drill.yaml"
+ROOT_RECEIVER_PLACEHOLDER = "__ROOT_RECEIVER__"
+#: Every rule carries its uid as a label: notifications drop internal labels
+#: (``__alert_rule_uid__``), and the dispatch routes and relay match on it.
+RULE_LABEL = "akkiabot_rule"
 ENV_PLACEHOLDER = "__ENV__"
 _ENV_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 FOLDER_UID = "akkiabot"
 FOLDER_TITLE = "AkkiaBot"
-#: Data source uid the rule file uses (the one grafana/otel-lgtm provisions).
+#: Data source uids the rule files use (the ones grafana/otel-lgtm provisions).
 LOCAL_PROMETHEUS_UID = "prometheus"
+LOCAL_LOKI_UID = "loki"
 
 _DURATION = re.compile(r"^(\d+)([smh])$")
 _SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -148,15 +164,22 @@ def pin_datasources(dashboard: dict[str, Any], uids: dict[str, DataSource]) -> d
     return pinned
 
 
-def rule_group_payload(group: dict[str, Any], prometheus_uid: str) -> dict[str, Any]:
+def rule_group_payload(
+    group: dict[str, Any], prometheus_uid: str, loki_uid: str | None = None
+) -> dict[str, Any]:
     """Convert a file-provisioning rule group into the provisioning API body."""
+    swap = {LOCAL_PROMETHEUS_UID: prometheus_uid}
+    if loki_uid:
+        swap[LOCAL_LOKI_UID] = loki_uid
     rules = []
     for rule in group["rules"]:
         data = []
         for query in rule["data"]:
             query = copy.deepcopy(query)
-            if query["datasourceUid"] == LOCAL_PROMETHEUS_UID:
-                query["datasourceUid"] = prometheus_uid
+            if query["datasourceUid"] in swap:
+                query["datasourceUid"] = swap[query["datasourceUid"]]
+            elif query["datasourceUid"] == LOCAL_LOKI_UID:
+                raise SyncError(f"规则 {rule['uid']} 使用 Loki，需要 Loki 数据源 uid")
             data.append(query)
         rules.append(
             {
@@ -167,7 +190,7 @@ def rule_group_payload(group: dict[str, Any], prometheus_uid: str) -> dict[str, 
                 "noDataState": rule["noDataState"],
                 "execErrState": rule["execErrState"],
                 "for": rule["for"],
-                "labels": rule.get("labels", {}),
+                "labels": {**rule.get("labels", {}), RULE_LABEL: rule["uid"]},
                 "annotations": rule.get("annotations", {}),
                 "folderUID": FOLDER_UID,
                 "ruleGroup": group["name"],
@@ -231,6 +254,110 @@ class Grafana:
             f"上传告警规则组 {payload['title']}",
         )
 
+    def delete_rule_group(self, name: str) -> bool:
+        response = self.client.delete(
+            f"/api/v1/provisioning/folder/{FOLDER_UID}/rule-groups/{name}"
+        )
+        if response.status_code == 404:
+            return False
+        self._check(response, f"删除告警规则组 {name}")
+        return True
+
+    def contact_points(self) -> list[dict[str, Any]]:
+        return self._check(
+            self.client.get("/api/v1/provisioning/contact-points"), "读取 contact point"
+        ).json()
+
+    def put_contact_point(self, contact_point: dict[str, Any], *, exists: bool) -> None:
+        if exists:
+            response = self.client.put(
+                f"/api/v1/provisioning/contact-points/{contact_point['uid']}", json=contact_point
+            )
+        else:
+            response = self.client.post("/api/v1/provisioning/contact-points", json=contact_point)
+        # Grafana echoes no secure settings in its errors; the body is safe to show.
+        self._check(response, f"写入 contact point {contact_point['uid']}")
+
+    def policies(self) -> dict[str, Any]:
+        return self._check(
+            self.client.get("/api/v1/provisioning/policies"), "读取 notification policy"
+        ).json()
+
+    def put_policies(self, tree: dict[str, Any]) -> None:
+        # Without provenance the tree stays editable in the Grafana UI (the
+        # owner's email routing); the next run re-applies only our routes.
+        self._check(
+            self.client.put(
+                "/api/v1/provisioning/policies",
+                json=tree,
+                headers={"X-Disable-Provenance": "true"},
+            ),
+            "写入 notification policy",
+        )
+
+
+def load_notifications(path: Path = NOTIFICATIONS) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _owned_route(route: dict[str, Any]) -> bool:
+    """Routes this script manages: they match on the rule-uid label."""
+    return any(m and m[0] == RULE_LABEL for m in route.get("object_matchers") or [])
+
+
+def merge_policy_tree(tree: dict[str, Any], routes: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Put our routes first under the root, keep every other route and the root."""
+    merged = copy.deepcopy(tree)
+    root_receiver = merged.get("receiver")
+    if not root_receiver:
+        raise SyncError("notification policy 没有根 receiver")
+    ours = json.loads(
+        json.dumps(list(routes)).replace(
+            f'"{ROOT_RECEIVER_PLACEHOLDER}"', json.dumps(root_receiver)
+        )
+    )
+    others = [r for r in merged.get("routes") or [] if not _owned_route(r)]
+    merged["routes"] = [*ours, *others]
+    return merged
+
+
+def notifications(grafana: Grafana, *, url: str, secret: str) -> list[str]:
+    if not url.startswith("https://"):
+        raise SyncError("GRAFANA_DISPATCH_WEBHOOK_URL 必须是 https 地址")
+    if not secret:
+        raise SyncError("缺少环境变量 GRAFANA_DISPATCH_HMAC_SECRET")
+    config = load_notifications()
+    contact_point = copy.deepcopy(config["contact_point"])
+    contact_point["settings"]["url"] = url
+    contact_point["settings"]["hmacConfig"]["secret"] = secret
+    existing = {c.get("uid") for c in grafana.contact_points()}
+    grafana.put_contact_point(contact_point, exists=contact_point["uid"] in existing)
+    tree = merge_policy_tree(grafana.policies(), config["routes"])
+    grafana.put_policies(tree)
+    kept = len(tree["routes"]) - len(config["routes"])
+    return [
+        f"contact point {contact_point['uid']}: {'updated' if contact_point['uid'] in existing else 'created'}",
+        f"notification policy: {len(config['routes'])} dispatch routes first, "
+        f"{kept} other routes and root receiver {tree['receiver']} kept",
+    ]
+
+
+def load_drill(path: Path = DRILL) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def drill_group(drill: dict[str, Any], only: Sequence[str] | None = None) -> dict[str, Any]:
+    known = [r["uid"] for r in drill["rules"]]
+    unknown = sorted(set(only or []) - set(known))
+    if unknown:
+        raise SyncError(f"未知的演练规则：{unknown}（可选：{known}）")
+    rules = []
+    for rule in drill["rules"]:
+        if only and rule["uid"] not in only:
+            continue
+        rules.append({**copy.deepcopy(drill["template"]), **rule})
+    return {"name": drill["name"], "interval": drill["interval"], "rules": rules}
+
 
 def discover(grafana: Grafana) -> dict[str, dict[str, str]]:
     sources = grafana.datasources()
@@ -265,7 +392,7 @@ def sync(
     expected = list(envs) if envs else list(template["environments"])
     group = load_rule_group()
     group["rules"] = [*group["rules"], *env_missing_rules(template, expected)]
-    payload = rule_group_payload(group, picked["prometheus"].uid)
+    payload = rule_group_payload(group, picked["prometheus"].uid, picked["loki"].uid)
     grafana.put_rule_group(payload)
     report.append(
         f"alert rule group {payload['title']}: {len(payload['rules'])} rules "
@@ -304,12 +431,37 @@ def main(argv: Sequence[str] | None = None, transport: httpx.BaseTransport | Non
         dest="envs",
         help="必须持续上报的环境（可重复），默认取 alerting/env-missing.yaml 的 environments",
     )
+    sub.add_parser("notifications", help="写入告警分派 webhook contact point，并合并通知策略路由")
+    drill_cmd = sub.add_parser("drill", help="上传或删除告警分派演练规则组（只用于 staging 演练）")
+    drill_cmd.add_argument("state", choices=["start", "stop"])
+    drill_cmd.add_argument(
+        "--rule", action="append", dest="rules", help="只上传指定 uid 的演练规则（可重复）"
+    )
     args = parser.parse_args(argv)
     try:
         with client_from_env(transport) as client:
             grafana = Grafana(client)
             if args.command == "discover":
                 print(json.dumps(discover(grafana), ensure_ascii=False, indent=2))
+            elif args.command == "notifications":
+                for line in notifications(
+                    grafana,
+                    url=os.environ.get("GRAFANA_DISPATCH_WEBHOOK_URL", "").strip(),
+                    secret=os.environ.get("GRAFANA_DISPATCH_HMAC_SECRET", "").strip(),
+                ):
+                    print(line)
+            elif args.command == "drill":
+                group = drill_group(load_drill(), args.rules)
+                if args.state == "stop":
+                    removed = grafana.delete_rule_group(group["name"])
+                    print(f"drill group {group['name']}: {'removed' if removed else 'not present'}")
+                else:
+                    grafana.ensure_folder()
+                    prometheus = _override(grafana.datasources(), "prometheus", None)
+                    payload = rule_group_payload(group, prometheus.uid)
+                    grafana.put_rule_group(payload)
+                    uids = ", ".join(r["uid"] for r in payload["rules"])
+                    print(f"drill group {group['name']}: {uids}")
             else:
                 for line in sync(
                     grafana,

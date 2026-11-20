@@ -1,0 +1,57 @@
+# Drill rules for the alert dispatch chain (AKKIA-28), uploaded as their own
+# group `akkiabot-drill` by `scripts/grafana_sync.py drill start` and removed by
+# `drill stop`; never part of the `akkiabot` group. Only staging labels, and
+# the dispatcher turns `drill=true` alerts into backlog `[测试]` tasks. The
+# watch drills use fictional handler / command values that no real series
+# carries. Avoid dollar signs (Grafana provisioning convention).
+name: akkiabot-drill
+interval: 1m
+rules:
+  - uid: akkiabot-drill-alert
+    title: 演练：告警分派（一般告警）
+    labels: { severity: warning, service: akkiabot, env: staging, drill: "true" }
+  - uid: akkiabot-drill-regression
+    title: 演练：修复后观察（复发信号）
+    labels:
+      {
+        severity: warning,
+        service: akkiabot,
+        env: staging,
+        dispatch_only: "true",
+        watch_kind: regression,
+        handler: "drill:watch",
+      }
+  - uid: akkiabot-drill-exercised
+    title: 演练：修复后观察（自然事件）
+    labels:
+      {
+        severity: info,
+        service: akkiabot,
+        env: staging,
+        dispatch_only: "true",
+        watch_kind: exercised,
+        command: drill_watch,
+      }
+# Shared by every drill rule: always firing while the rule exists.
+template:
+  condition: C
+  data:
+    - refId: A
+      relativeTimeRange: { from: 600, to: 0 }
+      datasourceUid: prometheus
+      model: { refId: A, expr: vector(1), instant: true }
+    - refId: B
+      datasourceUid: __expr__
+      model: { refId: B, type: reduce, expression: A, reducer: last }
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions: [{ evaluator: { type: gt, params: [0] } }]
+  noDataState: OK
+  execErrState: OK
+  for: 0s
+  annotations:
+    summary: 告警分派演练规则（虚构数据），演练结束后由 grafana_sync drill stop 删除

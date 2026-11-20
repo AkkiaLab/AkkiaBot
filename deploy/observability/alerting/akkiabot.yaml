@@ -146,3 +146,38 @@ groups:
           description: >-
             akkiabot_antispam_llm_errors_total 持续增长（timeout / api_error / parse_error）。
             失败的分类按放行处理，垃圾消息可能漏判。检查 LLM 服务状态与 Langfuse 中的调用记录。
+
+      # Heartbeat of the alert dispatch chain (Grafana → relay → Multica,
+      # docs/grafana-alerting.md). Fires once a day between 01:00 and 02:00 UTC
+      # without depending on any ingested data; the dispatcher records it and its
+      # daily self-check opens a task when no heartbeat arrived for 26 hours.
+      # dispatch_only: no email, and the relay drops its resolved notice.
+      - uid: akkiabot-dispatch-heartbeat
+        title: 告警分派链路心跳
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: vector(1) and on() (hour() == 1), instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+        # Outside the hour the query is empty: NoData means "no heartbeat now".
+        # A query error only delays the heartbeat, which the self-check reports.
+        noDataState: OK
+        execErrState: OK
+        for: 0s
+        labels: { severity: info, service: akkiabot, env: production, dispatch_only: "true" }
+        annotations:
+          summary: 告警分派链路每日心跳（不需要处理）
+          description: >-
+            每天 01:00–02:00 UTC 触发一次，经中继送到 Multica 的“Grafana 告警分派”autopilot，
+            只用于链路自检，不发邮件。
