@@ -26,7 +26,7 @@ flowchart LR
 - 常规版本 `vX.Y.0` 从**最新 master** 创建；小版本 `vX.Y.Z`（Z>0）从**上一个正式 tag** `vX.Y.(Z-1)` 创建（v1.2.0 → v1.2.1 → v1.2.2），上一个正式 tag 不存在时拒绝创建。
 - 版本号严格校验（`v` 前缀、无前导零），已存在的版本（分支或 tag）不能复用，常规版本不能低于已存在的常规版本。版本按语义排序（v1.10.0 > v1.9.0）。
 - 创建：`just release-app create vX.Y.Z`；`just release-app create next` 创建当前常规版本之后的下一个常规版本。重复执行是幂等的。缺失的目标版本由 DevOps 创建。
-- 只有智能体共用 App `akkialab-agent`（规则集绕过者，`docs/reviewer-github-app.md`）能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app`（该 App 的发布私钥）换取**发布用途**的安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
+- 只有智能体共用 App `akkialab-agent`（规则集绕过者，见 §7）能创建版本分支（`releases` 规则集的必需检查在创建时也生效，其他账号推送新分支会被拒绝），所以 `create` 要以 App 身份运行：`just release-app …` 经 `scripts/release/as-app.sh` 用运行机 1Password 中的 `AkkiaBot/release-app`（该 App 的发布私钥）换取**发布用途**的安装令牌，令牌只放在子进程环境中。其他只读命令（`status`、`baseline`、`check-rc` 等）照常用 `just release …`。
 
 ## 2. 日常开发
 
@@ -177,7 +177,7 @@ flowchart LR
 
 | 项 | 需要的配置 | 说明 |
 | --- | --- | --- |
-| 智能体共用 GitHub App `akkialab-agent`（AKKIA-25 起承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体），Reviewer 的 token 另按用途缩权 | 权限变更需负责人确认。风险与工具侧补偿见 `docs/reviewer-github-app.md`「风险与补偿」 |
+| 智能体共用 GitHub App `akkialab-agent`（AKKIA-25 起承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（以 `scripts/release/app_permissions.py` 为准，`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体与之一致，由 `tests/release/test_app_permissions.py` 校验）。该 App 的 bot 用户 ID 为 356702926，工具按 ID 识别，不按登录名；Reviewer 的 token 另按用途缩权 | 权限变更需负责人确认。Reviewer 侧工具 `reviewer-gh`、App 绕过规则集的风险与工具侧补偿，见工作区私有工具仓库的 `docs/reviewer-github-app.md`（AKKIA-34 迁出）。改 release 权限时私有仓库要同步修改，它的 CI 会对照本仓库 master 校验 |
 | 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY`；运行机 1Password `AkkiaBot/release-app` | 共用 App 的 App ID 与**发布专用私钥**（与 Reviewer 私钥分开，经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功。轮换：App 设置页新建私钥 → 写入 1Password 与 secret（均经 stdin）→ 手动运行一次 `release-cascade.yml` 确认 → 删除旧私钥 |
 | 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：`akkialab-agent`（App ID 5760780） | App 绕过用于上合 merge 与冲突解决的快进落地 |
 | master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入 `akkialab-agent` | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
