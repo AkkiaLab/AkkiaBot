@@ -14,8 +14,7 @@
 //   4. Sends `Idempotency-Key: sentry-<Request-ID>` so the receiver can store a
 //      redelivery only once.
 //
-// Secrets (Worker secrets, never logged): SENTRY_CLIENT_SECRET, FORWARD_WEBHOOK_URL
-// (an older secret name is still read as a fallback, see forwardUrl).
+// Secrets (Worker secrets, never logged): SENTRY_CLIENT_SECRET, FORWARD_WEBHOOK_URL.
 // Vars: ALLOWED_PROJECT_SLUGS (comma separated), SENTRY_INSTALLATION_UUID
 // (optional until the integration exists), MAX_SKEW_SECONDS (default 300).
 //
@@ -109,11 +108,8 @@ export function buildForward(resource, payload, env, requestId) {
   };
 }
 
-// Fallback name of the target URL secret until it is renamed in every deployment.
-const LEGACY_FORWARD_URL_KEY = "MULTICA_WEBHOOK_URL";
-
 function forwardUrl(env) {
-  return env.FORWARD_WEBHOOK_URL || env[LEGACY_FORWARD_URL_KEY];
+  return env.FORWARD_WEBHOOK_URL;
 }
 
 async function forward(env, envelope, idempotencyKey, fetchImpl) {

@@ -97,8 +97,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           SHA: ${{ needs.verify.outputs.sha }}
-          # Optional; the second secret name is a fallback until the rename is done.
-          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL || secrets.MULTICA_RELEASE_WEBHOOK_URL }}
+          # Optional; unset means the notification is skipped.
+          RELEASE_NOTIFY_WEBHOOK_URL: ${{ secrets.RELEASE_NOTIFY_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           echo "- 运行机执行：\`just release-deploy production $TAG\`" >> "$GITHUB_STEP_SUMMARY"
