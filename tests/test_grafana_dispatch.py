@@ -579,3 +579,21 @@ def test_watch_rule_template_matches_the_relay_and_dispatcher() -> None:
         assert rule["labels"]["dispatch_only"] == "true"
         assert rule["noDataState"] == "OK"
         assert "$" not in json.dumps(rule)
+
+
+def test_cli_metadata_filter_is_passed_raw(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`issue list --metadata` parses its value as CSV: JSON quotes would be rejected."""
+    seen: list[list[str]] = []
+
+    class Proc:
+        returncode = 0
+        stdout = '{"issues": [], "has_more": false}'
+
+    def fake_run(argv: list[str], **_: Any) -> Proc:
+        seen.append(argv)
+        return Proc()
+
+    monkeypatch.setattr(gd.subprocess, "run", fake_run)
+    cli = gd.MulticaCli("multica", PROJECT, SQUAD, tmp_path)
+    assert cli.find_by_metadata(gd.W_STATUS, "active") == []
+    assert "grafana_watch=active" in seen[0]

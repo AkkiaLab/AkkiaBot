@@ -253,7 +253,7 @@ class MulticaCli:
         offset = 0
         while True:
             page = self._run(
-                "issue", "list", "--metadata", f"{key}={json.dumps(value)}",
+                "issue", "list", "--metadata", f"{key}={value}",
                 "--project", self.project_id, "--fields", TASK_FIELDS,
                 "--limit", "100", "--offset", str(offset), "--output", "json",
             )  # fmt: skip
