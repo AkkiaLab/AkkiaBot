@@ -56,12 +56,17 @@
 
 1. `reviewer-gh merge <PR 号>` 是唯一的合并入口。它签发一个 merge 用途的 token，逐项核对，任一项不满足就拒绝合并并以退出码 2 结束：
    - PR 是打开状态，不是草稿；
-   - 目标分支的必需检查（`GET /rules/branches/<base>` 中 `required_status_checks` 的全部条目，按规定的 App 匹配）在**当前 head** 上都已通过：同名检查取最新一次运行，结论为 success / neutral / skipped，或同名 commit status 为 success；目标分支没有配置任何必需检查时按失败处理；
+   - 目标分支的必需检查（`GET /rules/branches/<base>` 中 `required_status_checks` 的全部条目）在**当前 head** 上都已通过，判定比 GitHub 更保守：
+     - 同名的每一项结果都必须通过：每个 App 的最新一次 check run（结论为 success / neutral / skipped）**和**同名 commit status（success）同时检查，一个通过不能掩盖另一个失败；
+     - 规则指定了 App（`integration_id`）时，至少要有该 App 的一次通过结果；
+     - 目标分支没有配置任何必需检查时按失败处理；
+   - GitHub 的测试合并提交（`merge_commit_sha`）上如果也有同名结果，同样必须全部通过；GitHub 尚未算出测试合并提交（`mergeable` 未知）时拒绝并提示稍后重试，有冲突时拒绝；
    - 没有未解决的评审线程（逐页读全，读不全拒绝）；
    - 本 App（按 bot 用户 ID 356702926 识别，不按登录名）的最新评审是对当前 head 的 Approve；
    - 任何人的最新评审都不是 Request changes。
 
-   通过后调用合并接口时带上 `sha=<当前 head>`：门禁核对之后 PR 有新推送，GitHub 会拒绝合并。最后吊销 merge token（包括失败时）。
+   通过后**只以 squash 方式**合并（没有选择合并方式的参数：规则集只允许 squash，而 App 会绕过规则集，不能依赖 GitHub 代为拦截），调用时带上 `sha=<当前 head>`：门禁核对之后 PR 有新推送，GitHub 会拒绝合并。最后吊销 merge token（包括失败时）。
+   - `--delete-branch` 只在合并成功后执行，只删除同仓库、且不受删除保护的 head 分支：head 分支命中带 `deletion` 规则的规则集或经典分支保护时跳过并说明（App 有绕过权限，直接删 ref 会绕过保护）。删除出错不影响合并结果：输出“已合并”后另行报告“清理未完成”，退出码为 3。
 2. `reviewer-gh gh …` 使用 review 用途的 token，没有 Contents 写权限：`gh pr merge`、`gh api …/merge`、GraphQL `mergePullRequest` / 自动合并、推送和改文件都会被 GitHub 拒绝。脚本对这类调用提前报错并提示改用 `reviewer-gh merge`；这个提前报错只是提示，真正的边界是 token 权限。
 3. 发布流水线的冲突 PR 落地另有门禁（`docs/release.md` §3.3），同样按 bot 用户 ID 识别 Reviewer 的批准。
 
@@ -148,10 +153,10 @@ $R gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadI
 $R gh api graphql -f query='mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id=<thread-id>
 
 # 合并：先核对必需检查、线程与本 App 的批准，再固定 head 合并
-$R merge <n> --delete-branch                 # 默认 squash；-R 指定其他授权仓库
+$R merge <n> --delete-branch                 # 只做 squash；-R 指定其他授权仓库
 ```
 
-`merge` 拒绝时会列出全部不满足的项，处理后重新执行即可。上合冲突 PR（`release-forward` 标签）**不要**用 `merge`：它们由发布流水线快进落地（`docs/release.md` §3.3）。
+`merge` 退出码：0 已合并（含按保护规则跳过删除）；2 门禁未通过或合并失败，未合并，会列出全部不满足的项，处理后重新执行即可；3 已合并，但 head 分支清理失败，按提示手动处理分支即可，不要重新合并。上合冲突 PR（`release-forward` 标签）**不要**用 `merge`：它们由发布流水线快进落地（`docs/release.md` §3.3）。
 
 Reviewer 以 App 身份提交的评审不会触发 PR 评审通知（`docs/review-notify.md`），实现者仍由 Reviewer 在 issue 上 @ 交接；不要用 `AkkiaS7` 身份发带正文的评审，否则会被当作外部意见再提醒一次。
 

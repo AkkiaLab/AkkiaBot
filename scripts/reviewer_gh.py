@@ -148,9 +148,12 @@ def _union(*sets: Mapping[str, str]) -> dict[str, str]:
 
 #: Everything the installation may hold: the union of all purposes. More is a problem.
 ALLOWED_PERMISSIONS: Mapping[str, str] = _union(*PURPOSES.values())
-#: Merge methods ``reviewer-gh merge`` accepts (the rulesets only allow squash for PRs;
-#: the API refuses others anyway, this just fails earlier).
-MERGE_METHODS = ("squash", "merge", "rebase")
+#: The only merge method of ``reviewer-gh merge``: the rulesets allow squash only and
+#: the App bypasses them, so the tool must not rely on GitHub to enforce it.
+MERGE_METHOD = "squash"
+#: Rule types that forbid deleting a branch; ``--delete-branch`` skips such branches
+#: because the App would otherwise bypass the protection.
+DELETE_PROTECTING_RULES = frozenset({"deletion"})
 #: Conflict-resolution PRs must land by fast-forward (docs/release.md §3.3), never squash.
 FORWARD_LABEL = "release-forward"
 #: Check-run conclusions GitHub itself treats as passing for required checks.
@@ -520,6 +523,60 @@ def _unresolved_threads(http: Http, repo: str, number: int, token: str) -> int:
     raise ReviewerGhError(f"PR #{number} 的评审线程超过 {MAX_PAGES} 页，未读全，拒绝合并")
 
 
+def _is_status(result: Mapping[str, Any]) -> bool:
+    """Commit statuses carry ``state``; check runs carry ``status`` / ``conclusion``."""
+    return "state" in result and "conclusion" not in result
+
+
+def _passing(result: Mapping[str, Any]) -> bool:
+    if _is_status(result):
+        return result.get("state") == "success"
+    return result.get("status") == "completed" and result.get("conclusion") in PASSING_CONCLUSIONS
+
+
+def _describe(result: Mapping[str, Any]) -> str:
+    if _is_status(result):
+        return f"status/{result.get('state')}"
+    return f"{result.get('status')}/{result.get('conclusion')}"
+
+
+def check_problems(
+    required: list[Mapping[str, Any]],
+    check_runs: list[Mapping[str, Any]],
+    statuses: list[Mapping[str, Any]],
+    *,
+    require_present: bool,
+) -> list[str]:
+    """Conservative required-check verdict for one commit (empty = all pass).
+
+    Every result carrying a required context's name must pass: the newest check
+    run per (name, App) *and* the commit status of that name, so a green check
+    run never hides a red status or vice versa. With ``require_present`` at
+    least one result from the required source (the rule's ``integration_id``
+    App, or any source when unset) must exist; without it (test merge commit)
+    missing results are fine but any present failing one is not.
+    """
+    newest: dict[tuple[str, int | None], Mapping[str, Any]] = {}
+    for run in check_runs:
+        key = (run.get("name", ""), (run.get("app") or {}).get("id"))
+        if key not in newest or run.get("id", 0) > newest[key].get("id", 0):
+            newest[key] = run
+    problems: list[str] = []
+    for entry in required:
+        context = entry.get("context", "")
+        app_id = entry.get("integration_id")
+        runs = [(app, run) for (name, app), run in newest.items() if name == context]
+        status = [st for st in statuses if st.get("context") == context]
+        results = [run for _, run in runs] + status
+        sourced = [run for app, run in runs if app_id is None or app == app_id]
+        if app_id is None:
+            sourced += status
+        if any(not _passing(r) for r in results) or (require_present and not sourced):
+            seen = ", ".join(_describe(r) for r in results) or "没有结果"
+            problems.append(f"必需检查 {context} 未通过（{seen}）")
+    return problems
+
+
 def merge_problems(
     *,
     pr: Mapping[str, Any],
@@ -528,12 +585,16 @@ def merge_problems(
     required: list[Mapping[str, Any]],
     check_runs: list[Mapping[str, Any]],
     statuses: list[Mapping[str, Any]],
+    merge_check_runs: list[Mapping[str, Any]] | None = None,
+    merge_statuses: list[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """Problems that forbid merging ``pr`` as the App (empty = may merge).
 
     Pure, so it is tested without the network. ``reviews`` are REST reviews
     (oldest first), ``required`` the ``required_status_checks`` entries of the
-    base branch rules, ``check_runs`` / ``statuses`` those of the head commit.
+    base branch rules, ``check_runs`` / ``statuses`` those of the head commit and
+    ``merge_check_runs`` / ``merge_statuses`` those of the test merge commit
+    (``merge_commit_sha``), which GitHub may also gate on.
     """
     problems: list[str] = []
     head = pr["head"]["sha"]
@@ -571,30 +632,48 @@ def merge_problems(
         problems.append(
             f"目标分支 {pr['base']['ref']} 没有配置必需检查，按失败处理，拒绝以 App 身份合并"
         )
-    newest: dict[tuple[str, int | None], Mapping[str, Any]] = {}
-    for run in check_runs:
-        key = (run.get("name", ""), (run.get("app") or {}).get("id"))
-        if key not in newest or run.get("id", 0) > newest[key].get("id", 0):
-            newest[key] = run
-    state_of = {s.get("context"): s.get("state") for s in statuses}  # combined status: latest
-    for entry in required:
-        context = entry.get("context", "")
-        app_id = entry.get("integration_id")
-        runs = [
-            run
-            for (name, run_app), run in newest.items()
-            if name == context and (app_id is None or run_app == app_id)
+    problems += check_problems(required, check_runs, statuses, require_present=True)
+    merge_sha = pr.get("merge_commit_sha")
+    if pr.get("mergeable") is False:
+        problems.append("PR 与目标分支有冲突（mergeable=false）")
+    elif not merge_sha or pr.get("mergeable") is None:
+        problems.append("GitHub 尚未算出测试合并提交（mergeable 未知），请稍后重试")
+    else:
+        problems += [
+            f"测试合并提交 {merge_sha[:12]} 上{p}"
+            for p in check_problems(
+                required, merge_check_runs or [], merge_statuses or [], require_present=False
+            )
         ]
-        passed = any(
-            run.get("status") == "completed" and run.get("conclusion") in PASSING_CONCLUSIONS
-            for run in runs
-        ) or (app_id is None and state_of.get(context) == "success")
-        if not passed:
-            seen = [f"{r.get('status')}/{r.get('conclusion')}" for r in runs]
-            if context in state_of:
-                seen.append(f"status/{state_of[context]}")
-            problems.append(f"必需检查 {context} 未通过（{', '.join(seen) or '没有结果'}）")
     return problems
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    sha: str
+    #: What happened to the head branch; ``cleanup_failed`` only when deletion was
+    #: attempted and errored (the merge itself succeeded either way).
+    cleanup: str = ""
+    cleanup_failed: bool = False
+
+
+def _delete_head_branch(http: Http, repo: str, pr: Mapping[str, Any], token: str) -> MergeResult:
+    base_url = f"{API}/repos/{repo}"
+    head = pr["head"]
+    if (head.get("repo") or {}).get("full_name") != repo:
+        return MergeResult("", f"head 分支不在 {repo}，未删除")
+    ref = urllib.parse.quote(head["ref"], safe="/")
+    try:
+        rules = _paged(http, f"{base_url}/rules/branches/{ref}", token)
+        protecting = sorted({r.get("type") for r in rules} & DELETE_PROTECTING_RULES)
+        branch = http("GET", f"{base_url}/branches/{ref}", token, None) or {}
+        if protecting or branch.get("protected"):
+            why = f"规则 {', '.join(protecting)}" if protecting else "分支保护"
+            return MergeResult("", f"head 分支 {head['ref']} 受{why}保护，未删除")
+        http("DELETE", f"{base_url}/git/refs/heads/{ref}", token, None)
+    except ReviewerGhError as exc:
+        return MergeResult("", f"head 分支 {head['ref']} 删除失败：{exc}", cleanup_failed=True)
+    return MergeResult("", f"已删除 head 分支 {head['ref']}")
 
 
 def merge_pr(
@@ -603,17 +682,17 @@ def merge_pr(
     number: int,
     http: Http,
     *,
-    method: str = "squash",
     delete_branch: bool = False,
-) -> str:
-    """Merge PR ``number`` after the tool-side gate; return the merge commit SHA.
+) -> MergeResult:
+    """Squash-merge PR ``number`` after the tool-side gate.
 
     A dedicated ``merge`` token is minted for this call only and revoked at the
     end, whatever happens. The merge is pinned to the head SHA the gate saw
-    (``sha`` parameter), so a push in between makes GitHub refuse it.
+    (``sha`` parameter), so a push in between makes GitHub refuse it. Head
+    branch cleanup runs only after a successful merge, never deletes a branch
+    protected against deletion, and its failure does not turn the merge into
+    an error (``MergeResult.cleanup_failed``).
     """
-    if method not in MERGE_METHODS:
-        raise ReviewerGhError(f"不支持的合并方式 {method}")
     require_authorized(repo)
     record = mint_token(paths, repo, http, time.time(), purpose="merge")
     token = record["token"]
@@ -621,6 +700,7 @@ def merge_pr(
         base_url = f"{API}/repos/{repo}"
         pr = http("GET", f"{base_url}/pulls/{number}", token, None)
         head = pr["head"]["sha"]
+        merge_sha = pr.get("merge_commit_sha")
         rules = _paged(http, f"{base_url}/rules/branches/{pr['base']['ref']}", token)
         required = [
             check
@@ -628,15 +708,23 @@ def merge_pr(
             if rule.get("type") == "required_status_checks"
             for check in (rule.get("parameters") or {}).get("required_status_checks", [])
         ]
+
+        def results(sha: str) -> tuple[list[Any], list[Any]]:
+            runs = _paged(http, f"{base_url}/commits/{sha}/check-runs", token, "check_runs")
+            combined = http("GET", f"{base_url}/commits/{sha}/status", token, None) or {}
+            return runs, combined.get("statuses", [])
+
+        head_runs, head_statuses = results(head)
+        merge_runs, merge_statuses = results(merge_sha) if merge_sha else ([], [])
         problems = merge_problems(
             pr=pr,
             reviews=_paged(http, f"{base_url}/pulls/{number}/reviews", token),
             unresolved=_unresolved_threads(http, repo, number, token),
             required=required,
-            check_runs=_paged(http, f"{base_url}/commits/{head}/check-runs", token, "check_runs"),
-            statuses=(http("GET", f"{base_url}/commits/{head}/status", token, None) or {}).get(
-                "statuses", []
-            ),
+            check_runs=head_runs,
+            statuses=head_statuses,
+            merge_check_runs=merge_runs,
+            merge_statuses=merge_statuses,
         )
         if problems:
             raise ReviewerGhError(f"PR #{number} 不满足合并门禁，未合并：" + "；".join(problems))
@@ -644,17 +732,15 @@ def merge_pr(
             "PUT",
             f"{base_url}/pulls/{number}/merge",
             token,
-            {"merge_method": method, "sha": head},
+            {"merge_method": MERGE_METHOD, "sha": head},
         )
         if not (result or {}).get("merged"):
             raise ReviewerGhError(f"PR #{number} 合并未成功：{(result or {}).get('message', '')}")
-        if delete_branch:
-            if (pr["head"].get("repo") or {}).get("full_name") == repo:
-                ref = urllib.parse.quote(pr["head"]["ref"], safe="/")
-                http("DELETE", f"{base_url}/git/refs/heads/{ref}", token, None)
-            else:
-                print(f"reviewer-gh: head 分支不在 {repo}，未删除", file=sys.stderr)
-        return str(result.get("sha", ""))
+        sha = str(result.get("sha", ""))
+        if not delete_branch:
+            return MergeResult(sha)
+        cleanup = _delete_head_branch(http, repo, pr, token)
+        return MergeResult(sha, cleanup.cleanup, cleanup.cleanup_failed)
     finally:
         with contextlib.suppress(ReviewerGhError):
             http("DELETE", f"{API}/installation/token", token, None)
@@ -713,13 +799,18 @@ def main(argv: list[str] | None = None) -> int:
         "--require-release", action="store_true", help="同时要求安装权限足以签发发布用途的 token"
     )
     sub.add_parser("revoke", help="吊销缓存中的 token 并删除缓存")
-    merge = sub.add_parser("merge", help="核对必需检查、评审线程与批准后合并 PR（唯一的合并入口）")
+    merge = sub.add_parser(
+        "merge", help="核对必需检查、评审线程与批准后 squash 合并 PR（唯一的合并入口）"
+    )
     merge.add_argument("number", type=int)
     merge.add_argument(
         "-R", "--repo", help="目标仓库，默认 $AKKIABOT_REVIEWER_REPO 或 AkkiaLab/AkkiaBot"
     )
-    merge.add_argument("--method", choices=MERGE_METHODS, default="squash")
-    merge.add_argument("--delete-branch", action="store_true", help="合并后删除同仓库的 head 分支")
+    merge.add_argument(
+        "--delete-branch",
+        action="store_true",
+        help="合并后删除同仓库、未受删除保护的 head 分支（失败不影响合并，退出码 3）",
+    )
     gh = sub.add_parser("gh", help="以 App 身份执行 gh（review 用途 token，不能合并或推送）")
     gh.add_argument("gh_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -740,16 +831,16 @@ def main(argv: list[str] | None = None) -> int:
             print("已吊销缓存的 token" if revoke_cached(paths, urllib_http) else "没有缓存的 token")
             return 0
         if args.command == "merge":
-            sha = merge_pr(
-                paths,
-                args.repo or repo,
-                args.number,
-                urllib_http,
-                method=args.method,
-                delete_branch=args.delete_branch,
+            result = merge_pr(
+                paths, args.repo or repo, args.number, urllib_http, delete_branch=args.delete_branch
             )
-            print(f"已合并 PR #{args.number}（{sha[:12]}）")
-            return 0
+            print(f"已合并 PR #{args.number}（{result.sha[:12]}，squash）")
+            if result.cleanup:
+                print(
+                    f"{'清理未完成' if result.cleanup_failed else '清理'}：{result.cleanup}",
+                    file=sys.stderr if result.cleanup_failed else sys.stdout,
+                )
+            return 3 if result.cleanup_failed else 0
         gh_args = list(args.gh_args)
         if gh_args[:1] == ["--"]:
             gh_args = gh_args[1:]

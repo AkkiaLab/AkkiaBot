@@ -38,6 +38,7 @@ REVIEWER_ONLY_PERMISSIONS = {
     "statuses": "read",
 }
 HEAD_SHA = "a" * 40
+MERGE_SHA = "d" * 40  # the test merge commit GitHub computes for the PR
 MOCK_GH_TOKEN = "ghs_fake-token-value"  # mock: 人工构造的不可用测试值，不是凭据
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="需要 openssl")
@@ -433,6 +434,8 @@ class MergeScenario:
             "user": {"id": 68485070, "login": "AkkiaS7"},
             "head": {"sha": HEAD_SHA, "ref": "akkia-9-x", "repo": {"full_name": REPO}},
             "base": {"ref": "releases/v1.1.0"},
+            "mergeable": True,
+            "merge_commit_sha": MERGE_SHA,
         }
         self.reviews = [_review(BOT_USER_ID, "APPROVED", login="akkialab-agent[bot]")]
         self.threads = [True, True]
@@ -452,7 +455,15 @@ class MergeScenario:
             for i, n in enumerate(["ci-ok", "secret-scan", "release-guard"], start=1)
         ]
         self.statuses: list[dict[str, Any]] = []
+        # Results on the test merge commit: usually none (fine), but a red one blocks.
+        self.merge_check_runs: list[dict[str, Any]] = []
+        self.merge_statuses: list[dict[str, Any]] = []
+        # Rules on the head branch (deletion protection is honoured by --delete-branch).
+        self.head_rules: list[dict[str, Any]] = []
+        self.head_protected = False
+        self.delete_error: str | None = None
         self.merged: list[dict[str, Any]] = []
+        self.deleted: list[str] = []
 
     def install(self, gh: FakeGitHub) -> None:
         base = f"/repos/{REPO}"
@@ -470,6 +481,11 @@ class MergeScenario:
                     }
                 }
             }
+
+        def delete(body: dict[str, Any] | None) -> None:
+            if self.delete_error:
+                raise ReviewerGhError(self.delete_error)
+            self.deleted.append("akkia-9-x")
 
         def merge(body: dict[str, Any]) -> dict[str, Any]:
             self.merged.append(body)
@@ -489,8 +505,14 @@ class MergeScenario:
                 ],
                 ("GET", f"{base}/commits/{HEAD_SHA}/check-runs"): {"check_runs": self.check_runs},
                 ("GET", f"{base}/commits/{HEAD_SHA}/status"): {"statuses": self.statuses},
+                ("GET", f"{base}/commits/{MERGE_SHA}/check-runs"): {
+                    "check_runs": self.merge_check_runs
+                },
+                ("GET", f"{base}/commits/{MERGE_SHA}/status"): {"statuses": self.merge_statuses},
                 ("PUT", f"{base}/pulls/12/merge"): merge,
-                ("DELETE", f"{base}/git/refs/heads/akkia-9-x"): None,
+                ("GET", f"{base}/rules/branches/akkia-9-x"): self.head_rules,
+                ("GET", f"{base}/branches/akkia-9-x"): lambda _: {"protected": self.head_protected},
+                ("DELETE", f"{base}/git/refs/heads/akkia-9-x"): delete,
             }
         )
 
@@ -506,12 +528,13 @@ def _merge(paths: Paths, scenario: MergeScenario, **kwargs: Any) -> tuple[FakeGi
 
 def test_merge_passes_gate_pins_head_and_revokes_token(paths: Paths) -> None:
     scenario = MergeScenario()
-    gh, sha = _merge(paths, scenario, delete_branch=True)
-    assert sha == "b" * 40
+    gh, result = _merge(paths, scenario, delete_branch=True)
+    assert result.sha == "b" * 40
+    assert not result.cleanup_failed
+    assert scenario.deleted == ["akkia-9-x"]
     assert scenario.merged == [{"merge_method": "squash", "sha": HEAD_SHA}]
     mint = next(c for c in gh.calls if c[1].endswith("/access_tokens"))
     assert (mint[3] or {})["permissions"] == dict(PURPOSES["merge"])
-    assert ("DELETE", f"{API}/repos/{REPO}/git/refs/heads/akkia-9-x") in [c[:2] for c in gh.calls]
     # The merge token is never cached and is revoked at the end.
     assert not paths.token_cache.exists()
     assert gh.revoked == [f"{MOCK_GH_TOKEN}-1"]
@@ -534,6 +557,30 @@ def _wrong_app(s: MergeScenario) -> None:
     s.check_runs[0]["app"] = {"id": 1}  # same name from another App does not count
 
 
+def _status_red_run_green(s: MergeScenario) -> None:
+    # Same name as a green check run, but a red commit status: both must pass.
+    s.statuses.append({"context": "ci-ok", "state": "failure"})
+
+
+def _status_green_run_red(s: MergeScenario) -> None:
+    s.check_runs[2]["conclusion"] = "failure"
+    s.statuses.append({"context": "release-guard", "state": "success"})
+
+
+def _other_app_red(s: MergeScenario) -> None:
+    # A red same-name run from another App is not hidden by the required App's green run.
+    s.check_runs.append({**s.check_runs[0], "id": 50, "app": {"id": 1}, "conclusion": "failure"})
+
+
+def _merge_commit_red(s: MergeScenario) -> None:
+    # Head is green, but GitHub's test merge commit failed the check.
+    s.merge_check_runs.append({**s.check_runs[1], "id": 70, "conclusion": "failure"})
+
+
+def _merge_commit_status_red(s: MergeScenario) -> None:
+    s.merge_statuses.append({"context": "release-guard", "state": "error"})
+
+
 @pytest.mark.parametrize(
     ("breaker", "fragment"),
     [
@@ -541,6 +588,14 @@ def _wrong_app(s: MergeScenario) -> None:
         (_rerun_failed, "必需检查 ci-ok 未通过"),
         (_pending, "必需检查 secret-scan 未通过"),
         (_wrong_app, "必需检查 ci-ok 未通过"),
+        (_status_red_run_green, "必需检查 ci-ok 未通过（completed/success, status/failure）"),
+        (_status_green_run_red, "必需检查 release-guard 未通过"),
+        (_other_app_red, "必需检查 ci-ok 未通过"),
+        (_merge_commit_red, f"测试合并提交 {MERGE_SHA[:12]} 上必需检查 secret-scan 未通过"),
+        (_merge_commit_status_red, "测试合并提交"),
+        (lambda s: s.pr.update(mergeable=None), "mergeable 未知"),
+        (lambda s: s.pr.update(merge_commit_sha=None), "mergeable 未知"),
+        (lambda s: s.pr.update(mergeable=False), "有冲突"),
         (lambda s: s.check_runs.pop(), "必需检查 release-guard 未通过"),
         (lambda s: s.required.clear(), "没有配置必需检查"),
         (lambda s: s.threads.append(False), "1 个未解决的评审线程"),
@@ -577,8 +632,60 @@ def test_merge_accepts_commit_status_and_skipped_runs(paths: Paths) -> None:
     scenario.check_runs.pop()  # release-guard reported as a commit status instead
     scenario.statuses.append({"context": "release-guard", "state": "success"})
     scenario.check_runs[1]["conclusion"] = "skipped"
-    _, sha = _merge(paths, scenario)
-    assert sha == "b" * 40
+    _, result = _merge(paths, scenario)
+    assert result.sha == "b" * 40
+
+
+def test_merge_is_squash_only() -> None:
+    """The rulesets allow squash only and the App bypasses them: the tool enforces it."""
+    with pytest.raises(TypeError):
+        merge_pr(Paths(Path("x"), Path("y")), REPO, 1, FakeGitHub(), method="merge")  # type: ignore[call-arg]
+    for method in ("merge", "rebase", "squash"):
+        with pytest.raises(SystemExit):
+            main(["merge", "12", "--method", method])
+
+
+@pytest.mark.parametrize(
+    "protect",
+    [
+        lambda s: s.head_rules.append({"type": "deletion", "ruleset_id": 1}),
+        lambda s: setattr(s, "head_protected", True),
+    ],
+)
+def test_delete_branch_skips_protected_head(paths: Paths, protect: Any) -> None:
+    scenario = MergeScenario()
+    protect(scenario)
+    _, result = _merge(paths, scenario, delete_branch=True)
+    assert result.sha == "b" * 40
+    assert "保护，未删除" in result.cleanup
+    assert not result.cleanup_failed
+    assert scenario.deleted == []
+
+
+def test_cleanup_failure_is_reported_separately_from_the_merge(
+    paths: Paths, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scenario = MergeScenario()
+    scenario.delete_error = "GitHub API DELETE 返回 422：Reference does not exist"
+    _, result = _merge(paths, scenario, delete_branch=True)
+    assert result.sha == "b" * 40
+    assert result.cleanup_failed
+    assert "删除失败" in result.cleanup
+
+    # CLI: merged is reported on stdout, cleanup failure separately, exit code 3.
+    monkeypatch.setattr(reviewer_gh, "merge_pr", lambda *a, **k: result)
+    assert main(["merge", "12", "--delete-branch"]) == 3
+    out = capsys.readouterr()
+    assert "已合并 PR #12" in out.out
+    assert "清理未完成" in out.err
+
+
+def test_no_delete_without_flag(paths: Paths) -> None:
+    scenario = MergeScenario()
+    gh, result = _merge(paths, scenario)
+    assert result.cleanup == ""
+    assert scenario.deleted == []
+    assert not any("/branches/akkia-9-x" in c[1] for c in gh.calls)
 
 
 def test_merge_refuses_unauthorized_repo_before_any_call(paths: Paths) -> None:
