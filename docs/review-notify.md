@@ -2,7 +2,7 @@
 
 AkkiaBot 仓库的 PR 收到小队 Reviewer 以外的评审（Copilot、人类）时，自动回到 PR 关联的 Multica 任务，留一条记录并唤醒该任务的实现者处理。小队 Reviewer 的评审继续沿用它自己的交接（在 issue 上 @实现者），这里不重复提醒。来源：BOT-35（父任务 BOT-5）；本文中的 `BOT-<编号>` 均为旧工作区任务编号，已不可访问，只作历史出处。
 
-> 状态：旧工作区的 autopilot 已停用，本机制尚待迁入 AkkiaLab 工作区（由 DevOps 主责，外部 webhook 切换需负责人确认）。迁入前外部评审不会自动通知，需要时在 issue 上 @ 实现者。
+> 状态：autopilot 已在 AkkiaLab 工作区重建（2026-11-20）；是否生效取决于 GitHub 仓库 hook 是否指向它，以 Multica autopilot 与 GitHub hook 配置为准。未生效时外部评审不会自动通知，需要时在 issue 上 @ 实现者。
 
 Multica 的 `issue wakeup` 没有 PR 评审事件，`--until-pr` 只支持 checks / merged / conflicts，所以采用“GitHub 仓库 webhook → Multica webhook autopilot（run_only）”路径，由分派智能体按下文规则判定后写入原任务。
 
@@ -43,7 +43,10 @@ autopilot / trigger / hook 的实际 ID 以 Multica 中的 autopilot 配置和 G
 1. **范围**：只处理 `repository.id = 1457915068`（`AkkiaLab/AkkiaBot`）且 PR 为 open 的事件。已关闭 / 已合并 PR 上的评审只在运行输出说明，不写任何内容。
 2. **关联**：从 PR 标题、head 分支、正文中 `Closes/Fixes/Resolves AKKIA-<n>` 提取候选编号，再用 `multica issue pull-requests` 核对该 issue 确实关联了这个 PR（仓库与编号一致、`link_source` 非空）。只认恰好一个已关联的 issue；没有关联或无法确定时不路由、不创建任务。
 3. **原任务状态**：done / cancelled 不重开、不唤醒，只留一条记录评论；其他状态正常处理。
-4. **实现者**：原任务负责人是智能体且不是 Reviewer 时唤醒它；负责人是成员、为空或为 Reviewer 时只留记录评论，不唤醒。
+4. **实现者**：
+   - 负责人是智能体且不是 Reviewer：唤醒该智能体。
+   - 负责人是小队（`assignee_type=squad`，本工作区任务的默认形态，主责成员由 Leader 在评论中指定）：取该 issue 运行记录（`multica issue runs`）中最新一次不属于小队 Leader、也不属于 Reviewer 的运行，唤醒其智能体，即最近在该任务上工作的主责成员；没有这样的运行时唤醒小队 Leader，由 Leader 在 issue 上 @ 主责成员转交，自己不处理评审意见。
+   - 负责人是成员、为空或为 Reviewer：只留记录评论，不唤醒。
 5. **分步状态与失败恢复**（每条评审独立推进，任何一步失败都可从断点续做）：
    - metadata `github_review_<review id>` 只记录进度，**不作为跳过的闸门**：值为 `done:…` 才表示通知已完成并结束；不存在或为 `commented:<评论 id>` 时，从头按下列幂等步骤重做。
    - 记录评论：先按首行标记 `[review-notify] PR #<N> review <review id>` 查找已有评论，没有才发；发完等 5 秒再查，分派智能体发的、标记相同的评论保留创建时间最早（同时间取 id 最小）的一条，**其余全部删除（不论是哪次运行发的）**。然后写 `commented:<评论 id>`。
@@ -111,16 +114,19 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 ### P4. 记录评论（不 @ 任何人；先查后发、发后收敛）
 - MARK = 首行文本 “[review-notify] PR #N review RID”。
 - 查找：$M issue comment list <ISSUE id> --roots-only --summary --since <T 减 1 分钟，RFC3339> --output json，取 content 以 MARK 开头的评论。
-- 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、处理方式（已唤醒 / 原任务已关闭未唤醒 / 负责人不是实现智能体未唤醒，按 P5 的判断填写）。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
+- 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、处理方式（已唤醒主责成员 / 已唤醒 Leader 转交 / 原任务已关闭未唤醒 / 负责人不是实现智能体未唤醒，按 P5 的判断填写）。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
 - 收敛：等待 5 秒后按同样方式重新查找；只看 author_type = agent 且 author_id = 本运行智能体自身（环境变量 MULTICA_AGENT_ID）、content 以 MARK 开头的评论，按 (created_at, id) 最小者为 CID，其余这类评论全部 $M issue comment delete <评论 id>（不论是哪次运行发的；不删其他作者的评论）。
 - $M issue metadata set <ISSUE id> --key github_review_RID --value commented:CID --type string --output json
 
 ### P5. 唤醒实现者（先查后建、建后收敛）
 - ISSUE.status 为 done 或 cancelled：不唤醒、不改状态，W = none。
-- assignee_type ≠ agent，或 assignee_id = REVIEWER_AGENT_ID（小队 Reviewer，见提示词首行配置）：不唤醒，W = none。
-- 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 本运行智能体自身（MULTICA_AGENT_ID）且 instruction 以 “[review-notify]” 开头的规则。
+- 确定 TARGET：
+  - assignee_type = agent：assignee_id = REVIEWER_AGENT_ID（小队 Reviewer，见提示词首行配置）时不唤醒，W = none；否则 TARGET = assignee_id。
+  - assignee_type = squad（主责成员由 Leader 在评论中指定）：LEADER = $M squad get <assignee_id> --output json 的 leader_id；在 $M issue runs <ISSUE id> --output json 中去掉 agent_id 为 LEADER 或 REVIEWER_AGENT_ID 的运行，取 created_at 最新一条的 agent_id 为 TARGET（最近在本任务上工作的主责成员）；没有这样的运行时 TARGET = LEADER。
+  - 其他（成员或未指派）：不唤醒，W = none。
+- 候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 本运行智能体自身（MULTICA_AGENT_ID）且 instruction 以 “[review-notify]” 开头的规则。
 - 没有候选：在工作目录写指令文件，内容：
-    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
+    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。若你是本 issue 所属小队的 Leader：不要自己处理评审意见，在本 issue 用 mention 链接 @ 主责成员转交后结束。
   然后 $M issue wakeup create <ISSUE id> --agent-id TARGET --kind at --after 2m --instruction-file <文件> --output json，
 - 收敛（有候选或刚新建后都执行）：等待 5 秒后重新列出候选；按 (created_at, id) 最小者为 W，其余候选全部 $M issue wakeup delete <ISSUE id> <规则 id> --output json（不论是哪次运行创建的；不删不在候选范围内的规则）。
 - 若此时没有任何候选（例如刚好已触发），且本次没有新建过：重做一次本步骤。
