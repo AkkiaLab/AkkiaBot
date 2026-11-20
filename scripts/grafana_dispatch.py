@@ -192,8 +192,7 @@ def marker(key: str) -> str:
     return f"{MARKER_PREFIX}{key}"
 
 
-def mention(agent_id: str, label: str) -> str:
-    return f"[@{label}](mention://agent/{agent_id})"
+WAKE_DELAY = timedelta(minutes=1)
 
 
 # ---------------------------------------------------------------- Multica CLI
@@ -583,15 +582,24 @@ class Dispatcher:
             reopened = True
             line = (
                 f"Grafana 告警再次触发：{alert.describe()}。本任务从 {task.get('status')} 重开为 todo，"
-                f"{mention(self.leader_id, 'Leader')} 请重新指定主责。"
+                "已唤醒 Leader 重新指定主责。"
             )
         else:
             line = f"Grafana 告警再次触发：{alert.describe()}。任务仍在处理，不改状态和负责人，请当前主责关注。"
         self.tasks.comment(task["id"], line)
         if reopened:
             self.tasks.set_status(task["id"], "todo")
+            self._wake(
+                task["id"],
+                self.leader_id,
+                "Grafana 告警再次触发，任务已重开为 todo：请重新指定唯一主责。",
+            )
         self.tasks.set_metadata(task["id"], META_ALERT_STATE, alert.state)
         return f"{'reopened' if reopened else 'updated'} {ident}"
+
+    def _wake(self, task_id: str, agent_id: str, instruction: str) -> None:
+        """Start one run of ``agent_id`` on the issue (works for the run's own agent too)."""
+        self.tasks.wakeup_at(task_id, iso(self.clock() + WAKE_DELAY), agent_id, instruction)
 
     # ------------------------------------------------------------ watches
 
@@ -652,15 +660,26 @@ class Dispatcher:
             self.tasks.comment(
                 task["id"],
                 f"修复后观察：出现复发告警（{alert.describe()}）。本任务从 {task.get('status')} "
-                f"重开为 todo，{mention(self.leader_id, 'Leader')} 请重新指定主责。",
+                "重开为 todo，已唤醒 Leader 重新指定主责。",
             )
             self.tasks.set_status(task["id"], "todo")
+            self._wake(
+                task["id"],
+                self.leader_id,
+                "修复后观察出现复发，任务已重开为 todo：请重新指定唯一主责。",
+            )
             return f"regression_reopened {ident}"
         owner = meta.get(W_OWNER) or self.leader_id
         self.tasks.comment(
             task["id"],
-            f"修复后观察：出现复发告警（{alert.describe()}）。{mention(owner, '主责')} 请排查；"
+            f"修复后观察：出现复发告警（{alert.describe()}）。已唤醒主责排查；"
             "排查方法见 docs/grafana-alerting.md「复发排查」。",
+        )
+        self._wake(
+            task["id"],
+            owner,
+            f"修复后观察出现复发告警（{alert.describe()}）：按 docs/grafana-alerting.md「复发排查」处理，"
+            "结论回复在本 issue。",
         )
         return f"regression_woken {ident}"
 
@@ -803,12 +822,13 @@ class Dispatcher:
                 )
             self.tasks.set_metadata(task["id"], W_RESULT, result)
             self.tasks.set_metadata(task["id"], W_STATUS, "ended")
-            closing = (
-                ""
-                if task.get("status") in CLOSED
-                else f" {mention(self.leader_id, 'Leader')} 请核对收尾。"
-            )
+            still_open = task.get("status") not in CLOSED
+            closing = " 已唤醒 Leader 核对收尾。" if still_open else ""
             self.tasks.comment(task["id"], f"修复后观察到期判定：{text}{closing}")
+            if still_open:
+                self._wake(
+                    task["id"], self.leader_id, f"修复后观察已结束（{result}）：请核对验收并收尾。"
+                )
             return f"concluded {ident}: {result}; {self.sync_watch_rules()}"
 
     # -------------------------------------------------------- self-check

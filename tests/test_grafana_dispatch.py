@@ -197,7 +197,8 @@ def test_new_episode_reopens_a_closed_task_and_wakes_the_leader(env) -> None:
     tasks.tasks[0]["status"] = "done"
     assert d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z")) == ["reopened AKKIA-100"]
     assert tasks.tasks[0]["status"] == "todo"
-    assert f"mention://agent/{LEADER}" in tasks.comments[-1][1]
+    assert tasks.wakeups[-1]["agent"] == LEADER
+    assert tasks.wakeups[-1]["at"] == "2026-11-20T08:01:00Z"
     # An older episode arriving late does not roll the state back.
     assert d.handle_alert(alert(status="resolved")) == ["stale_ignored AKKIA-100"]
 
@@ -208,7 +209,7 @@ def test_new_episode_on_open_task_only_comments(env) -> None:
     tasks.tasks[0]["status"] = "in_progress"
     assert d.handle_alert(alert(starts_at="2026-11-21T07:00:00Z")) == ["updated AKKIA-100"]
     assert tasks.tasks[0]["status"] == "in_progress"
-    assert "mention://" not in tasks.comments[-1][1]
+    assert tasks.wakeups == []
 
 
 def test_alert_key_includes_handler_and_staging_is_low_priority(env) -> None:
@@ -355,7 +356,8 @@ def test_generic_regression_wakes_the_owner_once(env) -> None:
     d, tasks, _ = env
     fix = start_watch(d, tasks)
     assert d.handle_alert(regression()) == [f"regression_woken {fix['identifier']}"]
-    assert f"mention://agent/{OWNER}" in tasks.comments[-1][1]
+    assert tasks.wakeups[-1]["agent"] == OWNER
+    assert "复发" in tasks.wakeups[-1]["instruction"]
     assert fix["status"] == "in_review"
     assert d.handle_alert(regression()) == [f"regression_already_recorded {fix['identifier']}"]
     assert tasks.tasks == [fix]  # never a general task for watch rules
@@ -366,7 +368,7 @@ def test_generic_regression_reopens_a_closed_issue(env) -> None:
     fix = start_watch(d, tasks, status="done")
     assert d.handle_alert(regression()) == [f"regression_reopened {fix['identifier']}"]
     assert fix["status"] == "todo"
-    assert f"mention://agent/{LEADER}" in tasks.comments[-1][1]
+    assert tasks.wakeups[-1]["agent"] == LEADER
 
 
 def test_generic_watch_rules_need_a_matching_watch(env) -> None:
@@ -419,7 +421,7 @@ def test_conclude_observed_without_regression(env) -> None:
     )
     assert fix["metadata"][gd.W_STATUS] == "ended"
     assert "已观测，无复发" in tasks.comments[-1][1]
-    assert f"mention://agent/{LEADER}" in tasks.comments[-1][1]
+    assert tasks.wakeups[-1]["agent"] == LEADER
     assert d.watch_conclude(fix["identifier"]) == f"watch_not_active {fix['identifier']}"
 
 
@@ -439,7 +441,7 @@ def test_conclude_unobserved_extends_once_then_ends(env) -> None:
         f"concluded {fix['identifier']}: unobserved"
     )
     assert "修复已上线、自然场景未观测" in tasks.comments[-1][1]
-    assert "mention://" not in tasks.comments[-1][1]  # issue already closed
+    assert tasks.wakeups[-1]["agent"] == CONCLUDER  # issue already closed: Leader not woken
     assert len(tasks.wakeups) == 2
 
 
