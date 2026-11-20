@@ -3,7 +3,14 @@
 from importlib.metadata import version
 
 from akkiabot_antispam.classifier import AntiSpamClassifier, ClassifierSettings, build_client
-from akkiabot_antispam.models import SpamContext, SpamVerdict, Usage, VerdictSource
+from akkiabot_antispam.models import (
+    FAIL_OPEN_ERRORS,
+    FailOpenError,
+    SpamContext,
+    SpamVerdict,
+    Usage,
+    VerdictSource,
+)
 from akkiabot_antispam.prompts import DEFAULT_PROMPT_VERSION, Prompt
 from akkiabot_antispam.tracing import LangfuseTracer, NullTracer, Tracer
 
@@ -11,8 +18,10 @@ __version__ = version("akkiabot-antispam")
 
 __all__ = [
     "DEFAULT_PROMPT_VERSION",
+    "FAIL_OPEN_ERRORS",
     "AntiSpamClassifier",
     "ClassifierSettings",
+    "FailOpenError",
     "LangfuseTracer",
     "NullTracer",
     "Prompt",

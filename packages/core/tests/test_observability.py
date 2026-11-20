@@ -23,6 +23,7 @@ from akkiabot_core.observability import (
     count_update,
     count_whois_lookup,
     get_log_context,
+    init_antispam_llm_errors,
     init_sentry,
     log_context,
     new_trace_id,
@@ -209,6 +210,36 @@ async def test_track_handler_bare_uses_qualname() -> None:
     assert await bare_handler() == "ok"
     label = "test_track_handler_bare_uses_qualname.<locals>.bare_handler"
     assert sample("handler_duration_seconds_count", handler=label) == 1
+
+
+async def test_track_handler_exports_series_at_registration() -> None:
+    # A series must exist (at 0) before the first error: rate()/increase()
+    # cannot see the increment of a series that first appears already at 1.
+    @track_handler("unit_prewarm")
+    async def handler() -> None:
+        raise ValueError("bad")
+
+    errors = REGISTRY.get_sample_value("akkiabot_handler_errors_total", {"handler": "unit_prewarm"})
+    calls = REGISTRY.get_sample_value(
+        "akkiabot_handler_duration_seconds_count", {"handler": "unit_prewarm"}
+    )
+    assert errors == 0
+    assert calls == 0
+
+    with pytest.raises(ValueError, match="bad"):
+        await handler()
+    # The first error is now a 0 → 1 step of an existing series, which increase() counts.
+    assert sample("handler_errors_total", handler="unit_prewarm") == errors + 1
+    assert sample("handler_duration_seconds_count", handler="unit_prewarm") == calls + 1
+
+
+def test_init_antispam_llm_errors_exports_zero() -> None:
+    labels = {"error": "unit_prewarm_error"}
+    assert REGISTRY.get_sample_value("akkiabot_antispam_llm_errors_total", labels) is None
+    init_antispam_llm_errors(["unit_prewarm_error"])
+    assert REGISTRY.get_sample_value("akkiabot_antispam_llm_errors_total", labels) == 0
+    observe_antispam_llm(1.0, error="unit_prewarm_error")
+    assert REGISTRY.get_sample_value("akkiabot_antispam_llm_errors_total", labels) == 1
 
 
 def test_track_handler_rejects_sync() -> None:

@@ -33,12 +33,13 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from akkiabot_antispam import SpamContext, SpamVerdict
+from akkiabot_antispam import FAIL_OPEN_ERRORS, SpamContext, SpamVerdict
 from akkiabot_core.db import ChatMemberRepository, MessageLogRepository, Restriction, session_scope
 from akkiabot_core.observability import (
     count_antispam_verdict,
     count_moderation_action,
     count_telegram_api_error,
+    init_antispam_llm_errors,
     observe_antispam_llm,
 )
 from akkiabot_core.telegram import escape_markdown_v2, public_name
@@ -53,6 +54,10 @@ from akkiabot_server.services.moderation import (
 
 logger = logging.getLogger(__name__)
 _e = escape_markdown_v2
+
+# Export the LLM error counter (at 0) for every error class the classifier can
+# report, so the alert's increase() also catches the first failures after a restart.
+init_antispam_llm_errors(FAIL_OPEN_ERRORS)
 
 
 class SpamClassifier(Protocol):
