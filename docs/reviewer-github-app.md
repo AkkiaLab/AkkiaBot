@@ -15,7 +15,7 @@
 | 项 | 位置 | 说明 |
 | --- | --- | --- |
 | App | AkkiaLab 组织 → Settings → Developer settings → GitHub Apps → `akkialab-agent` | 私有 App，不开启 webhook |
-| 安装 | Only select repositories，范围不超出脚本中的 `AUTHORIZED_REPOS` | 见下文「授权仓库范围」 |
+| 安装 | All repositories（工作区共用，负责人 2026-11-20 确认） | 本项目工具只为 `AUTHORIZED_REPOS` 中的仓库签发 token，见下文「授权仓库范围」 |
 | 安装权限 | Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W、Checks R、Commit statuses R、Metadata R | 等于发布用途的权限（`PURPOSES["release"]`），见下文「按用途签发 token」 |
 | 规则集绕过 | `master 保护`、`releases`、`版本 tag 创建` 的绕过者（`always`） | 流水线写入需要；带来的风险见下文「风险与补偿」 |
 | App 配置 | 运行机 `~/.config/akkiabot/reviewer-app/app.json` | `app_id`、`client_id`、`slug`，不是密钥 |
@@ -26,15 +26,16 @@
 
 ## 授权仓库范围
 
-`scripts/reviewer_gh.py` 中的 `AUTHORIZED_REPOS` 是 App 安装范围的唯一依据，每个仓库都注明了记录授权的 issue（`BOT-<编号>` 为旧工作区编号，已不可访问；新增条目使用 `AKKIA-<编号>`）：
+App 作为工作区共用身份安装在整个组织（All repositories）。`scripts/reviewer_gh.py` 中的 `AUTHORIZED_REPOS` 规定**本项目工具**可以为哪些仓库签发 token，每个仓库注明记录授权的 issue（`BOT-<编号>` 为旧工作区编号，已不可访问；新增条目使用 `AKKIA-<编号>`）：
 
 | 仓库 | 来源 |
 | --- | --- |
 | `AkkiaLab/AkkiaBot` | BOT-3 |
 | `AkkiaLab/akkiabot-release-drill` | BOT-40（发布流程演练仓库） |
-| `AkkiaLab/botlab-core`、`botlab-telegram`、`botlab-llm`、`botlab-fe`、`Toolbox-py` | BOT-16（旧仓库迁移提示 PR，随后归档） |
 
-调整范围的顺序：先由负责人确认授权，再通过 PR 修改 `AUTHORIZED_REPOS` 并经评审合并到 master、按下文安装；然后由组织管理员修改 installation 的仓库选择。缩小范围时顺序相反：先移除安装，再删列表项。其他项目将来要用这个 App 时，同样走这个顺序。
+- 只列公开仓库：本仓库是公开的，私有仓库的名称不写进代码、文档和测试（AKKIA-25 起移除了此前列出的已归档旧仓库；它们仍留在 git 历史中）。
+- 每个 token 都只限一个目标仓库（签发请求带 `repositories`），并按用途缩权。所以安装覆盖全组织时，本项目工具也只能操作上表中的仓库。
+- 增减授权仓库：先由负责人确认，再通过 PR 修改 `AUTHORIZED_REPOS`，经评审合并到 master 后按下文重新安装脚本。
 
 ## 按用途签发 token
 
@@ -72,7 +73,7 @@
 
 **门禁的边界（剩余风险）**：
 
-- 门禁只约束经 `reviewer-gh` 和发布工具的调用。**持有 App 私钥的人或进程**可以自己签发全权限 token，直接合并或推送到受保护分支而不受任何门禁约束。合并前只有发布私钥能绕过；合并后运行机上 Reviewer 的私钥文件也具备这个能力。现有保护是私钥文件 `0600`、发布私钥只在 Actions secret 与 1Password 中、私钥按用途分开以便单独吊销。
+- 门禁只约束经 `reviewer-gh` 和发布工具的调用。**持有 App 私钥的人或进程**可以自己签发全权限 token，直接合并或推送到受保护分支而不受任何门禁约束。由于安装覆盖全组织，这个能力不限于本项目：持有私钥即可读写、管理组织内的**所有仓库**（包括其他项目和私有仓库），`AUTHORIZED_REPOS` 和按用途缩权只约束本项目工具自身。合并前只有发布私钥能绕过；合并后运行机上 Reviewer 的私钥文件也具备这个能力。现有保护是私钥文件 `0600`、发布私钥只在 Actions secret 与 1Password 中、私钥按用途分开以便单独吊销。
 - 门禁核对与合并之间的数秒内新增的评审或线程不在核对范围内（head 变化已由 `sha` 固定）。
 - 必需检查清单在合并时从规则集读取。App 有 Administration 写权限，理论上可以改规则集；这只能经发布工具的封版路径或持有私钥者发生。
 - 普通 `gh pr merge`（用 `AkkiaS7` 身份）不受影响：`AkkiaS7` 不是绕过者，平台门禁照常生效。
@@ -93,7 +94,8 @@
 ## `check` 的判定规则
 
 - App 当前 slug 对应的 bot 用户 ID 必须是 356702926（改名后用于确认登录名已变、ID 未变）；
-- 安装方式必须是 selected；安装范围中出现任何不在 `AUTHORIZED_REPOS` 里的仓库时失败；目标仓库不在安装范围时失败；已授权但尚未安装的仓库只打印提示；
+- 目标仓库必须在 `AUTHORIZED_REPOS` 中，且在安装范围内；已授权但尚未安装的仓库只打印提示；
+- 安装方式（selected / all）不作要求；安装覆盖的其他仓库只打印数量、**不打印名称**（运行日志和 issue 评论里不出现组织的其他仓库名），不算失败；
 - 安装权限必须足以签发 review 与 merge 用途的 token；加 `--require-release` 时还必须足以签发 release 用途的 token（规则集与发布凭据切换到本 App 之后的回读用）；
 - 安装权限超出三种用途的并集时失败（多余权限）；
 - App 不得订阅 webhook 事件。
@@ -126,7 +128,7 @@ sha256sum ~/.local/bin/reviewer-gh <AkkiaBot master 检出>/scripts/reviewer_gh.
 ~/.local/bin/reviewer-gh check --require-release   # 发布权限补齐、凭据切换之后
 ```
 
-该命令不输出任何凭据，会打印 App slug、bot 用户 ID、installation、安装范围、已授权但未安装的仓库、权限、各用途能否签发和 token 过期时间，不符合上节规则时以非 0 退出码结束。核对其他授权仓库时加上 `AKKIABOT_REVIEWER_REPO=AkkiaLab/<仓库>`。为了核对真实的安装范围，`check` 会临时签发一个只有 metadata 读权限、不限仓库的 token，用完立即吊销。
+该命令不输出任何凭据，会打印 App slug、bot 用户 ID、installation、安装方式与已安装的授权仓库（其他仓库只给数量）、已授权但未安装的仓库、权限、各用途能否签发和 token 过期时间，不符合上节规则时以非 0 退出码结束。核对其他授权仓库时加上 `AKKIABOT_REVIEWER_REPO=AkkiaLab/<仓库>`。为了核对真实的安装范围，`check` 会临时签发一个只有 metadata 读权限、不限仓库的 token，用完立即吊销。
 
 其他命令：
 
@@ -139,7 +141,7 @@ sha256sum ~/.local/bin/reviewer-gh <AkkiaBot master 检出>/scripts/reviewer_gh.
 
 评审、线程操作通过 `reviewer-gh gh ...` 执行，并显式指定 `-R AkkiaLab/AkkiaBot`；**合并只能用 `reviewer-gh merge`**。
 
-操作 AkkiaBot 以外的授权仓库时，用 `AKKIABOT_REVIEWER_REPO` 指定目标仓库，使 token 只限该仓库，并让 `-R` 与之一致，例如 `AKKIABOT_REVIEWER_REPO=AkkiaLab/botlab-core ~/.local/bin/reviewer-gh gh pr review 23 -R AkkiaLab/botlab-core --approve`。两者不一致时 GitHub 会拒绝访问。
+操作 AkkiaBot 以外的授权仓库时，用 `AKKIABOT_REVIEWER_REPO` 指定目标仓库，使 token 只限该仓库，并让 `-R` 与之一致，例如 `AKKIABOT_REVIEWER_REPO=AkkiaLab/akkiabot-release-drill ~/.local/bin/reviewer-gh gh pr review 23 -R AkkiaLab/akkiabot-release-drill --approve`。两者不一致时 GitHub 会拒绝访问。
 
 ```bash
 R=~/.local/bin/reviewer-gh

@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,7 @@ class FakeGitHub:
         self.over_grant: dict[str, str] = {}
         self.revoked: list[str] = []
         self.routes: dict[tuple[str, str], Any] = {}
+        self.repo_pages = 0
 
     def __call__(self, method: str, url: str, bearer: str, body: dict[str, Any] | None) -> Any:
         self.calls.append((method, url, bearer, body))
@@ -116,8 +118,16 @@ class FakeGitHub:
                 "repository_selection": self.selection,
                 "permissions": self.permissions,
             }
-        if path == "/installation/repositories":
-            return {"repositories": [{"full_name": r} for r in self.repos]}
+        if path.split("?")[0] == "/installation/repositories":
+            # Paginated like GitHub: honour per_page (default 30) and page.
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+            per_page, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+            self.repo_pages += 1
+            chunk = self.repos[(page - 1) * per_page : page * per_page]
+            return {
+                "total_count": len(self.repos),
+                "repositories": [{"full_name": r} for r in chunk],
+            }
         if path == "/installation/token" and method == "DELETE":
             self.revoked.append(bearer)
             return None
@@ -255,8 +265,6 @@ def test_check_passes_and_never_prints_tokens(
 @pytest.mark.parametrize(
     ("tweak", "fragment"),
     [
-        (lambda g: setattr(g, "selection", "all"), "安装范围"),
-        (lambda g: g.repos.append("AkkiaLab/other"), "未授权仓库"),
         (lambda g: g.repos.remove(REPO), "不包含目标仓库"),
         (lambda g: g.permissions.update(contents="read"), "merge 用途"),
         (lambda g: g.permissions.update(pull_requests="read"), "review 用途"),
@@ -273,26 +281,66 @@ def test_check_reports_misconfiguration(paths: Paths, tweak: Any, fragment: str)
     assert any(fragment in p for p in problems), problems
 
 
-def test_check_accepts_authorized_subset_and_reports_missing(
+def test_check_reports_authorized_repo_not_installed(
     paths: Paths, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    gh = FakeGitHub(repos=[REPO, "AkkiaLab/akkiabot-release-drill"])
+    gh = FakeGitHub(repos=[REPO])
     assert check_installation(paths, REPO, gh, refresh=False) == []
     out = capsys.readouterr().out
-    assert "已授权但未安装" in out
-    assert "AkkiaLab/botlab-core" in out
+    assert "已授权但未安装:   AkkiaLab/akkiabot-release-drill" in out
+
+
+def test_org_wide_installation_passes_without_naming_other_repos(
+    paths: Paths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AKKIA-25: the workspace App is installed on all repositories. Other repos
+    (possibly private) are counted, never named, and are not a failure."""
+    secret_names = ["AkkiaLab/mock-private-one", "AkkiaLab/mock-private-two"]
+    gh = FakeGitHub(selection="all", repos=[REPO, "AkkiaLab/akkiabot-release-drill", *secret_names])
+    assert check_installation(paths, REPO, gh, refresh=False, require_release=True) == []
+    out = capsys.readouterr()
+    assert "其他仓库 2 个（不列名称）" in out.out
+    for name in secret_names:
+        assert name.split("/")[1] not in out.out + out.err
+    # Tokens stay restricted to the single target repository.
+    mint = next(c for c in gh.calls if c[1].endswith("/access_tokens"))
+    assert (mint[3] or {})["repositories"] == ["AkkiaBot"]
+
+
+def test_check_reads_every_page_of_an_org_wide_installation(
+    paths: Paths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Target repo on a later page: still found, others counted, none named."""
+    others = [f"AkkiaLab/mock-private-{i:03d}" for i in range(230)]
+    gh = FakeGitHub(selection="all", repos=[*others, REPO, "AkkiaLab/akkiabot-release-drill"])
+    assert check_installation(paths, REPO, gh, refresh=False) == []
+    assert gh.repo_pages == 3  # 232 repositories at 100 per page
+    out = capsys.readouterr()
+    assert "其他仓库 230 个（不列名称）" in out.out
+    assert "已授权但未安装" not in out.out
+    assert "mock-private" not in out.out + out.err
+    # The unrestricted probe token is still revoked after all pages were read.
+    assert gh.revoked == [f"{MOCK_GH_TOKEN}-2"]
+
+
+def test_authorized_repos_are_the_two_public_ones() -> None:
+    assert dict(reviewer_gh.AUTHORIZED_REPOS) == {
+        "AkkiaLab/AkkiaBot": "BOT-3",
+        "AkkiaLab/akkiabot-release-drill": "BOT-40",
+    }
 
 
 def test_check_for_another_authorized_repo_mints_token_for_it(paths: Paths) -> None:
-    legacy = "AkkiaLab/botlab-core"
-    gh = FakeGitHub(repos=[REPO, legacy])
-    assert check_installation(paths, legacy, gh, refresh=False) == []
+    drill = "AkkiaLab/akkiabot-release-drill"
+    gh = FakeGitHub(repos=[REPO, drill])
+    assert check_installation(paths, drill, gh, refresh=False) == []
     mint = next(c for c in gh.calls if c[1].endswith("/access_tokens"))
-    assert (mint[3] or {})["repositories"] == ["botlab-core"]
+    assert (mint[3] or {})["repositories"] == ["akkiabot-release-drill"]
 
 
 def test_unauthorized_target_repo_is_refused_before_any_call(paths: Paths) -> None:
-    gh = FakeGitHub(repos=[REPO, "AkkiaLab/other"])
+    # Installed (org-wide) but not authorised for this project: still refused.
+    gh = FakeGitHub(selection="all", repos=[REPO, "AkkiaLab/other"])
     with pytest.raises(ReviewerGhError, match="不在已授权范围"):
         get_token(paths, "AkkiaLab/other", gh)
     with pytest.raises(ReviewerGhError, match="不在已授权范围"):
