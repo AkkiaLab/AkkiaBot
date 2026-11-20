@@ -28,7 +28,7 @@ autopilot / trigger / hook 的实际 ID 以 Multica 中的 autopilot 配置和 G
 
 | 身份 | GitHub user id | 处理 |
 | --- | --- | --- |
-| `akkiabot-reviewer[bot]`（App `akkiabot-reviewer`，App ID 5760780） | 356702926 | **排除**：小队 Reviewer，沿用其 issue 交接 |
+| `akkialab-agent[bot]`（智能体共用 App `akkialab-agent`，App ID 5760780；改名前为 `akkiabot-reviewer[bot]`，ID 不变） | 356702926 | **排除**：小队 Reviewer，沿用其 issue 交接 |
 | `copilot-pull-request-reviewer[bot]` | 175728472 | 通知 |
 | `AkkiaS7`（实现类智能体提交身份，也是负责人账号） | 68485070 | 正文为空且行级评论**全部是线程回复**的评审视为实现者回复评审线程，跳过；其余（有正文或新开的行级评论）通知 |
 | 其他人类 / bot | — | 通知 |
@@ -89,7 +89,7 @@ PR 评审通知分派（规则见 AkkiaBot 仓库 docs/review-notify.md）。本
 ## 1. 判定（只看载荷，不调用工具），任一不满足立即结束，不写任何东西
 - X-GitHub-Event = pull_request_review，action = submitted；
 - repository.id = 1457915068 且 repository.full_name = AkkiaLab/AkkiaBot；
-- review.user.id ≠ 356702926 且 sender.id ≠ 356702926（akkiabot-reviewer[bot]，小队 Reviewer，沿用其自身交接）；
+- review.user.id ≠ 356702926 且 sender.id ≠ 356702926（akkialab-agent[bot]，智能体共用 App，小队 Reviewer 用它评审，沿用其自身交接）；
 - pull_request.state = open（closed / 已合并 PR 只在输出说明，不通知）。
 记下 N = pull_request.number，RID = review.id，T = review.submitted_at，评审者 review.user（login、id、type）、review.state、review.html_url、review.body。
 

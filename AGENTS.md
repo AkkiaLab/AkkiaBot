@@ -54,4 +54,5 @@
 
 - 推送公开仓库前先在私有库 `AkkiaLab/AkkiaBot-internal` 完成小队内部预审（负责人 2026-11-20 确认）：私有 PR 与公开 PR 规则相同，评审者在 Multica issue 写 `预审通过：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`，pre-push 钩子 `preapproval-check` 核对推往公开库的 head 与之一致。流程、跳过方式和已知限制见 `docs/secret-scanning.md`“推送前的内部预审”。
 
-- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
+- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；智能体共用 App `akkialab-agent` 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
+- GitHub 身份：提交、推送、开 PR 用 `AkkiaS7`；评审、合并与发布流水线写操作用工作区共用 App `akkialab-agent`（不再按项目或角色建 App）。该 App 是发布规则集的绕过者，用它合并时平台门禁不生效，所以 Reviewer 合并只用 `reviewer-gh merge`（先核对必需检查、评审线程与批准），`reviewer-gh gh` 的 token 没有合并权限。按 bot 用户 ID 识别该 App，不按登录名。见 `docs/reviewer-github-app.md`。
