@@ -94,7 +94,7 @@ class FakeTasks:
             self.tasks.append(
                 {
                     "id": f"task-{number}",
-                    "identifier": f"BOT-{900 + number}",
+                    "identifier": f"AKKIA-{900 + number}",
                     "number": 900 + number,
                     "title": title,
                     "description": description,
