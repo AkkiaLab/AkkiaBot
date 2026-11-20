@@ -35,11 +35,12 @@ flowchart LR
 ```bash
 export CLOUDFLARE_API_TOKEN="$(op read op://AkkiaBot/staging-cloudflare/api_token)"
 export CLOUDFLARE_ACCOUNT_ID="$(op read op://AkkiaBot/staging-cloudflare/account_id)"
+FORWARD_URL_FIELD="..."   # 条目 AkkiaBot/sentry-webhook 中转发 URL 字段的名称（字段名，不是值）
 dir="$(mktemp -d)" && cp deploy/sentry-relay/worker.mjs "$dir/_worker.js" && cd "$dir"
 # 首次创建项目（新版 wrangler 默认转到 Workers，需要加 --force 才使用 Pages）
 npx -y wrangler@4.162.0 pages project create akkiabot-sentry-relay --production-branch main --force
 op read op://AkkiaBot/sentry-webhook/sentry_client_secret | npx -y wrangler@4.162.0 pages secret put SENTRY_CLIENT_SECRET --project-name akkiabot-sentry-relay
-op read op://AkkiaBot/sentry-webhook/<转发 URL 字段> | npx -y wrangler@4.162.0 pages secret put FORWARD_WEBHOOK_URL --project-name akkiabot-sentry-relay
+op read "op://AkkiaBot/sentry-webhook/${FORWARD_URL_FIELD:?先设为条目中转发 URL 字段的名称}" | npx -y wrangler@4.162.0 pages secret put FORWARD_WEBHOOK_URL --project-name akkiabot-sentry-relay
 printf 'akkiabot-staging' | npx -y wrangler@4.162.0 pages secret put ALLOWED_PROJECT_SLUGS --project-name akkiabot-sentry-relay
 npx -y wrangler@4.162.0 pages deploy . --project-name akkiabot-sentry-relay --branch main --commit-dirty=true
 ```
