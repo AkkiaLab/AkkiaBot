@@ -3,25 +3,32 @@
 Workflow (docs/secret-scanning.md, "推送前的内部预审"): implementers push to the
 private repository ``AkkiaLab/AkkiaBot-internal`` first and open a private PR;
 the reviewer agent reviews it and records the verdict as a Multica issue comment
-``预审通过：AkkiaLab/AkkiaBot-internal@<40-hex sha>`` (or ``预审撤销：…``). Only that
-exact sha may then be pushed to the public repository.
+line ``预审通过：AkkiaLab/AkkiaBot-internal@<40-hex sha>`` (or ``预审撤销：…``). Only
+that exact sha may then be pushed to the public repository.
 
 Commands (stdlib only, ``git`` and the ``multica`` CLI on the host):
 
-  check-push   pre-push hook (run by pre-commit). Pushes that are not aimed at the
-               public repository, and pushes that add no commit the public remote
-               lacks, pass. Otherwise the issue number is parsed from the branch
-               name, the reviewer's latest verdict is read with the multica CLI and
-               the pushed head must equal the approved sha.
-  sync         Fast-forward every public ``releases/*`` branch into the private
-               repository (public -> private only, never forced).
+  check-push      pre-commit ``preapproval-check`` hook. Pushes not aimed at the public
+                  repository, and pushes adding no commit the public remote lacks, pass.
+                  Otherwise the issue number is parsed from the branch name, the
+                  reviewer's latest verdict is read with the multica CLI and the pushed
+                  head must equal the approved sha. Also requires the ref guard below.
+  ref-guard       Reads the complete git pre-push input (installed as
+                  ``hooks/pre-push.legacy``, which pre-commit's hook runs with the full
+                  stdin). A push to the public repository that carries new commits must
+                  update exactly one ref: pre-commit hands its hooks (gitleaks,
+                  preapproval) only one ref, so other refs would go unchecked.
+  install-guard   Install that ``pre-push.legacy`` wrapper (``just setup`` runs it).
+  sync            Fast-forward every public ``releases/*`` branch into the private
+                  repository (public -> private only, never forced).
 
 Host configuration lives in git config, never in this public repository:
 
   akkia.preapproval.reviewer  (multi-valued) Multica agent ids whose verdicts count
   akkia.internal.remote       name of the private remote (default ``internal``)
 
-Messages never print comment bodies, only issue numbers, shas and rule names.
+Messages never print comment bodies, remote URLs or raw git stderr (a URL may carry
+credentials); only issue numbers, shas, ref names and exit codes.
 """
 
 from __future__ import annotations
@@ -33,8 +40,9 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 PUBLIC_REPO = "AkkiaLab/AkkiaBot"
 INTERNAL_REPO = "AkkiaLab/AkkiaBot-internal"
@@ -42,15 +50,28 @@ INTERNAL_URL = f"https://github.com/{INTERNAL_REPO}.git"
 REVIEWER_KEY = "akkia.preapproval.reviewer"
 INTERNAL_REMOTE_KEY = "akkia.internal.remote"
 SKIP_HINT = "确需跳过时显式执行：SKIP=preapproval-check git push …（并在 issue 中说明原因）"
+GUARD_MARKER = "akkiabot-internal-review-ref-guard v1"
+GUARD_SCRIPT = f"""#!/usr/bin/env bash
+# {GUARD_MARKER}: installed by `just setup` (scripts/internal_review.py install-guard).
+# pre-commit's pre-push hook runs this file with the complete pre-push stdin.
+# Checkouts without the script (older releases) have nothing to enforce.
+if [[ -f scripts/internal_review.py ]]; then
+  exec python3 scripts/internal_review.py ref-guard "$@"
+fi
+exit 0
+"""
 
 ISSUE_RE = re.compile(r"akkia-([1-9][0-9]*)", re.IGNORECASE)
+# A verdict is a whole line on its own: no quote marker, no indentation, no inline code.
 VERDICT_RE = re.compile(
-    r"^[\s>*`-]*预审(?P<verdict>通过|撤销)[:：]\s*"
-    + re.escape(INTERNAL_REPO)
-    + r"@(?P<sha>[0-9a-f]{40})[\s`*]*$",
-    re.MULTILINE,
+    r"^预审(?P<verdict>通过|撤销)：" + re.escape(INTERNAL_REPO) + r"@(?P<sha>[0-9a-f]{40})$"
 )
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 ZERO_SHA = re.compile(r"^0+$")
+
+
+class GitError(RuntimeError):
+    """A git command failed; the message holds only the subcommand and exit code."""
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -61,7 +82,8 @@ def git(*args: str, check: bool = True) -> str:
         check=False,
     )
     if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} 失败：{result.stderr.strip()}")
+        # Raw args and stderr may contain remote URLs with credentials: never echo them.
+        raise GitError(f"git {args[0]} 失败（退出码 {result.returncode}）")
     return result.stdout.strip()
 
 
@@ -75,14 +97,23 @@ def repo_slug(url: str) -> str | None:
     return match.group("slug") if match else None
 
 
+def is_repo(url: str, repo: str) -> bool:
+    return (repo_slug(url) or "").lower() == repo.lower()
+
+
 def is_public(url: str) -> bool:
-    slug = repo_slug(url)
-    return slug is not None and slug.lower() == PUBLIC_REPO.lower()
+    return is_repo(url, PUBLIC_REPO)
 
 
 def public_remotes() -> list[str]:
     names = git("remote").splitlines()
     return [n for n in names if is_public(git("remote", "get-url", n, check=False))]
+
+
+def has_new_commits(sha: str) -> bool:
+    """True when ``sha`` reaches a commit no public remote-tracking ref has."""
+    excludes = [f"--remotes={name}" for name in public_remotes()]
+    return bool(git("rev-list", "-n", "1", sha, "--not", *excludes))
 
 
 @dataclass(frozen=True)
@@ -92,11 +123,31 @@ class Verdict:
     comment_id: str
 
 
+def verdict_lines(content: str) -> Iterable[re.Match[str]]:
+    """Formal verdict lines of one comment, skipping fenced code and quotes."""
+    fence: str | None = None
+    for line in content.splitlines():
+        opener = FENCE_RE.match(line)
+        if opener is not None:
+            mark = opener.group(1)
+            if fence is None:
+                fence = mark
+            elif mark[0] == fence[0] and len(mark) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        match = VERDICT_RE.match(line.rstrip())
+        if match is not None:
+            yield match
+
+
 def latest_verdict(comments: Sequence[Mapping[str, object]], reviewers: set[str]) -> Verdict | None:
-    """The newest ``预审通过/撤销`` line written by one of ``reviewers``.
+    """The newest formal ``预审通过/撤销`` line written by one of ``reviewers``.
 
     Comments are ordered by ``created_at``; within one comment the last line wins.
-    Comments by anyone else (including the implementer quoting the format) are ignored.
+    Comments by anyone else (including the implementer quoting the format), quoted
+    lines and code examples are ignored.
     """
     found: tuple[str, int, Verdict] | None = None
     for comment in comments:
@@ -106,14 +157,13 @@ def latest_verdict(comments: Sequence[Mapping[str, object]], reviewers: set[str]
         if not isinstance(content, str):
             continue
         created = str(comment.get("created_at", ""))
-        for index, match in enumerate(VERDICT_RE.finditer(content)):
+        for index, match in enumerate(verdict_lines(content)):
             verdict = Verdict(
                 approved=match.group("verdict") == "通过",
                 sha=match.group("sha"),
                 comment_id=str(comment.get("id", "")),
             )
-            key = (created, index)
-            if found is None or key >= (found[0], found[1]):
+            if found is None or (created, index) >= (found[0], found[1]):
                 found = (created, index, verdict)
     return found[2] if found else None
 
@@ -135,8 +185,40 @@ def read_comments(cli: str, issue: str) -> list[Mapping[str, object]]:
     return [c for c in data if isinstance(c, dict)]
 
 
+def hooks_dir() -> Path:
+    return Path(git("rev-parse", "--path-format=absolute", "--git-path", "hooks"))
+
+
+def guard_installed() -> bool:
+    path = hooks_dir() / "pre-push.legacy"
+    try:
+        return os.access(path, os.X_OK) and GUARD_MARKER in path.read_text("utf-8")
+    except OSError:
+        return False
+
+
+def ref_guard(url: str, lines: Iterable[str]) -> tuple[bool, str]:
+    """Check the complete pre-push input (``<local ref> <sha> <remote ref> <sha>`` lines)."""
+    if not is_public(url):
+        return True, "ref-guard: 目标不是公开仓库，跳过"
+    updates: list[tuple[str, str]] = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or ZERO_SHA.match(parts[1]):
+            continue  # malformed or a deletion: nothing is published
+        updates.append((parts[2], parts[1]))
+    with_content = [ref for ref, sha in updates if has_new_commits(sha)]
+    if with_content and len(updates) > 1:
+        refs = "、".join(ref for ref, _ in updates)
+        return False, (
+            f"ref-guard: 推往公开仓库的提交只能一次更新一个 ref（本次 {len(updates)} 个：{refs}），"
+            "否则 gitleaks 与预审核对只覆盖其中一个。请逐个分支推送"
+        )
+    return True, "ref-guard: 通过"
+
+
 def check_push(env: Mapping[str, str]) -> tuple[bool, str]:
-    """Decide one pre-push invocation. Returns (allowed, message)."""
+    """Decide one pre-commit pre-push invocation. Returns (allowed, message)."""
     url = env.get("PRE_COMMIT_REMOTE_URL", "")
     if not is_public(url):
         return True, "preapproval: 目标不是公开仓库，跳过"
@@ -146,9 +228,14 @@ def check_push(env: Mapping[str, str]) -> tuple[bool, str]:
         return True, "preapproval: 删除分支，跳过"
     head = git("rev-parse", "--verify", f"{target}^{{commit}}")
 
-    excludes = [f"--remotes={name}" for name in public_remotes()]
-    if not git("rev-list", "-n", "1", head, "--not", *excludes):
+    if not has_new_commits(head):
         return True, "preapproval: 没有公开仓库尚未包含的提交，放行"
+
+    if not guard_installed():
+        return False, (
+            "preapproval: 未安装多 ref 推送守卫（hooks/pre-push.legacy），"
+            "请先执行 just setup，拒绝推送"
+        )
 
     branch = ""
     for ref in (env.get("PRE_COMMIT_REMOTE_BRANCH", ""), env.get("PRE_COMMIT_LOCAL_BRANCH", "")):
@@ -187,15 +274,40 @@ def check_push(env: Mapping[str, str]) -> tuple[bool, str]:
     return True, f"preapproval: {head} 与 {issue} 的预审批准一致，放行"
 
 
+def install_guard() -> int:
+    path = hooks_dir() / "pre-push.legacy"
+    if path.exists() and GUARD_MARKER not in path.read_text("utf-8", errors="replace"):
+        print(f"install-guard: {path} 已存在且不是本守卫，未覆盖，请人工处理", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(GUARD_SCRIPT, "utf-8")
+    path.chmod(0o755)
+    print(f"install-guard: 已安装 {path}")
+    return 0
+
+
+def check_sync_remote(remote: str) -> str | None:
+    """Return a problem if ``remote`` could push anywhere but the private repository."""
+    if git("config", "--get", f"remote.{remote}.mirror", check=False).lower() in ("true", "1"):
+        return f"remote {remote} 设置了 mirror，可能强制更新，停止"
+    # --push --all: every effective push destination (pushurl entries, insteadOf rewrites).
+    urls = git("remote", "get-url", "--push", "--all", remote, check=False).splitlines()
+    if not urls:
+        return f"无法读取 remote {remote} 的推送地址，停止"
+    if not all(is_repo(url, INTERNAL_REPO) for url in urls):
+        return f"remote {remote} 的推送地址不全是 {INTERNAL_REPO}，停止"
+    return None
+
+
 def sync(remote: str | None) -> int:
     """Fast-forward public ``releases/*`` into the private repository."""
     remote = remote or git("config", "--get", INTERNAL_REMOTE_KEY, check=False) or "internal"
-    current = git("remote", "get-url", remote, check=False)
-    if not current:
+    if remote not in git("remote").splitlines():
         git("remote", "add", remote, INTERNAL_URL)
-        print(f"sync: 已添加 remote {remote} -> {INTERNAL_URL}")
-    elif (repo_slug(current) or "").lower() != INTERNAL_REPO.lower():
-        print(f"sync: remote {remote} 不指向 {INTERNAL_REPO}，停止", file=sys.stderr)
+        print(f"sync: 已添加 remote {remote} -> {INTERNAL_REPO}")
+    problem = check_sync_remote(remote)
+    if problem:
+        print(f"sync: {problem}", file=sys.stderr)
         return 2
 
     sources = public_remotes()
@@ -211,26 +323,50 @@ def sync(remote: str | None) -> int:
         print("sync: 公开仓库没有 releases/* 分支")
         return 0
     prefix = f"refs/remotes/{source}/"
+    # No "+" prefix and no --force: a diverged private branch is rejected, not overwritten.
     specs = [f"{ref}:refs/heads/{ref.removeprefix(prefix)}" for ref in refs]
-    # Never forced: a diverged private branch is rejected and reported, not overwritten.
     result = subprocess.run(  # noqa: S603 - fixed git argv, no shell
-        ["git", "push", "--porcelain", remote, *specs],  # noqa: S607
+        ["git", "push", "--porcelain", "--no-force-with-lease", remote, *specs],  # noqa: S607
+        capture_output=True,
+        text=True,
         check=False,
     )
+    # Porcelain ref lines are "<flag>\t<from>:<to>\t<summary>"; the "To <url>" line and
+    # stderr (remote messages, hook output) are dropped because they may carry the URL.
+    for line in result.stdout.splitlines():
+        if "\t" in line and line[:1] in "*=!+- ":
+            print(f"sync: {line}")
+    if result.returncode != 0:
+        print(f"sync: git push 失败（退出码 {result.returncode}），未强制更新", file=sys.stderr)
     return result.returncode
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check-push", help="pre-push hook")
+    sub.add_parser("check-push", help="pre-commit 预审核对钩子")
+    guard = sub.add_parser("ref-guard", help="git pre-push 多 ref 守卫（读取 stdin）")
+    guard.add_argument("remote_name", nargs="?", default="")
+    guard.add_argument("remote_url", nargs="?", default="")
+    sub.add_parser("install-guard", help="安装 hooks/pre-push.legacy 守卫")
     sync_parser = sub.add_parser("sync", help="同步公开 releases/* 到私有仓库")
     sync_parser.add_argument("--remote", help="私有 remote 名（默认 internal）")
     args = parser.parse_args(argv)
 
-    if args.command == "sync":
-        return sync(args.remote)
-    allowed, message = check_push(os.environ)
+    try:
+        if args.command == "sync":
+            return sync(args.remote)
+        if args.command == "install-guard":
+            return install_guard()
+        if args.command == "ref-guard":
+            allowed, message = ref_guard(args.remote_url, sys.stdin.read().splitlines())
+            if not allowed:
+                print(message, file=sys.stderr)
+            return 0 if allowed else 1
+        allowed, message = check_push(os.environ)
+    except GitError as exc:
+        print(f"internal_review: {exc}", file=sys.stderr)
+        return 1
     print(message if allowed else f"{message}\n{SKIP_HINT}")
     return 0 if allowed else 1
 

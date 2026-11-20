@@ -11,7 +11,16 @@ from pathlib import Path
 
 import pytest
 
-from scripts.internal_review import check_push, latest_verdict, repo_slug
+from scripts.internal_review import (
+    GitError,
+    check_push,
+    check_sync_remote,
+    git,
+    install_guard,
+    latest_verdict,
+    ref_guard,
+    repo_slug,
+)
 
 PUBLIC_URL = "https://github.com/AkkiaLab/AkkiaBot.git"
 REVIEWER = "reviewer-agent-fixture"
@@ -51,7 +60,7 @@ def test_latest_verdict_ignores_non_reviewers_and_takes_newest() -> None:
     comments = [
         comment(REVIEWER, "2026-01-01T00:00:01Z", approval(a)),
         comment(OTHER, "2026-01-01T00:00:03Z", approval(b)),
-        comment(REVIEWER, "2026-01-01T00:00:02Z", f"说明\n`{approval(a, '撤销')}`\n{approval(b)}"),
+        comment(REVIEWER, "2026-01-01T00:00:02Z", f"说明\n{approval(a, '撤销')}\n{approval(b)}"),
     ]
     verdict = latest_verdict(comments, {REVIEWER})
     assert verdict is not None
@@ -93,6 +102,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     run_git(path, "update-ref", "refs/remotes/internal/akkia-7-fixture", "HEAD")
     run_git(path, "config", "--add", "akkia.preapproval.reviewer", REVIEWER)
     monkeypatch.chdir(path)
+    assert install_guard() == 0
     return path
 
 
@@ -239,3 +249,169 @@ def test_pre_push_hooks_registered() -> None:
         "scripts/internal_review.py check-push",
     ):
         assert hook in config
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Quoted, indented-in-quote and fenced examples are not verdicts.
+        "> {line}",
+        "引用：\n>{line}",
+        "示例：\n```\n{line}\n```",
+        "示例：\n~~~text\n{line}\n~~~",
+        "`{line}`",
+        "  {line}",
+        "结论 {line}",
+    ],
+)
+def test_quotes_and_code_are_not_verdicts(content: str) -> None:
+    line = approval("e" * 40)
+    comments = [comment(REVIEWER, "2026-01-01T00:00:01Z", content.format(line=line))]
+    assert latest_verdict(comments, {REVIEWER}) is None
+
+
+def test_quoting_old_approval_does_not_undo_revoke() -> None:
+    a = "a" * 40
+    comments = [
+        comment(REVIEWER, "2026-01-01T00:00:01Z", approval(a)),
+        comment(REVIEWER, "2026-01-01T00:00:02Z", approval(a, "撤销")),
+        comment(
+            REVIEWER,
+            "2026-01-01T00:00:03Z",
+            f"回复上一条：\n> {approval(a)}\n\n```\n{approval(a)}\n```",
+        ),
+    ]
+    verdict = latest_verdict(comments, {REVIEWER})
+    assert verdict is not None
+    assert not verdict.approved
+
+
+def guard_lines(*updates: tuple[str, str]) -> list[str]:
+    return [f"refs/heads/{ref} {sha} refs/heads/{ref} {'0' * 40}" for ref, sha in updates]
+
+
+def test_ref_guard_rejects_second_ref_with_content(repo: Path) -> None:
+    old = run_git(repo, "rev-parse", "HEAD~1")  # already public
+    new = run_git(repo, "rev-parse", "HEAD")
+    # The unchecked ref is the second one: pre-commit would only look at the first.
+    allowed, message = ref_guard(
+        PUBLIC_URL, guard_lines(("releases/v9.9.0", old), ("akkia-7-fixture", new))
+    )
+    assert not allowed
+    assert "akkia-7-fixture" in message
+
+
+def test_ref_guard_allows_single_ref_and_content_free_pushes(repo: Path) -> None:
+    old = run_git(repo, "rev-parse", "HEAD~1")
+    new = run_git(repo, "rev-parse", "HEAD")
+    deletion = f"refs/heads/gone {'0' * 40} refs/heads/gone {old}"
+    assert ref_guard(PUBLIC_URL, guard_lines(("akkia-7-fixture", new)))[0]
+    assert ref_guard(PUBLIC_URL, [*guard_lines(("akkia-7-fixture", new)), deletion])[0]
+    assert ref_guard(PUBLIC_URL, guard_lines(("a", old), ("b", old)))[0]
+    private = "https://github.com/AkkiaLab/AkkiaBot-internal.git"
+    assert ref_guard(private, guard_lines(("a", new), ("b", new)))[0]
+
+
+def test_installed_guard_reads_full_stdin(repo: Path) -> None:
+    """The installed pre-push.legacy wrapper enforces the guard on real hook input."""
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    (scripts / "internal_review.py").write_text(
+        (Path(__file__).resolve().parents[1] / "scripts" / "internal_review.py").read_text("utf-8"),
+        "utf-8",
+    )
+    hook = (
+        Path(run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks"))
+        / "pre-push.legacy"
+    )
+    old = run_git(repo, "rev-parse", "HEAD~1")
+    new = run_git(repo, "rev-parse", "HEAD")
+    stdin = "\n".join(guard_lines(("releases/v9.9.0", old), ("akkia-7-fixture", new))) + "\n"
+    result = subprocess.run(
+        [str(hook), "origin", PUBLIC_URL],
+        cwd=repo,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "ref-guard" in result.stderr
+    single = "\n".join(guard_lines(("akkia-7-fixture", new))) + "\n"
+    result = subprocess.run(
+        [str(hook), "origin", PUBLIC_URL],
+        cwd=repo,
+        input=single,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+
+
+def test_check_push_requires_guard(repo: Path, fake_cli: tuple[Path, Path]) -> None:
+    hook = (
+        Path(run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks"))
+        / "pre-push.legacy"
+    )
+    hook.unlink()
+    cli, data = fake_cli
+    head = run_git(repo, "rev-parse", "HEAD")
+    data.write_text(
+        json.dumps([comment(REVIEWER, "2026-01-01T00:00:01Z", approval(head))]), "utf-8"
+    )
+    allowed, message = check_push(push_env(repo, cli))
+    assert not allowed
+    assert "just setup" in message
+
+
+def test_install_guard_keeps_foreign_hook(repo: Path) -> None:
+    hook = (
+        Path(run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks"))
+        / "pre-push.legacy"
+    )
+    hook.write_text("#!/bin/sh\nexit 0\n", "utf-8")
+    assert install_guard() == 1
+    assert hook.read_text("utf-8") == "#!/bin/sh\nexit 0\n"
+
+
+def test_sync_remote_must_push_only_to_private(repo: Path) -> None:
+    assert check_sync_remote("internal") is None
+    # fetch URL is private but an extra push URL points elsewhere
+    run_git(
+        repo,
+        "remote",
+        "set-url",
+        "--add",
+        "--push",
+        "internal",
+        "https://github.com/AkkiaLab/AkkiaBot-internal.git",
+    )
+    run_git(repo, "remote", "set-url", "--add", "--push", "internal", PUBLIC_URL)
+    assert check_sync_remote("internal") is not None
+    run_git(repo, "remote", "set-url", "--delete", "--push", "internal", "AkkiaBot.git$")
+    assert check_sync_remote("internal") is None
+    run_git(repo, "config", "remote.internal.mirror", "true")
+    assert check_sync_remote("internal") is not None
+    run_git(repo, "config", "--unset", "remote.internal.mirror")
+    # pushInsteadOf only rewrites when there is no explicit pushurl.
+    run_git(repo, "config", "--unset-all", "remote.internal.pushurl")
+    assert check_sync_remote("internal") is None
+    run_git(
+        repo,
+        "config",
+        f"url.{PUBLIC_URL}.pushInsteadOf",
+        "https://github.com/AkkiaLab/AkkiaBot-internal.git",
+    )
+    assert check_sync_remote("internal") is not None
+    assert check_sync_remote("origin") is not None
+
+
+def test_git_error_hides_args_and_stderr(repo: Path) -> None:
+    mock_url = (
+        "https://user:mock-not-a-token@example.invalid/x.git"  # mock: fictional credential URL
+    )
+    with pytest.raises(GitError) as exc:
+        git("ls-remote", mock_url)
+    assert "mock-not-a-token" not in str(exc.value)
+    assert "example.invalid" not in str(exc.value)

@@ -38,27 +38,30 @@
 1. 实现者照常从目标 `releases/vX.Y.Z` 建分支 `akkia-<编号>-<描述>` 并提交，先推到私有库：`git push internal <分支>`（remote 不存在时执行一次 `just internal-sync`，会自动添加 `internal`）。
 2. 在私有库开 PR，规则和公开侧相同：标题 `AKKIA-<编号>: <摘要>`，正文第一行 `Closes AKKIA-<编号>`，目标为对应的 `releases/*`。私有 PR 会被 Multica 关联到 issue，这是允许的（工作区已关闭“PR 合并自动完成 issue”）。PR 正文按公开标准写，公开 PR 原样使用。
 3. 评审者在私有 PR 上逐提交审查，可开行内评论，需要时可运行测试；实现者修复后继续推私有库。中间提交含敏感内容时，先在私有库改写历史（squash / rebase 后 force push，私有库允许），再请求批准。
-4. 所有智能体共用同一个 GitHub 账号，GitHub 上无法 Approve 自己的 PR，所以批准写在 Multica issue 评论中，单独一行、格式固定：
+4. 所有智能体共用同一个 GitHub 账号，GitHub 上无法 Approve 自己的 PR，所以批准写在 Multica issue 评论中，单独一行、格式固定（行首不缩进、不加引用符号或反引号，冒号为全角）：
    - `预审通过：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`
    - 撤销：`预审撤销：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`
+
+   引用（`>` 开头）、代码块（```` ``` ```` / `~~~` 围起）和行内代码中的同样文字都不算结论，所以回复中引用旧批准不会让撤销失效。
 5. 实现者把**这个 SHA** 推到公开库（`git push origin <分支>`），pre-push 钩子核对通过后按现行规则开公开 PR，后续评审合并、CI 与评审线程处理不变。公开侧需要修改时回到第 3 步。
 6. 公开 PR 合并后关闭私有 PR，删除私有分支。
 
 **`preapproval-check` 钩子的判定**（`scripts/internal_review.py check-push`）
 
 - 目标不是公开仓库（例如推私有库）、删除分支：放行。
+- 先由多 ref 守卫检查完整的推送输入（见下一条），再进入 pre-commit 的单个 ref 判定。
 - 待推送的提交都已在公开 remote 上（如发布分支、上合、已公开提交的新分支名）：放行。
 - 否则从远端分支名（其次本地分支名）解析 `akkia-<编号>`，用 multica CLI（`$MULTICA_CLI_PATH`）读取该 issue 的全部评论，只认本机配置的评审者智能体写的预审结论，取最新一条：
   - 没有结论、最新为撤销、或批准的 SHA 与待推送 head 不完全一致：拒绝；
   - 分支名没有编号、本机未配置评审者、找不到 multica CLI 或读取失败：拒绝。
+- **多 ref 守卫**：pre-commit 只把一次推送中的一个 ref 交给钩子（gitleaks、预审核对都只覆盖它）。因此 `just setup` 另外安装 `hooks/pre-push.legacy`（`scripts/internal_review.py install-guard`），pre-commit 生成的 pre-push 钩子会把完整的推送输入交给它。推往公开库时，只要有一个 ref 带有公开库没有的提交，本次推送就只能更新这一个 ref（删除不计），否则拒绝，请逐个分支推送；都不带新提交的多 ref 推送（如 tag）照常放行。守卫未安装时 `preapproval-check` 拒绝带新提交的公开推送并提示执行 `just setup`。守卫不读取 `SKIP`。
 - 评审者的智能体 ID 只放在运行机的 git 配置中，不写进仓库：`git config --add akkia.preapproval.reviewer <agent id>`（受管检出共享 bare 仓库配置，每台运行机设置一次）。
 - 确需跳过时显式执行 `SKIP=preapproval-check git push …`，并在 issue 中写明原因（负责人决定不在运行机上禁止跳过）。负责人手动推送、没有 multica CLI 时也用这种方式。
 
-**同步发布分支**：`just internal-sync` 把公开库的全部 `releases/*` fast-forward 到私有库。方向只从公开到私有，不 force；私有侧分叉时推送被拒绝并报错，需人工查明，不要覆盖。新建 release 分支后或私有 PR 的 base 落后时执行。
+**同步发布分支**：`just internal-sync` 把公开库的全部 `releases/*` fast-forward 到私有库。方向只从公开到私有，不 force；私有侧分叉时推送被拒绝并报错，需人工查明，不要覆盖。推送前核对私有 remote 的全部有效推送地址（`git remote get-url --push --all`，含 `pushurl` 与 `pushInsteadOf` 改写）都指向 `AkkiaBot-internal`，且未设置 `mirror`，否则停止。输出只包含 ref 结果和退出码，不打印 remote URL 或 git 原始错误（可能含认证信息）。新建 release 分支后或私有 PR 的 base 落后时执行。
 
 **已知限制**
 
-- pre-commit 在一次推送多个 ref 时只检查第一个 ref，推公开库时一次只推一个分支。
 - 钩子只核对提交内容。PR 标题、正文和公开评论无法由钩子拦截，靠评审者在私有 PR 上审阅正文、实现者原样发布。
 - 钩子可以被跳过，CI `secret-scan` 仍是公开后的兜底。
 
