@@ -70,9 +70,11 @@ GitHub 和 Multica 的事件筛选都无法按评审者过滤，小队 Reviewer 
 
 ## 分派提示词
 
-以下内容原样作为 autopilot 描述（run_only 运行提示词）。
+以下内容作为 autopilot 描述（run_only 运行提示词）。仓库不写死 Multica 对象 ID：提示词第一行的 `REVIEWER_AGENT_ID` 由 autopilot 配置提供，同步时把占位符 `<REVIEWER_AGENT_ID>` 替换为 Multica 中小队 Reviewer 智能体的 id（`multica squad member list` 核对），其余内容原样同步。
 
 ```text
+配置：REVIEWER_AGENT_ID = <REVIEWER_AGENT_ID>（小队 Reviewer 智能体 id，由本 autopilot 配置提供）。
+
 PR 评审通知分派（规则见 AkkiaBot 仓库 docs/review-notify.md）。本运行由 GitHub 仓库 webhook 推送触发时，Trigger payload 即 GitHub 原始 pull_request_review 载荷；手动触发时没有该载荷，执行“补偿扫描”。你只做判定和通知，不改代码、不在 GitHub 上写任何内容、不创建 issue，不在输出或评论中复述 webhook URL 或令牌。下文 $M 指 "$MULTICA_CLI_PATH"。
 
 ## 0. 入口
@@ -115,7 +117,7 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 
 ### P5. 唤醒实现者（先查后建、建后收敛）
 - ISSUE.status 为 done 或 cancelled：不唤醒、不改状态，W = none。
-- assignee_type ≠ agent，或 assignee_id = 60f2a233-d86f-4c9a-aa0e-63e2592433bd（小队 Reviewer Ginoza）：不唤醒，W = none。
+- assignee_type ≠ agent，或 assignee_id = REVIEWER_AGENT_ID（小队 Reviewer，见提示词首行配置）：不唤醒，W = none。
 - 否则 TARGET = assignee_id。候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 本运行智能体自身（MULTICA_AGENT_ID）且 instruction 以 “[review-notify]” 开头的规则。
 - 没有候选：在工作目录写指令文件，内容：
     [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
@@ -159,6 +161,6 @@ GitHub hook 与 autopilot 启用后，在 PR #37（关联 BOT-35）和临时的�
 
 ## 验收与变更
 
-- 改提示词：先改本文并经 PR 评审，再用 `multica autopilot update <id> --description "<提示词>"` 同步，回读确认一致。
+- 改提示词：先改本文并经 PR 评审，再把 `<REVIEWER_AGENT_ID>` 替换为当前小队 Reviewer 的智能体 id，用 `multica autopilot update <id> --description "<提示词>"` 同步，回读确认除该配置值外与本文一致。Reviewer 更换时只更新 autopilot 配置中的这一值。
 - 轮换 webhook URL：`multica autopilot trigger-rotate-url`，随后用 `gh api -X PATCH repos/AkkiaLab/AkkiaBot/hooks/<hook id>` 更新 hook 的 `config.url`，URL 只经变量传递，不回显。
 - 停用：`multica autopilot update <id> --status paused`（GitHub 推送会返回 `autopilot_paused` 并被忽略），或在 GitHub 停用 hook。
