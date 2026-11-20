@@ -52,4 +52,5 @@
 
 ## PR 评审
 
-- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
+- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；智能体共用 App `akkialab-agent` 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
+- GitHub 身份：提交、推送、开 PR 用 `AkkiaS7`；评审、合并与发布流水线写操作用工作区共用 App `akkialab-agent`（不再按项目或角色建 App）。该 App 是发布规则集的绕过者，用它合并时平台门禁不生效，所以 Reviewer 合并只用 `reviewer-gh merge`（先核对必需检查、评审线程与批准），`reviewer-gh gh` 的 token 没有合并权限。按 bot 用户 ID 识别该 App，不按登录名。见 `docs/reviewer-github-app.md`。
