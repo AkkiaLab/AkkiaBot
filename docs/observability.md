@@ -126,6 +126,10 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
 | LLM 错误或超时持续出现 | 15 分钟内 `antispam_llm_errors_total` 增加 ≥ 3 | 5 分钟 | OK |
 
+告警依赖的带标签计数器在进程启动时就以 0 导出：`rate()` / `increase()` 看不到“首次出现就已经是 1”的序列，否则重启后第一次错误会被漏算。`handler_errors_total` 和 `handler_duration_seconds` 的 `handler` 序列在 `track_handler` 装饰（即 handler 注册）时创建，新增 handler 无需另外登记；`antispam_llm_errors_total` 的 `error` 取值来自 `akkiabot_antispam.FAIL_OPEN_ERRORS`（分类器 `FailOpenError` 的全部取值）。给告警新增带标签的计数器时，按同样方式从取值的来源预先初始化。
+
+边界：预初始化只保证序列在进程中以 0 创建。若 Alloy（抓取间隔 30 秒）在第一次错误发生前采到 0，且查询窗口内同时包含错误前后的样本，`increase()` / `rate()` 可以识别该增量；这是本改动的保证范围。新进程在第一次被抓取之前就出错时，第一个样本已经大于 0，结果取决于查询窗口内重启前的样本，不作保证：新值小于旧值（计数器重置）时计入；新值大于旧值时只计差值，例如旧值和新值都是 1 时漏算；窗口内没有旧样本（停机时间长于窗口，或全新环境）时也漏算。这些情况用 promtool 单元测试固定在 `deploy/observability/tests/counter-prewarm.test.yaml`，`just promql-test` 运行（需要 docker，使用开发栈同一个 otel-lgtm 镜像中的 promtool）。
+
 为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中：`staging` 和 `production`（生产栈于 M10 切换时开始上报，BOT-16）。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
 
 通知走 Grafana Cloud 默认的 notification policy 和 contact point（stack 所有者的邮箱）。需要发到其他渠道（例如 Telegram）时，在 Grafana 中新增 contact point，并修改 notification policy；这部分目前不纳入版本管理。

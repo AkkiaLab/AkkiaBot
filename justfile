@@ -158,6 +158,10 @@ docker-build tag="akkiabot:dev":
 dev-observability:
     {{ compose_dev }} --profile observability up -d
 
+# PromQL unit tests for the alert queries (promtool from the pinned otel-lgtm image; needs docker)
+promql-test:
+    docker run --rm -v "{{ justfile_directory() }}/deploy/observability/tests:/tests:ro" --entrypoint /otel-lgtm/prometheus/promtool grafana/otel-lgtm:0.41.0 test rules /tests/counter-prewarm.test.yaml
+
 # Upload dashboards and alert rules to Grafana (GRAFANA_URL / GRAFANA_SA_TOKEN; docs/observability.md)
 grafana-sync *args:
     uv run python -m scripts.grafana_sync {{ args }}
