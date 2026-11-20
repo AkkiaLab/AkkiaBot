@@ -52,4 +52,4 @@
 
 ## PR 评审
 
-- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务唤醒 Leader 在评论中最新 @ 的唯一主责成员，无法确定时唤醒 Leader 转交）；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
+- PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；Reviewer App 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
