@@ -59,7 +59,7 @@ flowchart LR
 
 - 某一跳合并冲突时：中止合并，**只暂停这一方向**，其他方向照常上合。
 - 去重：在仓库中创建一个带 `release-forward-conflict` 标签的 issue，正文含标记 `<!-- release-forward: 来源->目标 -->`。存在打开的同标记 issue 时不会重复创建，也不会重复通知。
-- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR、PR 标题中的 AKKIA 编号以及恢复步骤；同时向 Multica 自动化 webhook（secret `MULTICA_RELEASE_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷，由 autopilot 为开发小队创建任务。该 autopilot 尚待迁入 AkkiaLab 工作区：迁入前 webhook 通知会丢失，但上合本身由 GitHub Actions 执行不受影响，冲突仍会在仓库 issue 中记录，需要人工关注。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
+- 上下文：issue 记录触发来源、来源/目标 SHA、冲突文件、来源侧待上合的 PR、目标侧改动过冲突文件的 PR、PR 标题中的 AKKIA 编号以及恢复步骤；同时向 Multica 自动化 webhook（secret `MULTICA_RELEASE_WEBHOOK_URL`）发送一次 `release-forward-conflict` 载荷，由 autopilot 为开发小队创建任务。webhook 通知未送达（secret 未配置或 autopilot 停用）时，上合本身由 GitHub Actions 执行不受影响，冲突仍会在仓库 issue 中记录，需要人工关注。仓库是公开的，issue 中只有分支、SHA、文件名和 PR 编号。
 - 解决：
 
   ```bash

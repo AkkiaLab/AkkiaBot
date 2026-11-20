@@ -329,7 +329,7 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 
 **触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub GraphQL API 逐页检查 master 的全部提交，看过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态（不按提交时间截断，重新验收旧提交也算）。API 出错或提交数超出检查上限时，workflow 直接失败，不会当作“无发版”：
 
-- 有，就 POST 调用 Multica autopilot 的 webhook，由 Engineer 在本机执行清理。URL 存在 Actions secret `MULTICA_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；
+- 有，就 POST 调用 Multica autopilot 的 webhook，由小队成员在本机执行清理。URL 存在 Actions secret `MULTICA_PRUNE_WEBHOOK_URL` 中，不写入仓库，也不出现在日志里；请求带 `Idempotency-Key: akkiabot-e2e-prune-<ISO 周>`，同一周重跑 workflow 不会重复触发；
 - 没有，就直接结束，不占用 Multica 运行次数；
 - workflow 不接触 Telegram 会话。没有用 `--record-status` 的手动 staging 运行不会被检测到，它们留下的群会在下一次有发版的那周一并清理。
 
@@ -347,7 +347,7 @@ just e2e-prune-groups --apply    # 真正删除
 - 输出只包含数量和运行标识，不包含群 id；
 - 与 `run` 使用同一把验收锁，不会与正在进行的验收并发。
 
-**Multica autopilot**：由 Leader 在工作区创建（webhook 触发，指派给 Engineer）。任务内容：先执行 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，把两次输出（数量和运行标识）报告到任务中。
+**Multica autopilot**：「每周清理旧的 staging 发版验收群」（webhook 触发，create_issue，指派给开发小队，由 Leader 指定执行成员）。任务内容：先执行 dry-run，确认结果只包含上述范围内的群，再执行 `--apply`，把两次输出（数量和运行标识）报告到任务中。
 
 ### 6.4 本地官方测试 key 入群验证（`m7.captcha-test-keys`）
 

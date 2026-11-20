@@ -1,6 +1,6 @@
 # Sentry 报错自动分派
 
-本文说明 Sentry 新增报错、回归和 resolved 如何自动同步为 Multica 小队任务，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`，任务分工见工作区约定。本链路由 BOT-55（旧工作区编号，已不可访问）建立；配套的 autopilot「Sentry 报错分派」尚待迁入 AkkiaLab 工作区（由 DevOps 主责，外部 webhook 切换需负责人确认），迁入前不会自动建单。
+本文说明 Sentry 新增报错、回归和 resolved 如何自动同步为 Multica 小队任务，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`，任务分工见工作区约定。本链路由 BOT-55（旧工作区编号，已不可访问）建立；配套的 autopilot「Sentry 报错分派（AkkiaBot）」于 2026-11-20 在 AkkiaLab 工作区重建，分派脚本固定版本 `DISPATCH_SHA` 记录在 autopilot 提示词中，升级脚本时由 DevOps 显式更新。
 
 ## 1. 数据流
 
