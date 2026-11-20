@@ -8,7 +8,7 @@
 - 不得把 token、DSN、Telegram 会话、验证码、两步验证密码写进仓库、PR、日志或命令行参数；写入 1Password 时值经 stdin 传递。交接时说明 1Password 中的位置即可。
 - 测试与文档中的凭据样例：一律使用一看就是假的、且**不符合真实凭据格式**的占位值，例如 bot token 用 `123456:fake-bot-token-for-tests`（真实格式为 8–10 位 bot id + `:AA` 开头的 35 位串），其他密钥用 `fake-api-hash-for-tests` 这类低熵字符串。不要照抄官方文档的示例 token，不要手写"看起来真实"的随机串，也不要用字符串拼接（如 `"123456:" + "A" * 35`）凑出真实格式或绕过扫描。需要能被解析器识别的 token（如 BotFather 回复解析）时复用 `akkiabot_e2e.testing.MOCK_BOT_TOKEN`。
 - 凭据形样例必须就地声明为 mock（负责人要求）：赋给 `MOCK_`（局部变量用 `mock_`）开头的名称，并在同一行或上一行写 `# mock: ...` 注释，说明是人工构造、不可用的测试值；不要在调用参数、字典、f-string 里直接写字面量。`tests/test_secret_samples.py` 会拦截已跟踪文件中的真实 Telegram bot token 格式，以及未按此声明的凭据形字面量（`<数字>:<字母…>`、`ghs_`/`ops_` 等前缀、Sentry DSN、api_hash、webhook secret、Telethon 会话串），失败时只报告位置。
-- 凭据扫描门禁见 `docs/secret-scanning.md`：pre-commit 扫暂存区，pre-push 扫所有未推送提交（`just setup` 会同时安装两类钩子），CI 的固定检查 `secret-scan` 扫全部提交，`just secret-scan` 可在本地复现。命中后只报告规则、文件、行号；不要用 `--no-verify`、拼接或宽泛 allowlist 绕过，未知告警不得直接写入 `.gitleaksignore`。
+- 凭据扫描门禁见 `docs/secret-scanning.md`：pre-commit 扫暂存区，pre-push 扫公开 remote `origin` 还没有的提交并运行 `test_secret_samples`（`just setup` 会同时安装两类钩子），CI 的固定检查 `secret-scan` 扫全部提交，`just secret-scan` 可在本地复现。命中后只报告规则、文件、行号；不要用 `--no-verify`、拼接或宽泛 allowlist 绕过，未知告警不得直接写入 `.gitleaksignore`。
 - 安全告警不能只凭来源记录判定为构造值，还要用服务方无副作用的只读接口实际验证（如 Telegram `getMe`），来源证据与验证结果分开记录；凭据只在进程内读取，不进命令参数、日志、含值 URL 或报告。网络失败、限流或本地格式拒绝记为"未验证"；若意外有效，停止调用并请负责人吊销/轮换。
 - 日志：调用方在记录前显式改写已知密钥，日志模块不做自动识别或递归脱敏；配置使用 `Settings.redacted()` 等安全形式。会在 URL 或调试日志中带出凭据的第三方库（`httpx`、`httpcore`、PTB 的 Bot 日志、Telethon），在代码中把它们的日志级别固定，不随根日志级别放开。
 - 真实产品数据不公开（负责人 2026-11-15 决定）：仓库是公开的，真实业务统计（群数、成员数、消息数、禁言人数、命中率等）、生产指标数值及其截图、导出和验收记录，都不能写进代码、文档、PR / issue 评论或公开的 CI 产物，也不能用汇总统计或“约 N 万”之类的近似值绕过。真实数据和验收证据只放在有访问控制的内部记录（Multica issue、1Password、生产机上权限 600 的报告）；公开文档只写方法、指标定义、查询模板和明确标注的虚构示例。发现已公开的内容，先在受控位置留存原文，再清理并在内部记录位置与处理状态，报告中不复述数值；历史提交等仍可访问的残留如实列出，历史重写等额外操作先提方案、经确认再执行。
@@ -51,6 +51,8 @@
 - 群内公开发送、提到某个成员的提醒（入群验证提示、`/ban`、`/warn`、`/spam` 及反垃圾通知等）只显示名字片段，不带完整名字和 `@username`，因为有人用名字或用户名打广告（负责人要求）。统一用 `akkiabot_core.telegram.public_name` 生成显示文本（超过 4 个字符时只保留首尾各 2 个字符），再包进 `tg://user?id=` 提及链接，提醒对象仍可点击识别；不要直接拼 `first_name` / `full_name` / `username`。只发给管理员的提及（如举报转人工时 @ 管理员）和用户主动查询的 `/id` 不受此限。真实验收中的检查见 `docs/e2e-acceptance.md`（`check_name_hidden`）。
 
 ## PR 评审
+
+- 推送公开仓库前先在私有库 `AkkiaLab/AkkiaBot-internal` 完成小队内部预审（负责人 2026-11-20 确认）：私有 PR 与公开 PR 规则相同，评审者在 Multica issue 写 `预审通过：AkkiaLab/AkkiaBot-internal@<40 位 SHA>`，pre-push 钩子 `preapproval-check` 核对推往公开库的 head 与之一致。流程、跳过方式和已知限制见 `docs/secret-scanning.md`“推送前的内部预审”。
 
 - PR 评审通知：Copilot、人类等小队 Reviewer 以外的评审会经 webhook 回到 PR 关联的 issue，留 `[review-notify]` 记录评论并唤醒负责该 issue 的智能体（小队任务按 Leader 评论中 `主责：@成员` 的显式指派行路由，无指派记录时唤醒 Leader 转交）；智能体共用 App `akkialab-agent` 的评审和 `AkkiaS7` 在线程里的纯回复不触发。规则、去重和配置见 `docs/review-notify.md`，改分派提示词先改该文档再同步 autopilot。
 - GitHub 身份：提交、推送、开 PR 用 `AkkiaS7`；评审、合并与发布流水线写操作用工作区共用 App `akkialab-agent`（不再按项目或角色建 App）。该 App 是发布规则集的绕过者，用它合并时平台门禁不生效，所以 Reviewer 合并只用 `reviewer-gh merge`（先核对必需检查、评审线程与批准），`reviewer-gh gh` 的 token 没有合并权限。按 bot 用户 ID 识别该 App，不按登录名。见 `docs/reviewer-github-app.md`。

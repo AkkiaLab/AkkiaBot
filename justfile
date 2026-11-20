@@ -10,7 +10,7 @@ default:
 
 # Install Python + web dependencies and git hooks
 setup: setup-py setup-web
-    @if git rev-parse --git-dir >/dev/null 2>&1; then uv run pre-commit install || echo "warning: pre-commit hooks not installed"; fi
+    @if git rev-parse --git-dir >/dev/null 2>&1; then uv run pre-commit install || echo "warning: pre-commit hooks not installed"; python3 scripts/internal_review.py install-guard || echo "warning: pre-push ref guard not installed"; fi
 
 setup-py:
     uv sync --all-packages --locked
@@ -32,6 +32,10 @@ lint-web:
 # Scan every commit reachable from HEAD for credentials (same as the CI `secret-scan` job)
 secret-scan:
     uv run pre-commit run gitleaks-history --hook-stage manual --all-files
+
+# Fast-forward public releases/* into the private pre-review repo (adds the `internal` remote)
+internal-sync:
+    python3 scripts/internal_review.py sync
 
 # Auto-format and apply safe fixes
 fmt:

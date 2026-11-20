@@ -32,10 +32,11 @@ repos:
     hooks:
       # Before each commit: staged changes.
       - id: gitleaks
-      # Before each push (incl. the first push of a branch): every commit not on a remote yet.
+      # Before each push (incl. the first push of a branch): every commit the public remote
+      # (origin) does not have yet, even if it was already pushed to the private review repo.
       - id: gitleaks
         alias: gitleaks-unpushed
-        name: gitleaks (unpushed commits)
+        name: gitleaks (commits not on origin)
         entry: bash scripts/secret_scan.sh unpushed
         always_run: true
         stages: [pre-push]
@@ -54,3 +55,20 @@ repos:
         language: system
         entry: pnpm exec biome check --write --no-errors-on-unmatched --files-ignore-unknown=true
         types_or: [javascript, jsx, ts, tsx, json, css]
+      # Before each push: tracked files must not hold real-looking credential samples.
+      - id: test-secret-samples
+        name: test_secret_samples
+        language: system
+        entry: uv run --frozen pytest -q -p no:cacheprovider tests/test_secret_samples.py
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      # Before each push to the public repo: new commits need the reviewer's 预审 approval
+      # of exactly the pushed sha (docs/secret-scanning.md, "推送前的内部预审").
+      - id: preapproval-check
+        name: preapproval (public push)
+        language: system
+        entry: python3 scripts/internal_review.py check-push
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
