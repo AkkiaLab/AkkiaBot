@@ -1,0 +1,109 @@
+# promtool unit tests (`just promql-test`): how increase()/rate() in the alert
+# rules see the first error after a restart, with and without the series being
+# exported at 0 from process start. All series are synthetic.
+#
+# Scrape interval is 30s (config.alloy), so each value below is one scrape.
+# `_` = no sample (series absent), `stale` = staleness marker (process down).
+rule_files: []
+evaluation_interval: 30s
+
+tests:
+  # Lazy series (old behaviour): the first error after a restart creates the
+  # series already at 1 and nothing older is in the window -> missed.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "_ _ _ 1 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 0
+
+  # Pre-initialised: the first scrape sees 0, the error happens later -> counted.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "0 0 0 1 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 1
+
+  # Same for the handler error-rate alert: first call fails right after the
+  # series appeared at 0 -> error ratio 1 (> 5% threshold).
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_handler_errors_total{env="t",handler="h"}'
+        values: "0 0 0 1 1 1"
+      - series: 'akkiabot_handler_duration_seconds_count{env="t",handler="h"}'
+        values: "0 0 0 1 1 1"
+    promql_expr_test:
+      - expr: >-
+          sum by (env) (rate(akkiabot_handler_errors_total[5m]))
+          / sum by (env) (rate(akkiabot_handler_duration_seconds_count[5m]))
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 1
+
+  # --- Outside the guarantee: the error happens before the new process is
+  # first scraped, so its first sample is already 1. Whether increase() sees
+  # it depends on the pre-restart samples still inside the window; the cases
+  # below pin that behaviour, they are not something the alert can rely on.
+
+  # Pre-restart value 0 still in the window: 0 -> 1 looks like an increase.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "0 0 0 stale 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 1
+
+  # Pre-restart value 3: the new first sample 1 < 3 is a counter reset, and
+  # increase() counts the post-reset value -> counted.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "3 3 3 stale 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 1
+
+  # Pre-restart value 1 (one earlier error), new first sample also 1: neither an
+  # increase nor a reset -> missed. Likewise any new value >= the old one is
+  # only counted as the difference.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "1 1 1 stale 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 0
+
+  # No pre-restart sample inside
+  # the window (downtime longer than the window, or a brand-new environment)
+  # -> the series is first seen at 1, still missed despite pre-initialisation.
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_antispam_llm_errors_total{env="t",error="timeout"}'
+        values: "0 stale _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 1 1 1"
+    promql_expr_test:
+      - expr: clamp_max(sum by (env) (increase(akkiabot_antispam_llm_errors_total[15m])), 1)
+        eval_time: 18m
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 0

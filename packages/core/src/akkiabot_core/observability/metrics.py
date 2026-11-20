@@ -12,7 +12,7 @@ import functools
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import overload
 
 from prometheus_client import (
@@ -175,6 +175,17 @@ def count_antispam_verdict(verdict: str, action: str) -> None:
     ANTISPAM_VERDICT_TOTAL.labels(verdict=verdict, action=action).inc()
 
 
+def init_antispam_llm_errors(errors: Iterable[str]) -> None:
+    """Export ``antispam_llm_errors_total`` as 0 for every known error class.
+
+    The alert uses ``increase()``, which cannot see the first increment of a
+    series that appears already at 1 — so after a restart the first failures
+    would be missed. Callers pass the classifier's own list of error classes.
+    """
+    for error in errors:
+        ANTISPAM_LLM_ERRORS_TOTAL.labels(error=error)
+
+
 def observe_antispam_llm(seconds: float, *, error: str | None = None) -> None:
     ANTISPAM_LLM_DURATION_SECONDS.observe(seconds)
     if error is not None:
@@ -225,12 +236,19 @@ def track_handler[**P, R](
 
     Usable as ``@track_handler`` (label = function ``__qualname__``) or
     ``@track_handler("name")``. The handler name is also bound to the log
-    context. Exceptions are counted, logged and re-raised unchanged.
+    context. The handler's metric series are created (at 0) when it is
+    decorated, not on its first call. Exceptions are counted, logged and re-raised unchanged.
     """
 
     def decorate(fn: _AsyncFn[P, R], label: str) -> _AsyncFn[P, R]:
         if not inspect.iscoroutinefunction(fn):
             raise TypeError("track_handler 只能装饰 async 函数")
+        # Every handler label passes through here when the handler is
+        # registered, so create its series now (at 0): the error-rate alert
+        # uses rate(), which cannot see the first error of a series that only
+        # appears once that error happens (e.g. the first one after a restart).
+        HANDLER_ERRORS_TOTAL.labels(handler=label)
+        HANDLER_DURATION_SECONDS.labels(handler=label)
 
         @functools.wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:

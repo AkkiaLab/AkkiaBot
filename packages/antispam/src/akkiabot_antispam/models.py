@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
 type SpamCategory = Literal["ad", "gambling", "fraud", "other", "none"]
+
+FailOpenError = Literal["timeout", "api_error", "parse_error", "error"]
+"""Error class recorded on a fail-open verdict."""
+FAIL_OPEN_ERRORS: Final[tuple[str, ...]] = get_args(FailOpenError)
+"""Every :data:`FailOpenError` value (metrics export them all from startup)."""
 
 
 class VerdictSource(StrEnum):

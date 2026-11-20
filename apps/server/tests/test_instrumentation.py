@@ -1,7 +1,10 @@
 import io
 import json
 import logging
+import subprocess
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,6 +20,8 @@ from akkiabot_server.bot.types import Context
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
 
@@ -51,6 +56,23 @@ def sentry_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, An
     finally:
         sentry_sdk.get_client().close()
         sentry_sdk.get_global_scope().set_client(None)
+
+
+# Handler labels registered outside the command registry (PTB handlers in
+# bot/application.py, directly decorated handlers and jobs).
+_NON_COMMAND_HANDLERS = {
+    "service_message",
+    "record_message",
+    "my_chat_member",
+    "chat_member",
+    "antispam",
+    "callback:config",
+    "chat_join_request",
+    "antispam_guard",
+    "spam_report",
+    "job:message_log_cleanup",
+    "job:captcha_timeout",
+}
 
 
 async def _boom(_update: Update, _context: Context) -> None:
@@ -136,3 +158,60 @@ async def test_updates_counted_by_type(runtime: Runtime, updates: UpdateFactory)
     before = metric_value("akkiabot_updates_total", type="my_chat_member")
     await runtime.application.process_update(updates.my_chat_member())
     assert metric_value("akkiabot_updates_total", type="my_chat_member") == before + 1
+
+
+# Runs in a fresh interpreter, so no sample left behind by another test can
+# satisfy the check: builds the real Runtime and reports the alerting series.
+_STARTUP_SERIES_SCRIPT = """
+import json, sys
+from akkiabot_core.cache import MemoryCache
+from akkiabot_core.config import Settings
+from akkiabot_core.observability import REGISTRY
+from akkiabot_server.runtime import Runtime
+
+args = json.load(sys.stdin)
+settings = Settings(
+    telegram={"bot_token": args["bot_token"]},
+    db={"url": "sqlite+aiosqlite:///" + args["db"]},
+    observability={"metrics_enabled": False},
+)
+runtime = Runtime.build(settings, cache=MemoryCache())
+wanted = {
+    "akkiabot_handler_errors_total": "handler",
+    "akkiabot_handler_duration_seconds_count": "handler",
+    "akkiabot_antispam_llm_errors_total": "error",
+}
+series = {name: {} for name in wanted}
+for metric in REGISTRY.collect():
+    for s in metric.samples:
+        if s.name in wanted:
+            series[s.name][s.labels[wanted[s.name]]] = s.value
+json.dump(
+    {"series": series, "commands": [c.name for c in runtime.deps.commands]}, sys.stdout
+)
+"""
+
+
+def test_alerting_series_are_zero_right_after_startup(tmp_path: Path) -> None:
+    """Right after startup (fresh process) every registered handler and every
+    LLM error class already exports its alerting series, all at 0 — so the
+    first error after a restart is a visible 0 → 1 step for rate() / increase()."""
+    from akkiabot_antispam import FAIL_OPEN_ERRORS
+
+    result = subprocess.run(
+        [sys.executable, "-c", _STARTUP_SERIES_SCRIPT],
+        input=json.dumps({"bot_token": MOCK_BOT_TOKEN, "db": str(tmp_path / "bot.db")}),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    report = json.loads(result.stdout)
+    series: dict[str, dict[str, float]] = report["series"]
+    expected = {f"command:{name}" for name in report["commands"]} | _NON_COMMAND_HANDLERS
+
+    for name in ("akkiabot_handler_errors_total", "akkiabot_handler_duration_seconds_count"):
+        assert expected <= series[name].keys(), name
+        assert set(series[name].values()) == {0.0}, name
+    llm_errors = series["akkiabot_antispam_llm_errors_total"]
+    assert llm_errors == dict.fromkeys(FAIL_OPEN_ERRORS, 0.0)

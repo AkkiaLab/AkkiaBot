@@ -26,7 +26,13 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat.completion_create_params import ResponseFormat
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from akkiabot_antispam.models import SpamContext, SpamVerdict, Usage, VerdictSource
+from akkiabot_antispam.models import (
+    FailOpenError,
+    SpamContext,
+    SpamVerdict,
+    Usage,
+    VerdictSource,
+)
 from akkiabot_antispam.prompts import VERDICT_JSON_SCHEMA, Prompt, user_message
 from akkiabot_antispam.tracing import NullTracer, Tracer
 
@@ -249,7 +255,7 @@ class AntiSpamClassifier:
             **common,
         )
 
-    def _fail_open(self, error: str) -> SpamVerdict:
+    def _fail_open(self, error: FailOpenError) -> SpamVerdict:
         return SpamVerdict(
             is_spam=False,
             category="none",
