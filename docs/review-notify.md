@@ -45,10 +45,11 @@ autopilot / trigger / hook 的实际 ID 以 Multica 中的 autopilot 配置和 G
 3. **原任务状态**：done / cancelled 不重开、不唤醒，只留一条记录评论；其他状态正常处理。
 4. **实现者**：
    - 负责人是智能体且不是 Reviewer：唤醒该智能体。
-   - 负责人是小队（`assignee_type=squad`，本工作区任务的默认形态，主责成员由 Leader 在评论中指定）：取该 issue 运行记录（`multica issue runs`）中最新一次不属于小队 Leader、也不属于 Reviewer 的运行，唤醒其智能体，即最近在该任务上工作的主责成员；没有这样的运行时唤醒小队 Leader，由 Leader 在 issue 上 @ 主责成员转交，自己不处理评审意见。
+   - 负责人是小队（`assignee_type=squad`，本工作区任务的默认形态）：以 Leader 明确指定的**当前主责**为准，不看运行记录（Leader 改派后新主责可能还没有运行，按运行记录会唤醒旧主责）。取该 issue 上小队 Leader 发的、mention 了小队成员智能体（不含 Leader 与 Reviewer）的评论中最新的一条：它恰好 mention 一名成员时，唤醒该成员；mention 多名成员，或 Leader 从未这样指定过，视为无法确定，唤醒 Leader，由 Leader 在 issue 上 @ 当前主责转交，自己不处理评审意见。因此 Leader 改派主责时须在评论中只 @ 新主责一人。
    - 负责人是成员、为空或为 Reviewer：只留记录评论，不唤醒。
 5. **分步状态与失败恢复**（每条评审独立推进，任何一步失败都可从断点续做）：
    - metadata `github_review_<review id>` 只记录进度，**不作为跳过的闸门**：值为 `done:…` 才表示通知已完成并结束；不存在或为 `commented:<评论 id>` 时，从头按下列幂等步骤重做。
+   - 记录评论只写**计划路由**和“唤醒结果：待确认”，不在唤醒确认前写“已唤醒”；P5 确认唤醒（或确定无须唤醒）后，把这一行改为确认结果，再写 `done:`。改写失败时不写 `done:`，下次重做。
    - 记录评论：先按首行标记 `[review-notify] PR #<N> review <review id>` 查找已有评论，没有才发；发完等 5 秒再查，分派智能体发的、标记相同的评论保留创建时间最早（同时间取 id 最小）的一条，**其余全部删除（不论是哪次运行发的）**。然后写 `commented:<评论 id>`。
    - 唤醒：见下一条“并发收敛”。确认存在一条有效唤醒（或按状态规则无须唤醒）后才写 `done:<评论 id>:<唤醒 id 或 none>`。
    - 任一步失败或运行中断：已发的评论 / 已建的唤醒会被下一次处理按标记找到并复用，不会漏通知也不会重复。
@@ -114,7 +115,7 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 ### P4. 记录评论（不 @ 任何人；先查后发、发后收敛）
 - MARK = 首行文本 “[review-notify] PR #N review RID”。
 - 查找：$M issue comment list <ISSUE id> --roots-only --summary --since <T 减 1 分钟，RFC3339> --output json，取 content 以 MARK 开头的评论。
-- 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、处理方式（已唤醒主责成员 / 已唤醒 Leader 转交 / 原任务已关闭未唤醒 / 负责人不是实现智能体未唤醒，按 P5 的判断填写）。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
+- 没有：在工作目录写文件，首行为 MARK，其后写：评审者 login（type）、状态、review.html_url、行级评论 C 条（其中线程回复 R 条）、有正文时附前 300 字摘录（代码块包裹）、两行路由信息：“计划路由：<唤醒主责成员 / 唤醒 Leader 转交（原因）/ 不唤醒（原任务已关闭 / 负责人不是实现智能体）>”（按 P5 的“确定 TARGET”规则先行判定，此处只读不写）和固定的“唤醒结果：待确认”。评论中不写任何 mention 链接。然后 $M issue comment add <ISSUE id> --content-file <文件> --output json，记下自己发的评论 id。
 - 收敛：等待 5 秒后按同样方式重新查找；只看 author_type = agent 且 author_id = 本运行智能体自身（环境变量 MULTICA_AGENT_ID）、content 以 MARK 开头的评论，按 (created_at, id) 最小者为 CID，其余这类评论全部 $M issue comment delete <评论 id>（不论是哪次运行发的；不删其他作者的评论）。
 - $M issue metadata set <ISSUE id> --key github_review_RID --value commented:CID --type string --output json
 
@@ -122,17 +123,20 @@ $M issue metadata get <ISSUE id> --key github_review_RID --output json
 - ISSUE.status 为 done 或 cancelled：不唤醒、不改状态，W = none。
 - 确定 TARGET：
   - assignee_type = agent：assignee_id = REVIEWER_AGENT_ID（小队 Reviewer，见提示词首行配置）时不唤醒，W = none；否则 TARGET = assignee_id。
-  - assignee_type = squad（主责成员由 Leader 在评论中指定）：LEADER = $M squad get <assignee_id> --output json 的 leader_id；在 $M issue runs <ISSUE id> --output json 中去掉 agent_id 为 LEADER 或 REVIEWER_AGENT_ID 的运行，取 created_at 最新一条的 agent_id 为 TARGET（最近在本任务上工作的主责成员）；没有这样的运行时 TARGET = LEADER。
+  - assignee_type = squad（以 Leader 明确指定的当前主责为准，不看运行记录）：LEADER = $M squad get <assignee_id> --output json 的 leader_id；MEMBERS = $M squad member list <assignee_id> --output json 中 member_type = agent、且不是 LEADER、不是 REVIEWER_AGENT_ID 的 member_id。读取 $M issue comment list <ISSUE id> --since 1970-01-01T00:00:00Z --output json（全部评论、全文），取 author_type = agent、author_id = LEADER、content 中含 mention://agent/<MEMBERS 中某 id> 的评论，按 (created_at, id) 最新一条：其中出现的 MEMBERS id 去重后恰好 1 个时 TARGET = 该 id；多于 1 个或没有这样的评论时 TARGET = LEADER（无法确定，由 Leader 转交）。
   - 其他（成员或未指派）：不唤醒，W = none。
 - 候选 = $M issue wakeup list <ISSUE id> --output json 中 enabled = true、kind = at、fire_count = 0、agent_id = TARGET、source_agent_id = 本运行智能体自身（MULTICA_AGENT_ID）且 instruction 以 “[review-notify]” 开头的规则。
-- 没有候选：在工作目录写指令文件，内容：
-    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。若你是本 issue 所属小队的 Leader：不要自己处理评审意见，在本 issue 用 mention 链接 @ 主责成员转交后结束。
+- 没有候选：在工作目录写指令文件。TARGET = LEADER（小队任务无法确定主责）时，内容：
+    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论），未能确定当前主责，请你转交。你是小队 Leader：不要处理评审意见。先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete；然后在本 issue 发一条评论，只用 mention 链接 @ 当前主责成员一人，请其按“处理评审意见”流程处理 PR #N 上全部未解决的评审线程，之后结束。
+  其他 TARGET 时，内容：
+    [review-notify] PR #N 收到新的评审意见（见本 issue 上 [review-notify] 记录评论）。开始前先执行 "$MULTICA_CLI_PATH" issue wakeup list <ISSUE id> --output json，把其中 enabled、kind=at、fire_count=0、agent_id 为你自己且 instruction 以 [review-notify] 开头的其他规则逐条 issue wakeup delete（它们对应的评审已提交，由本次一并处理）。然后按“处理评审意见”流程处理该 PR 上全部未解决的评审线程（含 Copilot 和人类）：修复的回复 commit 并标记解决，不采纳的回复理由；处理完按规则请 Reviewer 复审。若已无未处理意见，简短说明后结束。
   然后 $M issue wakeup create <ISSUE id> --agent-id TARGET --kind at --after 2m --instruction-file <文件> --output json，
 - 收敛（有候选或刚新建后都执行）：等待 5 秒后重新列出候选；按 (created_at, id) 最小者为 W，其余候选全部 $M issue wakeup delete <ISSUE id> <规则 id> --output json（不论是哪次运行创建的；不删不在候选范围内的规则）。
 - 若此时没有任何候选（例如刚好已触发），且本次没有新建过：重做一次本步骤。
 
 ### P6. 完成与顺带补齐
 - 若 P3 判定已 done 且需要唤醒：只执行一次 P5 的“收敛”（不新建），清理可能的中断遗留。
+- 确认记录评论：用 $M issue comment list <ISSUE id> --since <T 减 1 分钟> --output json 取 CID 的全文与 revision；若其中仍是“唤醒结果：待确认”，把这一行改为确认结果（“已唤醒 <TARGET 名称>，唤醒 W” / “Leader 转交，唤醒 W” / “未唤醒：<原因>”），写入工作目录文件后 $M issue comment update CID --content-file <文件> --expected-revision <revision> --output json；修订冲突时重读后重试一次，仍失败则结束并输出错误，不写 done。
 - 未到 done 时：$M issue metadata set <ISSUE id> --key github_review_RID --value done:CID:W --type string --output json
 - 然后 $M issue metadata list <ISSUE id> --output json：其他 github_review_<id> 的值不以 done: 开头的，对该评审从 P1 开始补齐：PR 编号取自其 commented: 记录评论首行，评审内容用 gh api repos/AkkiaLab/AkkiaBot/pulls/<编号>/reviews/<id> 取得；该 PR 已关闭时只写 done:<评论 id>:none。
 
