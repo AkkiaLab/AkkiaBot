@@ -27,7 +27,7 @@ SKIP_REASONS: dict[str, str] = {
 @dataclass(slots=True)
 class ScenarioResult:
     name: str
-    milestone: str
+    group: str
     description: str
     status: Status
     detail: str = ""
@@ -53,7 +53,7 @@ class Report:
     joins: dict[str, int] = field(default_factory=dict)
     """How the member got into the group this run: ``member_join_by_link`` (the
     joins Telegram rate-limits per account) and ``owner_added_member``; plus
-    ``member_join_request``, requests through an approval link (m2.join-request),
+    ``member_join_request``, requests through an approval link (members.join-request),
     which do not make the member join."""
     summary: dict[str, int] = field(default_factory=dict)
     """Counts of ``passed`` / ``failed`` (incl. errors) / ``skipped`` results."""
@@ -162,14 +162,14 @@ class Report:
                     f"{f['attempt']} | {action} |"
                 )
         if self.results:
-            lines += ["", "| 场景 | 里程碑 | 结果 | 说明 |", "| --- | --- | --- | --- |"]
+            lines += ["", "| 场景 | 分组 | 结果 | 说明 |", "| --- | --- | --- | --- |"]
             for r in self.results:
                 detail = r.detail.replace("|", "\\|").replace("\n", " ")
                 if r.status == "skipped" and r.skip_reason:
                     reason = SKIP_REASONS.get(r.skip_reason, r.skip_reason)
                     detail = f"{reason}：{detail}" if detail else reason
                 lines.append(
-                    f"| `{r.name}` {r.description} | {r.milestone} | "
+                    f"| `{r.name}` {r.description} | {r.group} | "
                     f"{_ICONS[r.status]} {r.status} | {detail} |"
                 )
             lines += ["", "<details><summary>证据（消息原文）</summary>", ""]

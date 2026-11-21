@@ -1,4 +1,4 @@
-"""m7.captcha-test-keys: the local Turnstile test-key chain against the fake bot."""
+"""captcha.test-keys: the local Turnstile test-key chain against the fake bot."""
 
 from __future__ import annotations
 
@@ -199,7 +199,7 @@ async def test_skipped_without_local_lab(world: FakeTelegram, config: E2EConfig)
 def test_local_scenarios_only_by_exact_name_and_with_serve() -> None:
     names = [s.name for s in select_scenarios(None, serve=True)]
     assert TEST_KEYS_SCENARIO not in names
-    assert TEST_KEYS_SCENARIO not in [s.name for s in select_scenarios(["m7"], serve=True)]
+    assert TEST_KEYS_SCENARIO not in [s.name for s in select_scenarios(["captcha"], serve=True)]
     assert [s.name for s in select_scenarios([TEST_KEYS_SCENARIO], serve=True)] == [
         TEST_KEYS_SCENARIO
     ]

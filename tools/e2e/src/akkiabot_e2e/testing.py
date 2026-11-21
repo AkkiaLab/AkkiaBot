@@ -1,6 +1,6 @@
 """In-memory Telegram for unit tests: accounts, supergroups and a reference bot.
 
-:class:`FakeBot` reproduces the user-visible M2/M3/M4 behaviour (rendered
+:class:`FakeBot` reproduces the user-visible command, member and moderation behaviour (rendered
 MarkdownV2 = plain text + code entities). Knobs simulate regressions so tests
 can prove that the scenarios catch them.
 """
@@ -118,7 +118,7 @@ class FakeBot:
     leave_escapes: bool = False
     delete_service: bool = True
     ip_unknown_isp: bool = False
-    # -- M4 knobs (regressions the scenarios must catch) --
+    # -- moderation knobs (regressions the scenarios must catch) --
     warn_limit: int = 3
     no_purge: bool = False
     """Ban without deleting the member's history."""
@@ -130,7 +130,7 @@ class FakeBot:
     """Skip the permission check."""
     stale_menu: bool = False
     """Apply a toggle but do not redraw the menu."""
-    # -- M5 knobs --
+    # -- antispam knobs --
     antispam_ignores_switch: bool = False
     """Remove spam even when the switch is off."""
     antispam_no_exemption: bool = False
@@ -149,7 +149,7 @@ class FakeBot:
     """
     purge_lag: int = 0
     """Further operations between acting on spam and purging the spammer's history."""
-    # -- M7 knobs --
+    # -- captcha knobs --
     webapp_origin: str = field(default="https://webapp.example.test", init=False)
     captcha_no_mute: bool = False
     """Post the prompt but never mute the newcomer."""
@@ -297,7 +297,7 @@ class FakeBot:
             del chat.messages[message_id]
         return len(doomed)
 
-    def respond_m4(
+    def respond_moderation(
         self, world: FakeTelegram, chat: FakeChat, msg: Msg, command: str, reply: Msg | None
     ) -> tuple[str, tuple[Entity, ...], tuple[Button, ...]] | None:
         match command:
@@ -431,7 +431,7 @@ class FakeBot:
                 world.post(chat, self.user.id, text, reply_to=msg.id, entities=entities)
                 return
             case "/config" | "/ban" | "/warn":
-                answer = self.respond_m4(world, chat, msg, command, reply)
+                answer = self.respond_moderation(world, chat, msg, command, reply)
                 if answer is None:
                     return
                 text, entities, buttons = answer
@@ -757,7 +757,7 @@ class FakeAccount:
 
 
 class FakeWeb:
-    """The deployed Mini App + captcha API of :class:`FakeBot` (M7).
+    """The deployed Mini App + captcha API of :class:`FakeBot` (captcha scenarios).
 
     Like the real API it checks Turnstile first, so a placeholder token is
     rejected with ``turnstile_failed``.

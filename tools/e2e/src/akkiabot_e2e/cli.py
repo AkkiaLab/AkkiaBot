@@ -109,7 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="执行真实验收（会用测试账号在测试群发消息）")
     run.add_argument(
-        "--scenarios", action="append", help="里程碑（m2,m3）或场景名，可重复；默认全部"
+        "--scenarios",
+        action="append",
+        help="功能分组（antispam,moderation）或场景名，逗号分隔、可重复；默认全部",
     )
     run.add_argument(
         "--create-group",
@@ -179,10 +181,10 @@ def _setup_logging() -> None:
 
 def _cmd_list() -> int:
     for s in SCENARIOS:
-        print(f"{s.name:<22} {s.milestone}  {s.description}")
-    print(f"{'m2.message-log':<22} M2  （仅 --serve）群消息被记录到 message_log")
+        print(f"{s.name:<25} {s.description}")
+    print(f"{'messages.log':<25} （仅 --serve）群消息被记录到 message_log")
     for s in LOCAL_SCENARIOS:
-        print(f"{s.name:<22} {s.milestone}  {s.description}")
+        print(f"{s.name:<25} {s.description}")
     return EXIT_PASSED
 
 
@@ -471,7 +473,10 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     if missing:
         print(_skipped_report(missing).to_markdown(redact))
         return EXIT_SKIPPED
-    select_scenarios(args.scenarios, serve=args.serve)  # validate before touching Telegram
+    # Validate before touching Telegram; renamed scenarios are reported once, here.
+    select_scenarios(
+        args.scenarios, serve=args.serve, warn=lambda msg: print(f"提示：{msg}", file=sys.stderr)
+    )
     if args.serve and args.fresh_group:
         # PR-level runs reuse the fixed test group with the member staying in it;
         # creating groups is for staging release runs only (docs/e2e-acceptance.md §3.1).

@@ -45,7 +45,7 @@ class ApiCredentials:
 
 @dataclass(frozen=True, slots=True)
 class LangfuseCredentials:
-    """Read-only access to the bot's Langfuse project (M5: check traces)."""
+    """Read-only access to the bot's Langfuse project (antispam: check traces)."""
 
     public_key: Secret
     secret_key: Secret
@@ -65,20 +65,20 @@ class E2EConfig:
     flood_max_wait: float = 120.0
     send_interval: float = 2.0
     antispam: bool = False
-    """The bot has an LLM (``LLM_API_KEY`` + ``LLM_MODEL``); M5 scenarios need it."""
+    """The bot has an LLM (``LLM_API_KEY`` + ``LLM_MODEL``); antispam scenarios need it."""
     langfuse: LangfuseCredentials | None = None
     antispam_wait: float = 20.0
-    """How long M5 waits to be sure a message is *not* acted upon."""
+    """How long antispam scenarios wait to be sure a message is *not* acted upon."""
     antispam_timeout: float = 60.0
-    """How long ``m5.spam`` waits for the bot to act on the ad: the bot's
+    """How long ``antispam.enabled`` waits for the bot to act on the ad: the bot's
     classification budget (``ANTISPAM_TIMEOUT``, 45 s) plus the Telegram calls
     after the verdict. After that the bot has let the message pass (fail open)."""
     antispam_purge_delay: float = 5.0
     """The bot's ``ANTISPAM_PURGE_DELAY``: the history purge comes this long after the mute."""
     api_base_url: str | None = None
-    """Public API of the bot under test (``E2E_API_BASE_URL``); M7 calls the captcha endpoint."""
+    """Public API of the bot under test (``E2E_API_BASE_URL``); captcha scenarios call its endpoint."""
     webapp_url: str | None = None
-    """Mini App origin the bot under test links to (``E2E_WEBAPP_URL``); checked by M7."""
+    """Mini App origin the bot under test links to (``E2E_WEBAPP_URL``); checked by the captcha scenarios."""
 
 
 def missing_variables(env: Mapping[str, str], names: tuple[str, ...] = REQUIRED) -> list[str]:

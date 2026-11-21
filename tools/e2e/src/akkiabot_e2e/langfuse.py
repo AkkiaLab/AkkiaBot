@@ -1,4 +1,4 @@
-"""Read-only Langfuse check for M5: was every spam classification traced?
+"""Read-only Langfuse check for the antispam scenarios: was every spam classification traced?
 
 Uses the Langfuse public API (``GET /api/public/v2/observations``; the v1
 list endpoint answers 410 Gone on current Langfuse Cloud, HTTP basic

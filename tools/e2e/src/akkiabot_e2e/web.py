@@ -1,4 +1,4 @@
-"""HTTP side of the Mini App acceptance (M7): fetch the page, call the API.
+"""HTTP side of the Mini App acceptance (captcha scenarios): fetch the page, call the API.
 
 Only public URLs of the environment under test are requested. The initData
 sent to the API is the signed payload Telegram issued to the test account for
