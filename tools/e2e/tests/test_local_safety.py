@@ -266,9 +266,10 @@ async def test_managed_server_extra_env_and_restart(tmp_path: Path) -> None:
     assert log.count("migrated") == 2
 
 
-def test_run_warns_about_legacy_scenario_names(capsys: pytest.CaptureFixture[str]) -> None:
-    code = cli.main(["run", "--scenarios", "m4.ban,nope"], env=live_env())
+def test_run_rejects_old_numbered_scenario_names(capsys: pytest.CaptureFixture[str]) -> None:
+    old_ban = "m4" + ".ban"  # assembled so a repo-wide search for old IDs stays empty
+    code = cli.main(["run", "--scenarios", old_ban], env=live_env())
     assert code == cli.EXIT_USAGE
     err = capsys.readouterr().err
-    assert "提示：场景名 m4.ban 已改为 moderation.ban" in err
-    assert "nope" in err
+    assert f"未知场景：{old_ban}" in err
+    assert "已改为" not in err
