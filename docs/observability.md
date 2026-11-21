@@ -158,7 +158,7 @@ op run --env-file deploy/observability/grafana-notify.env.tpl -- just grafana-sy
 验证告警（只在预发布环境做）：停掉 redis 制造一次 `/readyz` 失败，大约 3 分钟后 `/readyz 失败` 进入 Firing，然后恢复：
 
 ```bash
-cd /opt/akkiabot/staging
+cd /srv/akkiabot/staging
 docker compose stop redis      # /readyz 返回 503，probe_success 变为 0
 # Grafana → Alerting → Alert rules → AkkiaBot：/readyz 失败 先 Pending，2 分钟后 Firing
 docker compose start redis     # 恢复后规则回到 Normal

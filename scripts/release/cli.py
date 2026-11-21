@@ -191,16 +191,7 @@ def cmd_window(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
 
 
 def cmd_deploy(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
-    target = deploy.TARGETS[args.env]
-    if args.ssh is not None or args.dir is not None:
-        target = deploy.Target(
-            name=target.name,
-            directory=args.dir or target.directory,
-            ssh=args.ssh if args.ssh is not None else target.ssh,
-            health_url=target.health_url,
-            webapp_version_url=target.webapp_version_url,
-            template=target.template,
-        )
+    target = deploy.resolve_target(args.env, ssh=args.ssh, directory=args.dir)
     with deploy.environment_lock(target.name):
         if target.name == "staging":
             staged = deploy.release_staging(
@@ -304,11 +295,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("sha", nargs="?", default="")
     p.add_argument("--label")
     p = add("deploy", cmd_deploy, "在运行机上部署 RC（staging）或正式 tag（production）")
-    p.add_argument("env", choices=sorted(deploy.TARGETS))
+    p.add_argument("env", choices=sorted(deploy.ENVIRONMENTS))
     p.add_argument("tag")
     p.add_argument("--allow-migration", action="store_true", help="负责人已确认本次数据库迁移")
-    p.add_argument("--ssh", help="覆盖目标 ssh 主机（production 默认 greencloud-tyo-01）")
-    p.add_argument("--dir", help="覆盖目标目录")
+    p.add_argument("--ssh", help="覆盖目标 ssh 主机（默认取 AKKIABOT_<ENV>_SSH；空字符串表示本机）")
+    p.add_argument("--dir", help="覆盖目标目录（默认取 AKKIABOT_<ENV>_DIR，未配置时报错）")
     p.add_argument("--scenarios", help="staging：差异验收场景（逗号分隔）")
     p.add_argument("--accept", action="store_true", help="staging：部署后在同一把锁内执行验收")
     return parser

@@ -29,7 +29,7 @@ import shlex
 import subprocess
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,24 +59,129 @@ class Target:
     template: str | None
 
 
-TARGETS = {
-    "staging": Target(
+@dataclass(frozen=True)
+class Environment:
+    """The public, versioned part of a deploy target. Where the stack lives (ssh host and
+    directory) is machine-local configuration, see ``resolve_target``."""
+
+    name: str
+    health_url: str
+    webapp_version_url: str | None
+    template: str | None
+
+
+ENVIRONMENTS = {
+    "staging": Environment(
         name="staging",
-        directory="/opt/akkiabot/staging",
-        ssh=None,
         health_url="https://bot-api-staging.akkia.moe/readyz",
         webapp_version_url="https://staging.akkiabot-webapp.pages.dev/version.json",
         template="staging/app.env.tpl",
     ),
-    "production": Target(
+    "production": Environment(
         name="production",
-        directory="~/akkiabot/production",
-        ssh="greencloud-tyo-01",
         health_url="https://bot-api.akkia.moe/readyz",
         webapp_version_url=None,
         template=None,
     ),
 }
+
+#: Overrides the location of the machine-local target file.
+TARGETS_FILE_ENV = "AKKIABOT_RELEASE_TARGETS_FILE"
+
+
+def default_targets_file(environ: Mapping[str, str] = os.environ) -> Path:
+    """``$AKKIABOT_RELEASE_TARGETS_FILE``, else ``$XDG_CONFIG_HOME/akkiabot/release-targets.env``
+    (``~/.config`` when unset)."""
+    if environ.get(TARGETS_FILE_ENV):
+        return Path(environ[TARGETS_FILE_ENV]).expanduser()
+    base = environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "akkiabot" / "release-targets.env"
+
+
+def target_keys(name: str) -> tuple[str, str]:
+    """Names of the (ssh, directory) settings of one environment."""
+    prefix = f"AKKIABOT_{name.upper()}"
+    return f"{prefix}_SSH", f"{prefix}_DIR"
+
+
+def read_targets_file(path: Path) -> dict[str, str]:
+    """``KEY=VALUE`` lines; blank lines and ``#`` comments are ignored, one pair of
+    surrounding quotes is stripped. A missing file is an empty configuration."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ReleaseError(f"无法读取部署目标配置 {path}：{exc.strerror}") from exc
+    values: dict[str, str] = {}
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        if not sep or not key:
+            raise ReleaseError(f"部署目标配置 {path} 第 {number} 行不是 KEY=VALUE 格式")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def resolve_target(
+    name: str,
+    *,
+    ssh: str | None = None,
+    directory: str | None = None,
+    environ: Mapping[str, str] = os.environ,
+    targets_file: Path | None = None,
+) -> Target:
+    """Combine the public environment with where it runs on this machine.
+
+    Precedence: command-line ``ssh`` / ``directory`` > process environment > targets file.
+    ``AKKIABOT_<ENV>_DIR`` is required (there is no built-in default host or path, so a
+    missing configuration can never reach a real server); ``AKKIABOT_<ENV>_SSH`` names an
+    ssh host (usually a ``Host`` alias of ``~/.ssh/config``), empty or unset means this
+    machine.
+    """
+    env = ENVIRONMENTS.get(name)
+    if env is None:
+        raise ReleaseError(f"未知环境 {name}（可选：{', '.join(sorted(ENVIRONMENTS))}）")
+    path = targets_file or default_targets_file(environ)
+    ssh_key, dir_key = target_keys(name)
+    needs_file = (ssh is None and ssh_key not in environ) or (
+        directory is None and dir_key not in environ
+    )
+    from_file = read_targets_file(path) if needs_file else {}
+
+    def setting(cli: str | None, key: str) -> str | None:
+        if cli is not None:
+            return cli
+        if key in environ:
+            return environ[key]
+        return from_file.get(key)
+
+    resolved_dir = (setting(directory, dir_key) or "").strip()
+    resolved_ssh = (setting(ssh, ssh_key) or "").strip()
+    if not resolved_dir:
+        raise ReleaseError(
+            f"未配置 {name} 的部署目录：设置环境变量 {dir_key}（ssh 主机用 {ssh_key}，"
+            f"留空表示本机），或写入 {path}，或用 --dir/--ssh 指定；"
+            "见 docs/release.md §7「运行机部署目标」"
+        )
+    for key, value in ((dir_key, resolved_dir), (ssh_key, resolved_ssh)):
+        if any(ch.isspace() for ch in value):
+            raise ReleaseError(f"{key} 不能包含空白字符：{value!r}")
+    return Target(
+        name=env.name,
+        directory=resolved_dir,
+        ssh=resolved_ssh or None,
+        health_url=env.health_url,
+        webapp_version_url=env.webapp_version_url,
+        template=env.template,
+    )
+
 
 #: Exit codes of deploy/upgrade.sh and what they mean for the operator.
 UPGRADE_RESULTS = {

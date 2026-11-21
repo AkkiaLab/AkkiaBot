@@ -89,7 +89,7 @@ flowchart LR
 4. 交接给运行机（staging 栈、1Password 与测试会话都在运行机上）：`just release-staging vX.Y.Z-rc.N <场景>`。以下步骤严格按顺序执行，任一步失败都会停止，不进入后续步骤：
    1. 取得本机 staging 锁和仓库级 **staging 租约**，并再次核对 RC 有效；
    2. 触发 `webapp-deploy.yml -f sha=<sha>` 发布 staging Mini App，并等待它成功；
-   3. 用该 commit 的 `deploy/upgrade.sh` 升级 `/opt/akkiabot/staging`（渲染该 commit 的 `staging/app.env.tpl`）；
+   3. 用该 commit 的 `deploy/upgrade.sh` 升级运行机上配置的 staging 栈（目录取 `AKKIABOT_STAGING_DIR`，见 §7「运行机部署目标」；渲染该 commit 的 `staging/app.env.tpl`）；
    4. 公网 `/readyz` 必须通过，Mini App `version.json` 必须可读且等于该 sha；否则命令以非零退出（9 / 10），不进入验收；
    5. 执行 `just e2e-staging --record-status <sha> --baseline <基线> --scenarios <场景>`（不带场景时全量）；
    6. 结束后释放租约（包括失败）。唯一例外：前端运行超时或查询出错时，工具先取消该运行，必要时强制取消，并等 GitHub 确认它已结束；无法确认时（找不到运行，或取消后仍未结束）**保留租约**并以退出码 11 结束，因为迟到的上传仍可能覆盖下一个 RC。恢复：在 Actions 中确认该 `webapp-deploy` 运行已结束，再执行 `just release lease release <sha>`，然后重跑；租约最迟在到期时间自动失效。
@@ -112,7 +112,7 @@ flowchart LR
 - `image`：确保该 sha 的镜像存在。
 - `approve`：环境 `production`，等待维护者审批。智能体不审批。
 - `handoff`：向可选的发布通知 webhook 发送 `release-production-approved`，由接收方在运行机执行 `just release-deploy production vX.Y.Z`（未配置时手动执行）。该命令再次执行 `verify-formal`，并确认本次 tag 的 `生产发布 vX.Y.Z` 运行（master 上）`approve` 成功且有 `production` 环境的批准记录，否则不连接服务器。
-- 服务器侧 `deploy/upgrade.sh`（取自该 tag 的 commit，经 ssh 管道执行，生产目录 `~/akkiabot/production`）：
+- 服务器侧 `deploy/upgrade.sh`（取自该 tag 的 commit，经 ssh 管道在 `AKKIABOT_PRODUCTION_SSH` 指定的主机、`AKKIABOT_PRODUCTION_DIR` 指定的目录中执行，见 §7「运行机部署目标」）：
   1. 一次只允许一个升级（`flock`）；已在目标 sha 且健康时直接成功（失败重试同一版本是安全的）；
   2. 下载该 commit 的 compose、Alloy 配置、备份/恢复脚本和配置样例；
   3. 配置检查：新样例中的每个键在 `.env` / `app.env` 中都存在（只比较键名，不输出值）；
@@ -171,9 +171,21 @@ flowchart LR
 | tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅 `akkialab-agent`；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
 | secret `RELEASE_NOTIFY_WEBHOOK_URL` | 可选的发布通知 webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`，由接收方自行处理。未配置时跳过，只在运行摘要中提示 |
-| 运行机 ssh | `~/.ssh/config` 中 `Host greencloud-tyo-01`（`ProxyCommand cloudflared access ssh --hostname ssh-greencloud-tyo-01.akkia.moe`，密钥取自 1Password `AkkiaBot/shared-ssh`） | `just release-deploy production` 的默认目标；也可 `--ssh/--dir` 覆盖 |
+| 运行机部署目标 | `AKKIABOT_STAGING_DIR`、`AKKIABOT_PRODUCTION_DIR`（必填，栈目录）；`AKKIABOT_STAGING_SSH`、`AKKIABOT_PRODUCTION_SSH`（ssh 主机，通常是运行机 `~/.ssh/config` 里的 `Host` 别名；留空表示在本机执行）。取值顺序：命令行 `--ssh` / `--dir` > 进程环境变量 > 运行机私有配置文件 `${XDG_CONFIG_HOME:-~/.config}/akkiabot/release-targets.env`（`KEY=VALUE` 每行一项，可用 `AKKIABOT_RELEASE_TARGETS_FILE` 指定其他路径） | 仓库不内置任何主机名、登录用户或部署路径：缺少目录配置时 `just release-staging` / `just release-deploy` 在加锁、连接服务器之前直接报错并列出上述变量。ssh 主机的登录方式（跳板、用户、密钥）只写在运行机的 ssh 配置中，具体取值由维护者的内部运维记录维护 |
 | 标签 | `release:fix`、`release-forward`、`release-forward-conflict` | 不存在时 GitHub 在首次使用时会报错，先创建 |
 | Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由维护者另行确定接入方式（平台接入遗留项） |
+
+运行机部署目标的配置示例（取值均为虚构；文件权限 600，不进仓库。行内不支持 `#` 注释）：
+
+```bash
+# ${XDG_CONFIG_HOME:-~/.config}/akkiabot/release-targets.env
+AKKIABOT_STAGING_DIR=/srv/akkiabot/staging
+AKKIABOT_STAGING_SSH=
+AKKIABOT_PRODUCTION_SSH=prod-host
+AKKIABOT_PRODUCTION_DIR=/srv/akkiabot/production
+```
+
+其中 `prod-host` 是运行机 `~/.ssh/config` 中的 `Host` 别名，跳板、登录用户和密钥都在那里配置。临时改投其他目标时用 `just release-deploy production vX.Y.Z --ssh <主机> --dir <目录>`。
 
 ## 8. 测试与已知限制
 

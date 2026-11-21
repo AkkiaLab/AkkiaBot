@@ -3,7 +3,7 @@
 # docs/operations.md §5). Normally run by `python -m scripts.release deploy`,
 # which pipes the copy of this script from the target commit to the host:
 #
-#   cd /opt/akkiabot/staging && bash -s -- <sha> --migrations unchanged < upgrade.sh
+#   cd /srv/akkiabot/staging && bash -s -- <sha> --migrations unchanged < upgrade.sh
 #
 # Usage: upgrade.sh <40-char sha> --migrations changed|unchanged
 #                   [--allow-migration] [--release <label>] [--render-template <path in deploy/>]
