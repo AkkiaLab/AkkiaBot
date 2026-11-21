@@ -255,47 +255,27 @@ def test_late_bot_comment_after_reviewer_approval_blocks() -> None:
     assert problems == ["准出之后还有未经 Reviewer 复核的评论：copilot-pull-request-reviewer[bot]"]
 
 
-def _rc_runs(*runs: dict[str, Any]) -> dict[str, Any]:
-    return {"workflow_runs": list(runs)}
-
-
-def test_handed_off_counts_a_finished_handoff_only() -> None:
-    title = "RC v1.2.0-rc.1"
-    done = ScriptedGh(
-        {
-            "/runs": _rc_runs(
-                {"id": 1, "display_title": "RC v1.1.0-rc.2", "status": "completed"},
-                {"id": 2, "display_title": title, "status": "completed"},
-            ),
-            "/jobs": {
-                "jobs": [
-                    {"name": "rc", "conclusion": "success"},
-                    {"name": "handoff", "conclusion": "success"},
-                ]
-            },
-        }
-    )
-    assert done.handed_off("release-rc.yml", title, "handoff")
-    assert ("GET", "repos/AkkiaLab/AkkiaBot/actions/runs/2/jobs?per_page=100") in done.calls
-    assert not any("runs/1/jobs" in path for _, path in done.calls)
-
-    failed = ScriptedGh(
-        {
-            "/runs": _rc_runs({"id": 3, "display_title": title, "status": "completed"}),
-            "/jobs": {
-                "jobs": [
-                    {"name": "rc", "conclusion": "failure"},
-                    {"name": "handoff", "conclusion": "skipped"},
-                ]
-            },
-        }
-    )
-    assert not failed.handed_off("release-rc.yml", title, "handoff")
-    assert not ScriptedGh({"/runs": _rc_runs()}).handed_off("release-rc.yml", title, "handoff")
-
-
-def test_handed_off_counts_a_pending_run() -> None:
+def test_artifact_exists_matches_the_exact_name() -> None:
     gh = ScriptedGh(
-        {"/runs": _rc_runs({"id": 4, "display_title": "RC v1.2.0-rc.1", "status": "queued"})}
+        {"/artifacts": {"artifacts": [{"name": "release-rc-ready-v1.2.0-rc.1", "expired": True}]}}
     )
-    assert gh.handed_off("release-rc.yml", "RC v1.2.0-rc.1", "handoff")
+    assert gh.artifact_exists("release-rc-ready-v1.2.0-rc.1")
+    assert gh.calls[-1] == (
+        "GET",
+        "repos/AkkiaLab/AkkiaBot/actions/artifacts?name=release-rc-ready-v1.2.0-rc.1&per_page=100",
+    )
+    assert not gh.artifact_exists("release-rc-ready-v1.2.0-rc.10")
+    assert not ScriptedGh({"/artifacts": {"artifacts": []}}).artifact_exists("x")
+
+
+def test_run_pending_only_counts_unfinished_runs_with_those_titles() -> None:
+    runs = {
+        "workflow_runs": [
+            {"id": 1, "display_title": "RC v1.2.0", "status": "completed"},
+            {"id": 2, "display_title": "RC v1.1.0-rc.2", "status": "in_progress"},
+            {"id": 3, "display_title": "RC v1.2.0-rc.1", "status": "queued"},
+        ]
+    }
+    gh = ScriptedGh({"/runs": runs})
+    assert gh.run_pending("release-rc.yml", ("RC v1.2.0-rc.1", "RC v1.2.0"))
+    assert not gh.run_pending("release-rc.yml", ("RC v1.2.0-rc.2", "RC v1.2.0"))

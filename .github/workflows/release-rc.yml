@@ -76,6 +76,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Hand over to the staging deploy and acceptance
+        id: notify
         env:
           TAG: ${{ needs.rc.outputs.tag }}
           SHA: ${{ needs.rc.outputs.sha }}
@@ -99,4 +100,19 @@ jobs:
           code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
             --data "$payload" "$RELEASE_NOTIFY_WEBHOOK_URL")"
           echo "Release notification webhook: HTTP $code"
-          [[ "$code" =~ ^2 ]]
+          [[ "$code" =~ ^2 ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/rc-ready"
+          printf '%s\n' "$payload" > "$RUNNER_TEMP/rc-ready/event.json"
+          echo "sent=true" >> "$GITHUB_OUTPUT"
+      # Per-RC proof that release-rc-ready was accepted by the receiver. The
+      # release window reads it (scripts/release/window.py RC_READY_ARTIFACT)
+      # so a freeze that reuses this RC does not send the event again. Only
+      # written after a 2xx: a run without a configured webhook sent nothing.
+      - name: Record that release-rc-ready was sent for this RC
+        if: steps.notify.outputs.sent == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-rc-ready-${{ needs.rc.outputs.tag }}
+          path: ${{ runner.temp }}/rc-ready/event.json
+          if-no-files-found: error
+          retention-days: 90

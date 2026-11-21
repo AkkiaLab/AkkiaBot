@@ -11,9 +11,9 @@ it takes is itself idempotent (create_release, create_rc, seal).
   has the same tree as the previous formal tag has nothing to ship.
 * freeze: move open feature PRs to the next release, then cut an RC from the
   head and hand it to the staging pipeline (``release-rc.yml``). A reused RC
-  that was already handed over (a ``release-rc.yml`` run for it is pending or
-  finished its handoff) or already has a staging-acceptance status is not
-  handed over again, so ``release-rc-ready`` is sent once per RC.
+  is not handed over again when its ``release-rc-ready`` was already sent (the
+  per-RC marker artifact exists), it already has a staging-acceptance status,
+  or a ``release-rc.yml`` run that may hand it over is still pending.
 * release: only a current, accepted RC is sealed (``release-seal.yml``, which
   then starts the production pipeline). Anything else stops the window with
   the reason; nothing is sealed or tagged.
@@ -32,7 +32,9 @@ from scripts.release.schedule import Phase, current_regular, window_at
 from scripts.release.versions import ReleaseError, Version
 
 RC_WORKFLOW = "release-rc.yml"
-RC_HANDOFF_JOB = "handoff"
+#: Artifact the ``release-rc.yml`` handoff uploads only after the webhook
+#: accepted ``release-rc-ready`` for that exact RC (keep in sync with the workflow).
+RC_READY_ARTIFACT = "release-rc-ready-{tag}"
 SEAL_WORKFLOW = "release-seal.yml"
 
 
@@ -65,13 +67,21 @@ def handed_off(gh: GitHub, candidate: Candidate) -> str | None:
     """Why a reused RC must not be handed to staging again (None: hand it over).
 
     Each handoff sends ``release-rc-ready`` and the receiver opens an
-    acceptance task, so a repeated or late freeze must not resend it.
+    acceptance task, so a repeated or late freeze must not resend it. The
+    marker is per RC tag and written only after the webhook answered 2xx, so
+    it covers both ``release-rc.yml`` entries (``tag`` and ``version``) and a
+    successful run that sent nothing (webhook not configured) does not count.
     """
+    if gh.artifact_exists(RC_READY_ARTIFACT.format(tag=candidate.tag)):
+        return "的 rc-ready 已发送过"
     acceptance = gh.acceptance(candidate.sha)
     if acceptance:
         return f"已有 staging-acceptance={acceptance}"
-    if gh.handed_off(RC_WORKFLOW, f"RC {candidate.tag}", RC_HANDOFF_JOB):
-        return f"{RC_WORKFLOW} 已交接过（或正在运行）"
+    # A queued or running RC run may still hand this RC over; its run name is
+    # the tag (``tag`` entry) or only the version (``version`` entry).
+    titles = (f"RC {candidate.tag}", f"RC {candidate.version}")
+    if gh.run_pending(RC_WORKFLOW, titles):
+        return f"有进行中的 {RC_WORKFLOW} 运行，由它交接"
     return None
 
 

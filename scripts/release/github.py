@@ -97,7 +97,8 @@ class GitHub(Protocol):
     def review_gate(self, number: int, head: str) -> list[str]: ...
     def checks_passed(self, sha: str, contexts: tuple[str, ...]) -> bool: ...
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool: ...
-    def handed_off(self, workflow: str, title: str, job: str) -> bool: ...
+    def artifact_exists(self, name: str) -> bool: ...
+    def run_pending(self, workflow: str, titles: tuple[str, ...]) -> bool: ...
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None: ...
     def run_and_wait(
         self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
@@ -401,26 +402,23 @@ class GhCli:
             )
         return False
 
-    def handed_off(self, workflow: str, title: str, job: str) -> bool:
-        """A dispatched run of ``workflow`` named ``title`` is still pending or had ``job`` succeed.
+    def artifact_exists(self, name: str) -> bool:
+        """Any workflow artifact named ``name`` (expired ones included: it was uploaded)."""
+        data = (
+            self._api(self._r(f"actions/artifacts?name={urllib.parse.quote(name)}&per_page=100"))
+            or {}
+        )
+        return any(a.get("name") == name for a in data.get("artifacts", []))
 
-        Any such run counts (not just the newest): one completed handoff is
-        enough for the receiver, and a queued or running one will hand off.
-        Runs that failed before ``job`` did not hand anything over."""
+    def run_pending(self, workflow: str, titles: tuple[str, ...]) -> bool:
+        """A dispatched run of ``workflow`` named one of ``titles`` has not completed yet."""
         runs = self._api(
             self._r(f"actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100")
         )
-        for run in (runs or {}).get("workflow_runs", []):
-            if run.get("display_title") != title:
-                continue
-            if run.get("status") != "completed":
-                return True
-            jobs = self._api(self._r(f"actions/runs/{run['id']}/jobs?per_page=100")) or {}
-            if any(
-                j["name"] == job and j.get("conclusion") == "success" for j in jobs.get("jobs", [])
-            ):
-                return True
-        return False
+        return any(
+            run.get("display_title") in titles and run.get("status") != "completed"
+            for run in (runs or {}).get("workflow_runs", [])
+        )
 
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None:
         self._api(

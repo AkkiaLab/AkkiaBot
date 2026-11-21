@@ -106,7 +106,8 @@ class FakeGitHub:
     on_run: Callable[[dict[str, str]], None] | None = None
     green: set[str] = field(default_factory=set)
     jobs: set[tuple[str, str, str, str]] = field(default_factory=set)
-    handoffs: set[tuple[str, str, str]] = field(default_factory=set)
+    artifacts: set[str] = field(default_factory=set)
+    pending: set[tuple[str, str]] = field(default_factory=set)
     dispatched: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     notified: list[dict[str, Any]] = field(default_factory=list)
     on_seal: Callable[[str], None] | None = None
@@ -194,16 +195,17 @@ class FakeGitHub:
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool:
         return (workflow, title, job, environment) in self.jobs
 
-    def handed_off(self, workflow: str, title: str, job: str) -> bool:
-        if (workflow, title, job) in self.handoffs:
-            return True
-        # A dispatch through this fake stands for a run that hands off.
-        return workflow == "release-rc.yml" and any(
-            w == workflow and title == f"RC {i.get('tag')}" for w, i in self.dispatched
-        )
+    def artifact_exists(self, name: str) -> bool:
+        return name in self.artifacts
+
+    def run_pending(self, workflow: str, titles: tuple[str, ...]) -> bool:
+        return any((workflow, title) in self.pending for title in titles)
 
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None:
         self.dispatched.append((workflow, inputs))
+        if workflow == "release-rc.yml" and "tag" in inputs:
+            # The dispatched run hands off and the webhook accepts the event.
+            self.artifacts.add(f"release-rc-ready-{inputs['tag']}")
 
     def notify(self, payload: dict[str, Any]) -> str:
         self.notified.append(payload)

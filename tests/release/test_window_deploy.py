@@ -13,7 +13,7 @@ from scripts.release.rc import create_rc
 from scripts.release.schedule import Phase
 from scripts.release.seal import seal
 from scripts.release.versions import ReleaseError, Version
-from scripts.release.window import RC_WORKFLOW, SEAL_WORKFLOW, run_window
+from scripts.release.window import RC_READY_ARTIFACT, RC_WORKFLOW, SEAL_WORKFLOW, run_window
 from tests.release.conftest import FakeGitHub, Repo
 
 V = Version.parse
@@ -93,23 +93,46 @@ def test_reused_rc_with_acceptance_is_not_handed_over_again(repo: Repo, gh: Fake
     assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
 
 
-def test_reused_rc_already_handed_off_is_not_resent(repo: Repo, gh: FakeGitHub) -> None:
+def _reused_rc(repo: Repo, gh: FakeGitHub) -> str:
+    """An RC cut outside the window, e.g. ``release-rc.yml -f version=`` or the CLI."""
     create_release(repo.git, V("v1.0.0"))
     repo.commit("releases/v1.0.0", "f.txt", "feature\n")
-    create_rc(repo.git, gh, V("v1.0.0"))
-    gh.handoffs.add((RC_WORKFLOW, "RC v1.0.0-rc.1", "handoff"))
+    candidate, _ = create_rc(repo.git, gh, V("v1.0.0"))
+    return candidate.tag
+
+
+def test_rc_workflow_writes_the_marker_the_window_reads() -> None:
+    workflow = (Path(__file__).parents[2] / ".github/workflows/release-rc.yml").read_text()
+    name = RC_READY_ARTIFACT.format(tag="${{ needs.rc.outputs.tag }}")
+    assert f"name: {name}\n" in workflow
+    assert "if: steps.notify.outputs.sent == 'true'" in workflow
+
+
+def test_reused_rc_sent_before_acceptance_is_not_resent(repo: Repo, gh: FakeGitHub) -> None:
+    # rc-ready already went out (the run was titled "RC v1.0.0", version entry)
+    # and the acceptance has not written any status yet.
+    tag = _reused_rc(repo, gh)
+    gh.artifacts.add(f"release-rc-ready-{tag}")
     report = run_window(repo.git, gh, FREEZE)
-    assert any("已交接过" in line for line in report.lines)
+    assert any("rc-ready 已发送过" in line for line in report.lines)
     assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
 
 
-def test_reused_rc_never_handed_off_is_sent(repo: Repo, gh: FakeGitHub) -> None:
-    create_release(repo.git, V("v1.0.0"))
-    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
-    create_rc(repo.git, gh, V("v1.0.0"))  # e.g. `release rc` from the CLI, no workflow run
+def test_reused_rc_whose_run_sent_nothing_is_sent(repo: Repo, gh: FakeGitHub) -> None:
+    # The earlier run succeeded but the webhook was not configured: no marker,
+    # no acceptance yet → the first notification still has to go out.
+    tag = _reused_rc(repo, gh)
     report = run_window(repo.git, gh, FREEZE)
-    assert any("沿用 v1.0.0-rc.1" in line for line in report.lines)
-    assert gh.dispatched == [(RC_WORKFLOW, {"tag": "v1.0.0-rc.1"})]
+    assert any(f"沿用 {tag}" in line for line in report.lines)
+    assert gh.dispatched == [(RC_WORKFLOW, {"tag": tag})]
+
+
+def test_reused_rc_with_a_pending_rc_run_waits_for_it(repo: Repo, gh: FakeGitHub) -> None:
+    _reused_rc(repo, gh)
+    gh.pending.add((RC_WORKFLOW, "RC v1.0.0"))  # version entry still running
+    report = run_window(repo.git, gh, FREEZE)
+    assert any("进行中" in line for line in report.lines)
+    assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
 
 
 def test_dry_run_freeze_reports_without_writing(repo: Repo, gh: FakeGitHub) -> None:
