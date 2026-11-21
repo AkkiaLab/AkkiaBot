@@ -76,7 +76,7 @@ class _StructuredUnsupportedError(Exception):
 
 
 def parse_text_answer(content: str) -> bool:
-    """Legacy answer: the last number in the text, ``1`` = spam, ``0`` = not spam."""
+    """Plain-text answer: the last number in the text, ``1`` = spam, ``0`` = not spam."""
     numbers = _DIGITS.findall(content)
     if not numbers or numbers[-1] not in {"0", "1"}:
         raise AnswerParseError("expected 0 or 1")

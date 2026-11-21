@@ -1,6 +1,6 @@
 # AkkiaBot 仓库约定（面向智能体与贡献者）
 
-详细说明以 `README.md`、`docs/architecture.md`、`docs/migration-plan.md` 为准；这里只列容易踩错、需要统一遵守的规则。
+详细说明以 `README.md`、`docs/architecture.md` 为准；这里只列容易踩错、需要统一遵守的规则。
 
 ## 密钥与配置
 

@@ -2,10 +2,9 @@
 
 AkkiaBot 是一个 Telegram 群管理机器人，提供入群人机验证（Cloudflare Turnstile + Telegram Mini App）、基于 LLM 的反垃圾、封禁 / 警告 / 举报、群功能开关、IP whois 查询等功能。
 
-本仓库是 botlab 系列项目（botlab-core、botlab-llm、botlab-fe、botlab-telegram、Toolbox-py）的 monorepo 重写版本，正在逐模块迁移中。
+本仓库是 monorepo：Python 后端（`apps/server` 与 `packages/*`）和 Telegram Mini App 前端（`apps/webapp`）。
 
 - 架构与技术栈：[docs/architecture.md](docs/architecture.md)
-- 迁移计划：[docs/migration-plan.md](docs/migration-plan.md)
 - 真实 Telegram 验收（Telegram 测试环境 + 1Password + 测试用户账号）：[docs/e2e-acceptance.md](docs/e2e-acceptance.md)
 - 部署与运维（生产 / 预发布 compose、配置项、升级回滚、备份、DNS）：[docs/operations.md](docs/operations.md)
 - 可观测性（Grafana Alloy、dashboard、告警、本地 Grafana）：[docs/observability.md](docs/observability.md)
@@ -73,10 +72,10 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
 - 群消息：记录 `message_log`（只存 ID）与成员发言计数；首次见到某个群时写入 `chat`；按群配置 `delete_service_messages`（默认开启）删除入群、退群、置顶等系统消息。`message_log` 由定时任务按 `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS`（默认 30 天）清理。
 - 群配置：`services/chat_settings.py` 读写 `chat.settings`（可移植 JSON 列，`ChatSettings` 校验）；读取经共享缓存（5 分钟），写入提交后删除缓存项。`/config` 由群主或具有“封禁成员”权限的管理员在群内发起 → 一次性深链（绑定该群和该用户）→ 私聊中的 inline 开关（反垃圾、入群验证、警告、删除系统消息），每次点击都重新校验发起人在群内的权限。
 - 群管理：`/ban`、`/warn` 必须回复要处理的成员的消息使用，规则在 `services/moderation.py`：操作者须为群主或具有“封禁成员”权限的管理员，目标不能是群主或管理员，匿名管理员需关闭匿名。`/ban` 封禁后按 `message_log` 分批（每批 100 条、最多 4 个并发）删除该成员的历史消息，遇到 429 按 `retry_after` 退避重试；`/warn` 需先在 `/config` 开启，达到 `max_warn_count`（默认 3）后自动封禁、删除历史并清零。所有操作写入 `chat_member.restriction`（`admin_ban` / `warn_ban`）。
-- 入群申请（`bot/handlers/join_request.py`，沿用旧版行为）：有人通过需要管理员审批的邀请链接申请加入时（`chat_join_request`，此时还**不是**成员），机器人私聊申请人一次，原样发送旧版文案 `Hello, please wait for the admin to approve your request.`。机器人不批准也不拒绝申请，由管理员处理；入群验证在申请被批准、成员真正入群（`chat_member`）之后才开始。私聊发送失败（申请人已屏蔽机器人、超过 Telegram 允许的 5 分钟窗口等）只记 WARNING 日志 `join request notice failed` 和 `akkiabot_telegram_api_errors_total{method="sendMessage"}`，不重试，不影响申请本身。Telegram 只把入群申请推送给具备“邀请用户”权限的管理员机器人。
+- 入群申请（`bot/handlers/join_request.py`）：有人通过需要管理员审批的邀请链接申请加入时（`chat_join_request`，此时还**不是**成员），机器人私聊申请人一次，发送固定文案 `Hello, please wait for the admin to approve your request.`。机器人不批准也不拒绝申请，由管理员处理；入群验证在申请被批准、成员真正入群（`chat_member`）之后才开始。私聊发送失败（申请人已屏蔽机器人、超过 Telegram 允许的 5 分钟窗口等）只记 WARNING 日志 `join request notice failed` 和 `akkiabot_telegram_api_errors_total{method="sendMessage"}`，不重试，不影响申请本身。Telegram 只把入群申请推送给具备“邀请用户”权限的管理员机器人。
 - 入群验证（`services/captcha.py`、`bot/captcha.py`）：群内开启“入群验证”后，成员身份从非成员变为成员（含带着限制状态重新入群）时，机器人禁言该成员（`chat_member.restriction = captcha_mute`），创建有效期 `WEBAPP_CAPTCHA_TIMEOUT`（默认 300 秒）的 `captcha_challenge`，并在群内发送脱敏称呼的提示和私聊深链。发起人在私聊 `/start` 后得到打开 `<WEBAPP_URL>/captcha?challenge=<id>` 的 Mini App 按钮；他人点击会被拒绝，且不会让链接失效（该 payload 在有效期内可重复使用）。Mini App 调用 `POST /api/v1/captcha/verify`，依次校验 Turnstile（`TURNSTILE_SECRET_KEY`，未配置时 503）、initData（含 `auth_date` 过期）、challenge 存在且未过期未使用、initData 用户与 challenge 一致、该成员当前是 captcha 禁言，然后解除禁言并通过 `answerWebAppQuery` 回执；错误以固定的 `error` 码返回。超时由 JobQueue 处理（每个 challenge 一个定时任务，另有每 30 秒一次的兜底扫描）：challenge 记为 `expired`，**成员保持禁言**，群内提示被删除；退群再入群会生成新的 challenge，管理员仍可手动解除禁言，此时 `chat_member` 同步为 `none`。机器人必须是群管理员（具备“封禁成员”“删除消息”权限）才能收到 `chat_member` 更新并禁言。
 - 反垃圾（`services/antispam_guard.py` + `packages/antispam`）：群内开启“反垃圾”后，成员的文本消息与图片等媒体的说明文字在后台任务中交给 LLM 判定（不阻塞其他 handler）；已记录发言超过 `ANTISPAM_EXEMPT_MESSAGE_COUNT`（默认 3）条的成员豁免，管理员与频道身份发言不处理。命中时删除消息、永久禁言（`chat_member.restriction=spam_mute`）、`ANTISPAM_PURGE_DELAY`（默认 5 秒）后清理其历史消息，并发送一条 `ANTISPAM_NOTICE_TTL`（默认 60 秒）后自动删除的通知。判定结果写入 `message_log.spam_verdict`，命中时同时保存正文用于审计（清理历史时保留该行，直到保留期到期）。LLM 未配置（`LLM_API_KEY`、`LLM_MODEL`）时不做判定。
-  - 分类器使用 OpenAI 兼容接口，默认请求 JSON 结构化输出，接口不支持时自动退回旧版的 `0/1` 回答（`ANTISPAM_STRUCTURED_OUTPUT=auto|json_schema|off`）；超时（`ANTISPAM_TIMEOUT`，默认 45 秒；判定在后台执行，推理型模型单次约 10–40 秒）、接口错误或无法解析的回答一律判为“非垃圾”（fail open）。提示词可用 `ANTISPAM_PROMPT_FILE` 覆盖（只替换角色、任务与示例部分，输出格式由代码追加），版本号取 `ANTISPAM_PROMPT_VERSION`，未设置时为 `custom-<内容哈希>`。
+  - 分类器使用 OpenAI 兼容接口，默认请求 JSON 结构化输出，接口不支持时自动退回只回答 `0/1` 的纯文本格式（`ANTISPAM_STRUCTURED_OUTPUT=auto|json_schema|off`）；超时（`ANTISPAM_TIMEOUT`，默认 45 秒；判定在后台执行，推理型模型单次约 10–40 秒）、接口错误或无法解析的回答一律判为“非垃圾”（fail open）。提示词可用 `ANTISPAM_PROMPT_FILE` 覆盖（只替换角色、任务与示例部分，输出格式由代码追加），版本号取 `ANTISPAM_PROMPT_VERSION`，未设置时为 `custom-<内容哈希>`。
   - 配置了 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`（及可选的 `LANGFUSE_HOST`）时，每次 LLM 调用在 Langfuse 中记录为一个 generation：提示词版本、输入输出、耗时、token 用量与错误。
   - `/spam`（回复使用）：群主或有封禁权限的管理员使用时直接封禁并删除历史；普通成员举报时，把被举报人的名字、简介和消息内容交给 LLM，是垃圾信息则封禁（`restricted_by` 为机器人），否则编辑回执消息 @ 全部管理员人工审核。普通成员举报按 `ANTISPAM_REPORT_RATE_LIMIT` / `ANTISPAM_REPORT_RATE_WINDOW`（默认 300 秒内 3 次）限流。
   - 提示词基线：`just antispam-eval`（`akkiabot-antispam-eval`）用 `packages/antispam/tests/fixtures/eval_set.jsonl`（30 条正负样本）调用真实 LLM，输出准确率、精确率、召回率与判错样本；调整提示词或模型前后各跑一次对比。

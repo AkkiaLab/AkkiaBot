@@ -1,7 +1,6 @@
 """Prompts of the spam classifier.
 
-The base prompt (role, task, few-shot examples) is migrated from botlab-llm /
-botlab-telegram. Each answer mode appends its own output instruction, so an
+The base prompt holds the role, task and few-shot examples. Each answer mode appends its own output instruction, so an
 override only has to replace the base prompt and keeps working in both modes.
 """
 
@@ -76,8 +75,7 @@ class Prompt:
 
 
 def user_message(text: str, context: SpamContext | None = None) -> str:
-    """The user turn: the text alone, or labelled lines when sender facts are known
-    (same layout as botlab-core's ``/spam`` report)."""
+    """The user turn: the text alone, or labelled lines when sender facts are known."""
     if context is None or (not context.sender_name and not context.sender_bio):
         return text
     lines = []

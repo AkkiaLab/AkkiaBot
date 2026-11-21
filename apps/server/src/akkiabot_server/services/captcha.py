@@ -1,6 +1,6 @@
 """Join captcha: mute new members until they pass a Turnstile check in the Mini App.
 
-Flow (docs/migration-plan.md M6)::
+Flow (README, "入群验证")::
 
     member joins a group with captcha enabled
       → mute (``chat_member.restriction = captcha_mute``)

@@ -162,7 +162,6 @@ flowchart LR
 2026-11-15 核对（只读）：
 
 - 远端没有任何 `v*` tag，也没有 `releases/*` 分支；只有 master 和一个历史任务分支。
-- 当前生产版本（BOT-16 切换）是 master 上的 `5f5227a`，其 `staging-acceptance=success`；之后 master 上的提交尚未经过 staging 发版验收。
 - master 规则集“master 保护”：禁止删除和强制推送，只允许 squash 合并的 PR、需要解决评审线程、必需检查 `ci-ok` / `secret-scan`，**没有绕过者**；仓库只允许 squash 合并。
 - 已安装的 App：评审专用 App（当时独立于发布，后改名为 `akkialab-agent`，同时负责评审和发布，见 §7）、只读集成 App、Cloudflare Pages；没有发布 App。环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
 

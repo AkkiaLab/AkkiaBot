@@ -4,7 +4,7 @@ The service is framework independent: Telegram is reached through the small
 :class:`ModerationApi` protocol (the bot layer adapts PTB to it), so the rules
 here are unit-tested without Telegram.
 
-Permission rules (same as botlab-core / botlab-telegram):
+Permission rules:
 
 * an *actor* may moderate when they are the group owner, or an administrator
   with the "ban users" right (``can_restrict_members``);

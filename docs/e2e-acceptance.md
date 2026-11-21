@@ -1,6 +1,6 @@
 # 真实 Telegram 验收（Telegram 测试环境 + 1Password + 用户账号自动化）
 
-本文说明如何对已实现的功能（目前为 M2、M3、M4、M5）做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
+本文说明如何对已实现的功能做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
 
 > 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
 
@@ -38,8 +38,8 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | 检查回复文本和行内代码实体（确认 MarkdownV2 已正确渲染，没有残留反斜杠） | |
 | 成员退群后再入群，检查两条系统消息都被 bot 删除 | |
 | `--serve` 模式下检查 `message_log` 中有对应记录 | |
-| （M7，仅本地 `--serve`，官方 Turnstile 测试 key）同一次入群中：固定失败的 widget 不调用接口、Siteverify 拒绝时返回 `turnstile_failed`，两者都保持禁言；固定通过时解除禁言并关闭 Mini App（6.4 节） | |
-| （M7，staging 发版）成员入群被禁言 → 群内提示 → 私聊深链 → 以成员账号打开 Mini App（Telegram 签发的真实 initData）→ 打开页面 → 带 Mini App 来源调用验证接口，检查 CORS、未通过 Turnstile 时返回 `turnstile_failed` 且成员保持禁言；结束后关闭入群验证并恢复成员 | |
+| （入群验证，仅本地 `--serve`，官方 Turnstile 测试 key）同一次入群中：固定失败的 widget 不调用接口、Siteverify 拒绝时返回 `turnstile_failed`，两者都保持禁言；固定通过时解除禁言并关闭 Mini App（6.4 节） | |
+| （入群验证，staging 发版）成员入群被禁言 → 群内提示 → 私聊深链 → 以成员账号打开 Mini App（Telegram 签发的真实 initData）→ 打开页面 → 带 Mini App 来源调用验证接口，检查 CORS、未通过 Turnstile 时返回 `turnstile_failed` 且成员保持禁言；结束后关闭入群验证并恢复成员 | |
 
 普通 CI 不会连接 Telegram：单元测试全部使用内存中的模拟 transport（`akkiabot_e2e.testing`）。
 
@@ -76,9 +76,9 @@ Telegram 测试环境与生产环境是两套独立的系统，账号、群、bo
 | 字段 | 类型 | 内容 | 由谁写入 |
 | --- | --- | --- | --- |
 | `sentry_dsn` | 密码 | Sentry 测试项目 `akkia/akkiabot-staging` 的 DSN；为空时不启用 Sentry | 已写入 |
-| `ipinfo_token` | 密码 | ipinfo token（M3 的 `/ip` 使用，对应配置 `WHOIS_IPINFO_TOKEN`） | 已写入 |
-| `llm_base_url`、`llm_model` | 文本 | M5 反垃圾使用的 OpenAI 兼容接口地址与模型（`LLM_BASE_URL`、`LLM_MODEL`） | 已写入 |
-| `llm_api_key` | 密码 | 上述接口的 API key（`LLM_API_KEY`）；为空时 M5 场景记为跳过（不计为通过） | 已写入 |
+| `ipinfo_token` | 密码 | ipinfo token（`/ip` 使用，对应配置 `WHOIS_IPINFO_TOKEN`） | 已写入 |
+| `llm_base_url`、`llm_model` | 文本 | 反垃圾使用的 OpenAI 兼容接口地址与模型（`LLM_BASE_URL`、`LLM_MODEL`） | 已写入 |
+| `llm_api_key` | 密码 | 上述接口的 API key（`LLM_API_KEY`）；为空时反垃圾场景记为跳过（不计为通过） | 已写入 |
 | `langfuse_public_key`、`langfuse_secret_key` | 密码 | Langfuse 测试项目的密钥（`LANGFUSE_*`）：bot 用于上报，验收工具用同一组密钥只读查询 `antispam.classify` 记录 | 已写入 |
 | `langfuse_host` | 文本 | Langfuse 地址；为空时为 Langfuse Cloud（`https://cloud.langfuse.com`） | 已写入 |
 
@@ -161,6 +161,8 @@ just e2e                    # 复用测试群，执行全部场景（一般不�
 uv run akkiabot-e2e list    # 列出所有场景
 ```
 
+本工具只用于 PR 级和 staging 发版验收。prod 不运行它：只做配置、健康和非 Telegram 的冒烟检查，Telegram 相关能力通过自然流量的日志、指标、链路和告警观测，未观测不算通过（规则见 `AGENTS.md` 的分层验收）。
+
 #### PR 级验收的场景选择
 
 按分层验收（`AGENTS.md`），单个需求 / 修复的 PR 只验证**改动明确涉及**的场景，规则适用于所有场景：
@@ -190,7 +192,7 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
 4. 选择测试群。只考虑**群主账号创建的、标题与 `E2E_CHAT_TITLE`（默认“AkkiaBot E2E 自动验收群”）完全一致的超级群**，并且群 id 必须在 `allowed_chat_ids` 中。同名但不在白名单中的群不会被使用，也不会因为同名而被认领。只有带 `--create-group`、且不存在白名单外的同名群时才会新建群（见 6.1 节）。
 5. 准备测试群：
    - 邀请 bot，确保它有 `delete_messages`、`ban_users`、`invite_users` 管理员权限（手动授予的其他权限会保留；`invite_users` 是收到入群申请所必需的，BOT-33 起已有的固定测试群会在准备阶段自动补上）；
-   - 普通成员如果在封禁列表中（上次 M4 / M5 运行中断遗留），先解除封禁；
+   - 普通成员如果在封禁列表中（上次群管理或反垃圾场景运行中断遗留），先解除封禁；
    - 两个测试账号互加联系人（已是联系人时跳过）。Telegram 默认只允许联系人把用户拉进群，而且把退出或被移出超级群的用户再拉回来，要求双方是双向联系人（否则报 `USER_NOT_MUTUAL_CONTACT`）。联系人关系长期有效；首次加联系人时两个账号需要同在一个群里（例如固定测试群），否则账号拿不到对方的信息，工具会报错说明；
    - 普通成员不在群里时（包括新建的群），由群主账号直接把成员拉入群（`channels.inviteToChannel`），不使用邀请链接。拉人失败（例如 `USER_PRIVACY_RESTRICTED`、`PEER_FLOOD`，或 Telegram 在 `missing_invitees` 中返回该成员）时如实报错并停止，**不回退为链接入群**。
 6. 依次执行各场景并收集证据，最后核对 `message_log`。
@@ -241,13 +243,11 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
 | `m4.warn` | 成员发两条消息，群主回复其中一条连续 `/warn`：回复依次显示 `1/3`、`2/3`，第 3 次显示已封禁，每次都只显示名字片段；检查成员在封禁列表中、两条消息已被删除。开关未开启时先走一遍 `m4.config` 的流程。结束时（无论成败）解除封禁并由群主把成员拉回群 |
 | `m4.ban` | 成员发三条消息，群主回复最后一条 `/ban`：回复显示删除条数不少于 3、名字渲染为提及链接且只显示名字片段（较长名字不出现全名，也不出现 `@username`，BOT-37）；检查成员在封禁列表中、三条消息已被删除。结束时同样恢复成员 |
 | `m5.spam-command` | 成员回复群主消息发 `/spam` 得到“无法举报管理员或群主。”；群主回复成员消息发 `/spam`，回复“已被封禁（垃圾信息）”，成员进入封禁列表、消息被删除。结束时恢复成员 |
-| `m2.join-request` | 入群**申请**阶段（不是入群后的验证）：成员退群，群主导出一个需要管理员审批的邀请链接，成员用它申请入群（Telegram 返回“申请已发送”，成员不入群）。在管理员处理之前，成员必须在与 bot 的私聊中收到与旧版一致的等待提示 `Hello, please wait for the admin to approve your request.`（只认申请之后的新消息），并且成员仍不在群里（bot 不得自行批准）。结束时（无论成败）群主拒绝该申请，再把成员直接拉回群。申请不算链接入群，报告中单独记为“成员通过需审批的链接申请入群” |
+| `m2.join-request` | 入群**申请**阶段（不是入群后的验证）：成员退群，群主导出一个需要管理员审批的邀请链接，成员用它申请入群（Telegram 返回“申请已发送”，成员不入群）。在管理员处理之前，成员必须在与 bot 的私聊中收到固定的等待提示 `Hello, please wait for the admin to approve your request.`（只认申请之后的新消息），并且成员仍不在群里（bot 不得自行批准）。结束时（无论成败）群主拒绝该申请，再把成员直接拉回群。申请不算链接入群，报告中单独记为“成员通过需审批的链接申请入群” |
 | `m2.service-message` | 成员退群后通过邀请链接重新入群（要验证的就是真实入群，所以保留链接入群），两条系统消息都被 bot 删除（此场景最后执行）。如果 Telegram 没有返回其中任一条系统消息的 id，记为失败（未验证），不算通过 |
 | `m2.message-log` | 仅 `--serve` 模式：群主发出的普通消息出现在 `message_log` 中 |
 
-M3 合并到 master 之前，在 master 上运行 `m3.*` 会失败（bot 还没有 `/ip` 命令）。这时请用 `--scenarios m2`，或在 M3 的分支上运行。同理，M4 合并前在 master 上运行 `m4.*` 会失败。
-
-M5 场景排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用数据库长期保留的外部 bot 时，加 `--fresh-group` 让每次运行使用新建的专用群（`just e2e-staging` 已默认加上），否则成员在旧群中的发言数会累计，`m5.spam` 会因豁免而失败（见 6.2 节“持久化被测 bot 的数据准备”）。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，M5 的反垃圾场景记为跳过（⏭️，原因“缺少凭据或配置”），整次运行不算通过；只验收其他里程碑时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
+反垃圾场景（`m5.spam`）排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `m5.spam` 时一定是“新成员”；不加 `--serve`、复用数据库长期保留的外部 bot 时，加 `--fresh-group` 让每次运行使用新建的专用群（`just e2e-staging` 已默认加上），否则成员在旧群中的发言数会累计，`m5.spam` 会因豁免而失败（见 6.2 节“持久化被测 bot 的数据准备”）。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，反垃圾场景记为跳过（⏭️，原因“缺少凭据或配置”），整次运行不算通过；只验收其他功能时用 `--scenarios m2,m3,m4`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
 
 反垃圾的异步副作用（BOT-47）：bot 在后台处理群消息，LLM 判定最长可用 `ANTISPAM_TIMEOUT`（默认 45 秒，超时则放行），命中后删除广告、禁言并发通知，再过 `ANTISPAM_PURGE_DELAY`（默认 5 秒）清理该成员已记录的全部历史消息（包括这期间新发的消息），通知在 `ANTISPAM_NOTICE_TTL` 后自删。`m5.spam` 因此不以 `E2E_REPLY_TIMEOUT` 判定广告处理，而是等到 `E2E_ANTISPAM_TIMEOUT`（被测 bot 的判定预算加 Telegram 调用余量，改动 bot 的 `ANTISPAM_TIMEOUT` 时须同步调大）；并以探针被清理作为“这次处理已全部结束”的信号。场景失败时同样先确认结束：预算内 bot 一直没有处理广告，视为已放行、不会再有迟到动作，后续场景照常执行；bot 处理了广告但清理没有在窗口内出现，则无法确认副作用已结束，该场景记为失败（同时保留原失败原因），其余场景以“运行中止”跳过，本次运行不会写 `success`。确认过程本身出错（例如读取消息或成员状态时网络、RPC 失败），或结束时解除禁言失败，同样按“未确认结束”中止，报告保留原失败原因。不要用加长固定等待或调换场景顺序来规避：判定慢于 `E2E_REPLY_TIMEOUT` 却仍在预算内时，过早放弃会让迟到的禁言和清理落进后续场景；即使 `m5.spam` 通过，延迟的历史清理也会删掉后续场景刚发的消息。被禁言的成员仍在群里，恢复成员时先解除禁言，不会把它当作已退群再拉人。广告处理耗时超过 `E2E_REPLY_TIMEOUT` 时只在报告中记录，是否需要调整 LLM 延迟由反垃圾的指标（`antispam_llm_*`）和维护者判断，验收工具不改被测 bot 的配置。
 
@@ -300,7 +300,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
    `just e2e-staging` 每次都带 `--fresh-group`（`--record-status` 也会自动启用，差异验收同样如此）：本次运行新建一个标题为“AkkiaBot Staging 发版验收群 <运行标识>”的专用测试群，按 6.1 节的可恢复流程写入白名单，不复用旧群，再由群主把成员拉入新群。判断依据是“是否需要新成员状态”：staging bot 的数据库长期保留，按群累计的成员发言数、各项开关和警告次数会影响 `m5.*`（新成员才会被检查）、`m4.warn`（计数）、`m4.config`（开关初始状态）等多数场景，逐个判断哪些场景不依赖群状态容易出错；而新建群只由群主拉人，不占用成员账号的链接入群额度，所以保持默认开启。原因见下方“持久化被测 bot 的数据准备”。成员账号的链接入群只发生在选中的 `m7.captcha`、`m2.service-message` 中，`m2.join-request` 另有一次入群申请（不入群）；差异验收没有选中它们时，一次链接入群都没有。
 
-   staging 别名可能被另一次 RC 部署或手动运行覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行选中的场景（全量时为全部场景，含 M5 反垃圾、M7 Mini App 链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`，只有满足以下条件才写 `success`，否则写 `failure`：
+   staging 别名可能被另一次 RC 部署或手动运行覆盖，所以工具在取得验收锁**之后**、发送任何消息之前，先核对 staging Mini App 的 `version.json` 就是 `SHA`，不一致就直接退出。然后执行选中的场景（全量时为全部场景，含反垃圾和 Mini App 入群验证链路），结束后再核对一次。报告中记录开始和结束时实际看到的版本。结束时版本变了或无法读取，报告判为未通过。结果写为 GitHub commit status `staging-acceptance`，只有满足以下条件才写 `success`，否则写 `failure`：
    - 全量：全部场景实际执行并通过（任何跳过都不算）；
    - 差异：选中的场景全部实际执行并通过（因限流、缺少凭据、运行中止而跳过都不算），未选中的场景记为跳过（原因“未选中（本次改动未涉及）”），同样不计为通过；
    - 两者都要求开始和结束时都是 `SHA`。
@@ -381,7 +381,7 @@ just e2e-turnstile-test-keys    # = just e2e --scenarios m7.captcha-test-keys
 - **公开仓库中不出现任何凭据**：仓库只提交 `op://` 引用模板。真实的凭据、会话和验证码不提交到仓库，也不出现在 PR、CI 日志或工具输出中；测试凭据只在维护者之间经受控渠道共享。
 - **命令行参数中不出现任何凭据**：令牌通过环境变量传给 `op`，写入 vault 的值通过标准输入传递。不要使用 `op item edit ... "field[password]=值"` 这类赋值参数。
 - **显式脱敏**：工具在输出和写入报告前，会把已知密钥（会话、`api_hash`、bot token、ipinfo token、Sentry DSN、服务账号令牌）替换为 `[REDACTED]`；`Secret` 类型的 `repr` 不显示原值。这符合仓库的日志约定：由调用方改写已知密钥，日志模块本身不做自动识别或脱敏。
-- **第三方日志**：Telethon、`httpx`、`httpcore` 的日志级别固定为 WARNING（Bot API 的 URL 中含有 token）。被测 bot 沿用 M2 的做法（见 README），它的输出写入权限为 600 的 `server.log`。
+- **第三方日志**：Telethon、`httpx`、`httpcore` 的日志级别固定为 WARNING（Bot API 的 URL 中含有 token）。被测 bot 按 README“运行机器人”一节的日志约定运行，它的输出写入权限为 600 的 `server.log`。
 - **会话只能串行使用**：同一会话如果同时从两个地方连接，Telegram 可能判定为 `AUTH_KEY_DUPLICATED` 并作废会话。工具在本机用同一把文件锁（`~/.local/state/akkiabot-e2e/run.lock`）保护所有复用已有会话的入口（`run`、`bootstrap-bot`、`session-store`、`prune-groups`），覆盖从连接到断开的全过程，保证同一时间只有一个进程使用测试账号会话。**文件锁无法跨机器生效，同一时间只能在一台机器上运行验收。**
 - **限流**：工具关闭了 Telethon 自带的自动等待，自行处理 `FLOOD_WAIT`（`run` 与 `bootstrap-bot` 的 BotFather 对话使用同一策略）：
   - 要求的等待时间不超过 `E2E_FLOOD_MAX_WAIT`（默认 120 秒）时，等待后重试，最多 3 次；

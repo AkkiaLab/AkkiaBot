@@ -1,4 +1,4 @@
-"""Pending join requests: the applicant is told to wait for an admin (legacy behaviour)."""
+"""Pending join requests: the applicant is told to wait for an admin."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ APPLICANT_ID = 4242
 _DECISIONS = ("approveChatJoinRequest", "declineChatJoinRequest")
 
 
-def test_pending_text_matches_legacy_bot() -> None:
-    # botlab-core controller/message.go joinRequestHandler, word for word.
+def test_pending_text_is_fixed() -> None:
+    # Documented in README and checked word for word by the e2e acceptance.
     assert PENDING_APPROVAL_TEXT == "Hello, please wait for the admin to approve your request."
 
 
@@ -44,7 +44,7 @@ async def test_join_request_sends_private_notice(
 async def test_join_request_for_a_channel_is_answered_too(
     runtime: Runtime, api: FakeBotApi, updates: UpdateFactory
 ) -> None:
-    # The legacy handler did not look at the chat type either.
+    # The chat type is not checked: channels with join requests get the notice too.
     channel = updates.group(-1009876543210, "Channel", type="channel")
     await runtime.application.process_update(
         updates.chat_join_request(updates.user(APPLICANT_ID), chat=channel)
