@@ -101,8 +101,10 @@ jobs:
             --data "$payload" "$RELEASE_NOTIFY_WEBHOOK_URL")"
           echo "Release notification webhook: HTTP $code"
           [[ "$code" =~ ^2 ]] || exit 1
+          # Fixed content only: artifacts of this public repository are
+          # downloadable, the event payload stays on the webhook path.
           mkdir -p "$RUNNER_TEMP/rc-ready"
-          printf '%s\n' "$payload" > "$RUNNER_TEMP/rc-ready/event.json"
+          echo "sent" > "$RUNNER_TEMP/rc-ready/sent"
           echo "sent=true" >> "$GITHUB_OUTPUT"
       # Per-RC proof that release-rc-ready was accepted by the receiver. The
       # release window reads it (scripts/release/window.py RC_READY_ARTIFACT)
@@ -113,6 +115,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-rc-ready-${{ needs.rc.outputs.tag }}
-          path: ${{ runner.temp }}/rc-ready/event.json
+          path: ${{ runner.temp }}/rc-ready/sent
           if-no-files-found: error
           retention-days: 90

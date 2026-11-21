@@ -106,6 +106,9 @@ def test_rc_workflow_writes_the_marker_the_window_reads() -> None:
     name = RC_READY_ARTIFACT.format(tag="${{ needs.rc.outputs.tag }}")
     assert f"name: {name}\n" in workflow
     assert "if: steps.notify.outputs.sent == 'true'" in workflow
+    # The public artifact carries a fixed marker, never the webhook payload.
+    assert "path: ${{ runner.temp }}/rc-ready/sent\n" in workflow
+    assert '"$payload" >' not in workflow
 
 
 def test_reused_rc_sent_before_acceptance_is_not_resent(repo: Repo, gh: FakeGitHub) -> None:
@@ -125,6 +128,25 @@ def test_reused_rc_whose_run_sent_nothing_is_sent(repo: Repo, gh: FakeGitHub) ->
     report = run_window(repo.git, gh, FREEZE)
     assert any(f"沿用 {tag}" in line for line in report.lines)
     assert gh.dispatched == [(RC_WORKFLOW, {"tag": tag})]
+
+
+def test_handoff_finishing_between_the_reads_is_not_resent(repo: Repo, gh: FakeGitHub) -> None:
+    tag = _reused_rc(repo, gh)
+    gh.pending.add((RC_WORKFLOW, f"RC {tag}"))
+    calls: list[str] = []
+
+    def run_finishes() -> None:
+        # The run completes its handoff right as the window looks at it: no
+        # longer pending, the marker now exists.
+        calls.append("pending")
+        gh.pending.clear()
+        gh.artifacts.add(f"release-rc-ready-{tag}")
+
+    gh.on_pending_check = run_finishes
+    report = run_window(repo.git, gh, FREEZE)
+    assert calls == ["pending"]
+    assert any("rc-ready 已发送过" in line for line in report.lines)
+    assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
 
 
 def test_reused_rc_with_a_pending_rc_run_waits_for_it(repo: Repo, gh: FakeGitHub) -> None:

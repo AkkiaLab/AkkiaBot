@@ -72,16 +72,18 @@ def handed_off(gh: GitHub, candidate: Candidate) -> str | None:
     it covers both ``release-rc.yml`` entries (``tag`` and ``version``) and a
     successful run that sent nothing (webhook not configured) does not count.
     """
-    if gh.artifact_exists(RC_READY_ARTIFACT.format(tag=candidate.tag)):
-        return "的 rc-ready 已发送过"
-    acceptance = gh.acceptance(candidate.sha)
-    if acceptance:
-        return f"已有 staging-acceptance={acceptance}"
+    # Pending runs first: a run that finishes its handoff between two reads is
+    # then no longer pending, and the marker read after it already sees it.
     # A queued or running RC run may still hand this RC over; its run name is
     # the tag (``tag`` entry) or only the version (``version`` entry).
     titles = (f"RC {candidate.tag}", f"RC {candidate.version}")
     if gh.run_pending(RC_WORKFLOW, titles):
         return f"有进行中的 {RC_WORKFLOW} 运行，由它交接"
+    if gh.artifact_exists(RC_READY_ARTIFACT.format(tag=candidate.tag)):
+        return "的 rc-ready 已发送过"
+    acceptance = gh.acceptance(candidate.sha)
+    if acceptance:
+        return f"已有 staging-acceptance={acceptance}"
     return None
 
 
