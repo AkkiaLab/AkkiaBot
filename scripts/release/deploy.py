@@ -105,9 +105,30 @@ def target_keys(name: str) -> tuple[str, str]:
     return f"{prefix}_SSH", f"{prefix}_DIR"
 
 
+def _file_value(raw: str) -> str | None:
+    """Value part of one ``KEY=VALUE`` line, or ``None`` when it is not supported.
+
+    The value is taken exactly as written: either unquoted without any whitespace (so
+    an inline ``# comment`` is refused instead of becoming part of the value), or one
+    single- / double-quoted string with nothing after the closing quote, whose content
+    is kept verbatim (no escapes, no trimming).
+    """
+    if raw[:1] in ('"', "'"):
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        if end == -1 or raw[end + 1 :]:
+            return None
+        return raw[1:end]
+    if any(ch.isspace() for ch in raw):
+        return None
+    return raw
+
+
 def read_targets_file(path: Path) -> dict[str, str]:
-    """``KEY=VALUE`` lines; blank lines and ``#`` comments are ignored, one pair of
-    surrounding quotes is stripped. A missing file is an empty configuration."""
+    """``KEY=VALUE`` lines (optionally prefixed by ``export``); blank lines and lines
+    starting with ``#`` are ignored. Values are never rewritten: see ``_file_value``;
+    anything else is an error naming the line, never echoing it. A missing file is an
+    empty configuration."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -115,17 +136,19 @@ def read_targets_file(path: Path) -> dict[str, str]:
     except OSError as exc:
         raise ReleaseError(f"无法读取部署目标配置 {path}：{exc.strerror}") from exc
     values: dict[str, str] = {}
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        key, sep, value = line.partition("=")
+        key, sep, raw = line.partition("=")
         key = key.strip().removeprefix("export ").strip()
-        if not sep or not key:
+        if not sep or not key or any(ch.isspace() for ch in key):
             raise ReleaseError(f"部署目标配置 {path} 第 {number} 行不是 KEY=VALUE 格式")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        value = _file_value(raw)
+        if value is None:
+            raise ReleaseError(
+                f"部署目标配置 {path} 第 {number} 行（{key}）的值不受支持：未加引号的值不能含空白"
+                "（不支持行内 # 注释）；加引号时引号内原样使用，引号后不能再有内容"
+            )
         values[key] = value
     return values
 
@@ -141,6 +164,8 @@ _SSH_DESTINATION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*")
 def _check_directory(key: str, value: str) -> None:
     if any(ch in value for ch in "\0\n\r"):
         raise ReleaseError(f"{key} 含有控制字符")
+    if value != value.strip():
+        raise ReleaseError(f"{key} 首尾不能有空白（不会自动去除，以免指向另一个目录）")
     if not (value.startswith("/") or value == "~" or value.startswith("~/")):
         raise ReleaseError(f"{key} 必须是绝对路径或以 ~/ 开头")
 
@@ -186,7 +211,7 @@ def resolve_target(
             value = environ[key]
         else:
             value = from_file.get(key, "")
-        return value.strip()
+        return value  # never trimmed or rewritten: what is configured is what runs
 
     resolved_dir = setting(directory, dir_key)
     resolved_ssh = setting(ssh, ssh_key)

@@ -159,3 +159,80 @@ def test_cli_refuses_partial_configuration_before_lock(monkeypatch: pytest.Monke
     assert cli.main(["deploy", "production", "v1.0.0"]) == 3
     monkeypatch.delenv("AKKIABOT_PRODUCTION_DIR")
     assert cli.main(["deploy", "production", "v1.0.0"]) == 3
+
+
+def _from_file(tmp_path: Path, body: str) -> deploy.Target:
+    path = tmp_path / "release-targets.env"
+    path.write_text(body, encoding="utf-8")
+    return deploy.resolve_target("production", environ={}, targets_file=path)
+
+
+@pytest.mark.parametrize(
+    ("line", "directory"),
+    [
+        ("AKKIABOT_PRODUCTION_DIR=/srv/demo", "/srv/demo"),
+        ('AKKIABOT_PRODUCTION_DIR="/srv/my demo"', "/srv/my demo"),
+        ("AKKIABOT_PRODUCTION_DIR='/srv/a#b'", "/srv/a#b"),
+        ("export AKKIABOT_PRODUCTION_DIR=~/stack", "~/stack"),
+    ],
+)
+def test_file_values_are_used_verbatim(tmp_path: Path, line: str, directory: str) -> None:
+    target = _from_file(tmp_path, f"# comment line\nAKKIABOT_PRODUCTION_SSH=prod-host\n{line}\n")
+    assert target.directory == directory
+
+
+@pytest.mark.parametrize(
+    ("line", "reason"),
+    [
+        # Inline comments are refused, never folded into the path.
+        ("AKKIABOT_PRODUCTION_DIR=/srv/demo # comment", "行内 # 注释"),
+        ("AKKIABOT_PRODUCTION_DIR=/srv/demo\t#c", "行内 # 注释"),
+        ('AKKIABOT_PRODUCTION_DIR="/srv/demo" # comment', "引号后不能再有内容"),
+        ("AKKIABOT_PRODUCTION_DIR= /srv/demo", "不能含空白"),
+        ('AKKIABOT_PRODUCTION_DIR="/srv/demo', "不受支持"),
+        # A quoted directory with edge whitespace is not trimmed into another directory.
+        ('AKKIABOT_PRODUCTION_DIR="/srv/demo "', "首尾不能有空白"),
+        ("AKKIABOT_PRODUCTION_DIR=' /srv/demo'", "首尾不能有空白"),
+        ("AKKIABOT_PRODUCTION_SSH=prod-host # c\nAKKIABOT_PRODUCTION_DIR=/srv/x", "不受支持"),
+    ],
+)
+def test_unsupported_file_values_fail_before_deploying(
+    tmp_path: Path, line: str, reason: str
+) -> None:
+    body = (
+        line if "AKKIABOT_PRODUCTION_SSH" in line else f"AKKIABOT_PRODUCTION_SSH=prod-host\n{line}"
+    )
+    with pytest.raises(ReleaseError, match=reason) as exc:
+        _from_file(tmp_path, body + "\n")
+    assert "/srv/demo" not in str(exc.value)  # the value itself is never echoed
+
+
+@pytest.mark.parametrize("value", ["/srv/demo ", " /srv/demo", "/srv/demo\t"])
+def test_environment_and_cli_directories_are_not_trimmed(value: str) -> None:
+    with pytest.raises(ReleaseError, match="首尾不能有空白"):
+        deploy.resolve_target(
+            "production", environ={**EXAMPLE_TARGETS, "AKKIABOT_PRODUCTION_DIR": value}
+        )
+    with pytest.raises(ReleaseError, match="首尾不能有空白"):
+        deploy.resolve_target("production", directory=value, environ=EXAMPLE_TARGETS)
+
+
+def test_cli_reads_the_private_file_and_refuses_inline_comment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End to end through the CLI: a commented value stops before the lock."""
+    path = tmp_path / "release-targets.env"
+    path.write_text(
+        "AKKIABOT_PRODUCTION_SSH=prod-host\nAKKIABOT_PRODUCTION_DIR=/srv/demo # old stack\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(deploy.TARGETS_FILE_ENV, str(path))
+    monkeypatch.setattr(deploy, "environment_lock", lambda name: pytest.fail("lock taken"))
+    args = cli.build_parser().parse_args(["deploy", "production", "v1.0.0"])
+    with pytest.raises(ReleaseError, match="第 2 行"):
+        cli.cmd_deploy(None, None, args)  # type: ignore[arg-type]
+    # The same file without the comment resolves to exactly the written directory.
+    path.write_text(
+        "AKKIABOT_PRODUCTION_SSH=prod-host\nAKKIABOT_PRODUCTION_DIR=/srv/demo\n", encoding="utf-8"
+    )
+    assert deploy.resolve_target("production").directory == "/srv/demo"

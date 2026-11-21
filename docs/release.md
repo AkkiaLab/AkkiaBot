@@ -171,11 +171,11 @@ flowchart LR
 | tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅 `akkialab-agent`；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
 | secret `RELEASE_NOTIFY_WEBHOOK_URL` | 可选的发布通知 webhook | 载荷 `kind` 为 `release-forward-conflict`、`release-rc-ready`、`release-production-approved`，由接收方自行处理。未配置时跳过，只在运行摘要中提示 |
-| 运行机部署目标 | 每个环境两项都必填：`AKKIABOT_STAGING_DIR`、`AKKIABOT_PRODUCTION_DIR`（栈目录，绝对路径或 `~/` 开头；`~/` 在目标主机上展开为部署用户的家目录，其余部分按字面量传给 shell）；`AKKIABOT_STAGING_SSH`、`AKKIABOT_PRODUCTION_SSH`（ssh 主机，通常是运行机 `~/.ssh/config` 里的 `Host` 别名，不能以 `-` 开头、不含空白和 shell 字符；在运行机本机部署须显式写 `local`）。取值顺序：命令行 `--ssh` / `--dir` > 进程环境变量 > 运行机私有配置文件 `${XDG_CONFIG_HOME:-~/.config}/akkiabot/release-targets.env`（`KEY=VALUE` 每行一项，可用 `AKKIABOT_RELEASE_TARGETS_FILE` 指定其他路径） | 仓库不内置任何主机名、登录用户或部署路径。任一项缺失或格式不合法时，`just release-staging` / `just release-deploy` 在加锁、连接服务器之前报错，报错只列出配置项和原因，不回显配置值；未配置 ssh 主机不会被当作本机。ssh 主机的登录方式（跳板、用户、密钥）只写在运行机的 ssh 配置中，具体取值由维护者的内部运维记录维护 |
+| 运行机部署目标 | 每个环境两项都必填：`AKKIABOT_STAGING_DIR`、`AKKIABOT_PRODUCTION_DIR`（栈目录，绝对路径或 `~/` 开头；`~/` 在目标主机上展开为部署用户的家目录，其余部分按字面量传给 shell）；`AKKIABOT_STAGING_SSH`、`AKKIABOT_PRODUCTION_SSH`（ssh 主机，通常是运行机 `~/.ssh/config` 里的 `Host` 别名，不能以 `-` 开头、不含空白和 shell 字符；在运行机本机部署须显式写 `local`）。取值顺序：命令行 `--ssh` / `--dir` > 进程环境变量 > 运行机私有配置文件 `${XDG_CONFIG_HOME:-~/.config}/akkiabot/release-targets.env`（`KEY=VALUE` 每行一项，可加 `export ` 前缀，可用 `AKKIABOT_RELEASE_TARGETS_FILE` 指定其他路径；只支持整行 `#` 注释。值原样使用、不做去空白或改写：未加引号的值不能含空白，因此不支持行内注释；含空白的路径须整体加单引号或双引号，引号内原样使用，引号后不能再有内容。目录首尾带空白时报错，不会自动去除） | 仓库不内置任何主机名、登录用户或部署路径。任一项缺失或格式不合法时，`just release-staging` / `just release-deploy` 在加锁、连接服务器之前报错，报错只列出配置项和原因，不回显配置值；未配置 ssh 主机不会被当作本机。ssh 主机的登录方式（跳板、用户、密钥）只写在运行机的 ssh 配置中，具体取值由维护者的内部运维记录维护 |
 | 标签 | `release:fix`、`release-forward`、`release-forward-conflict` | 不存在时 GitHub 在首次使用时会报错，先创建 |
 | Renovate | 待定：`renovate.json` 仍以 master 为基分支 | 依赖 PR 会被 master 的必需检查 `release-guard` 拦下，需要由维护者另行确定接入方式（平台接入遗留项） |
 
-运行机部署目标的配置示例（取值均为虚构；文件权限 600，不进仓库。行内不支持 `#` 注释，带行内注释的值会被判为不合法）：
+运行机部署目标的配置示例（取值均为虚构；文件权限 600，不进仓库。注释只能独占一行，带行内注释的行会报错）：
 
 ```bash
 # ${XDG_CONFIG_HOME:-~/.config}/akkiabot/release-targets.env
