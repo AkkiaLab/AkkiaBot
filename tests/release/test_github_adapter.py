@@ -253,3 +253,49 @@ def test_late_bot_comment_after_reviewer_approval_blocks() -> None:
     }
     problems = ScriptedGh({}, graph).review_gate(1, HEAD)
     assert problems == ["准出之后还有未经 Reviewer 复核的评论：copilot-pull-request-reviewer[bot]"]
+
+
+def _rc_runs(*runs: dict[str, Any]) -> dict[str, Any]:
+    return {"workflow_runs": list(runs)}
+
+
+def test_handed_off_counts_a_finished_handoff_only() -> None:
+    title = "RC v1.2.0-rc.1"
+    done = ScriptedGh(
+        {
+            "/runs": _rc_runs(
+                {"id": 1, "display_title": "RC v1.1.0-rc.2", "status": "completed"},
+                {"id": 2, "display_title": title, "status": "completed"},
+            ),
+            "/jobs": {
+                "jobs": [
+                    {"name": "rc", "conclusion": "success"},
+                    {"name": "handoff", "conclusion": "success"},
+                ]
+            },
+        }
+    )
+    assert done.handed_off("release-rc.yml", title, "handoff")
+    assert ("GET", "repos/AkkiaLab/AkkiaBot/actions/runs/2/jobs?per_page=100") in done.calls
+    assert not any("runs/1/jobs" in path for _, path in done.calls)
+
+    failed = ScriptedGh(
+        {
+            "/runs": _rc_runs({"id": 3, "display_title": title, "status": "completed"}),
+            "/jobs": {
+                "jobs": [
+                    {"name": "rc", "conclusion": "failure"},
+                    {"name": "handoff", "conclusion": "skipped"},
+                ]
+            },
+        }
+    )
+    assert not failed.handed_off("release-rc.yml", title, "handoff")
+    assert not ScriptedGh({"/runs": _rc_runs()}).handed_off("release-rc.yml", title, "handoff")
+
+
+def test_handed_off_counts_a_pending_run() -> None:
+    gh = ScriptedGh(
+        {"/runs": _rc_runs({"id": 4, "display_title": "RC v1.2.0-rc.1", "status": "queued"})}
+    )
+    assert gh.handed_off("release-rc.yml", "RC v1.2.0-rc.1", "handoff")

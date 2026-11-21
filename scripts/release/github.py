@@ -97,6 +97,7 @@ class GitHub(Protocol):
     def review_gate(self, number: int, head: str) -> list[str]: ...
     def checks_passed(self, sha: str, contexts: tuple[str, ...]) -> bool: ...
     def approved_run(self, workflow: str, title: str, job: str, environment: str) -> bool: ...
+    def handed_off(self, workflow: str, title: str, job: str) -> bool: ...
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None: ...
     def run_and_wait(
         self, workflow: str, inputs: dict[str, str], title: str, timeout: float = 1800
@@ -398,6 +399,27 @@ class GhCli:
                 and environment in {env.get("name") for env in approval.get("environments", [])}
                 for approval in approvals
             )
+        return False
+
+    def handed_off(self, workflow: str, title: str, job: str) -> bool:
+        """A dispatched run of ``workflow`` named ``title`` is still pending or had ``job`` succeed.
+
+        Any such run counts (not just the newest): one completed handoff is
+        enough for the receiver, and a queued or running one will hand off.
+        Runs that failed before ``job`` did not hand anything over."""
+        runs = self._api(
+            self._r(f"actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100")
+        )
+        for run in (runs or {}).get("workflow_runs", []):
+            if run.get("display_title") != title:
+                continue
+            if run.get("status") != "completed":
+                return True
+            jobs = self._api(self._r(f"actions/runs/{run['id']}/jobs?per_page=100")) or {}
+            if any(
+                j["name"] == job and j.get("conclusion") == "success" for j in jobs.get("jobs", [])
+            ):
+                return True
         return False
 
     def dispatch(self, workflow: str, inputs: dict[str, str], ref: str = "master") -> None:

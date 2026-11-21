@@ -43,6 +43,85 @@ def test_window_without_content_is_skipped(repo: Repo, gh: FakeGitHub) -> None:
     assert gh.dispatched == []
 
 
+def _released_line_with_cascade_only(repo: Repo, gh: FakeGitHub) -> None:
+    """v1.0.0 released, then v1.1.0 only receives the cascade merge of a v1.0.0 fix."""
+    create_release(repo.git, V("v1.0.0"))
+    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
+    candidate, _ = create_rc(repo.git, gh, V("v1.0.0"))
+    gh.statuses[candidate.sha] = "success"
+    seal(repo.git, gh, V("v1.0.0"), log=lambda _: None)
+    create_release(repo.git, V("v1.1.0"))  # from master: lacks the v1.0.0 commit
+    run_cascade(repo.git, gh, trigger="test")
+
+
+def test_cascade_merges_only_are_not_content(repo: Repo, gh: FakeGitHub) -> None:
+    _released_line_with_cascade_only(repo, gh)
+    head = repo.sha("refs/heads/releases/v1.1.0")
+    assert not repo.ancestor(head, "refs/tags/v1.0.0")  # merge commits exist...
+    assert (
+        subprocess.run(  # ...but no file differs from the released tag
+            ["git", "diff", "--quiet", "v1.0.0", head], cwd=repo.origin, check=False
+        ).returncode
+        == 0
+    )
+
+    for now in (PREPARE, FREEZE):
+        report = run_window(repo.git, gh, now)
+        assert report.version == V("v1.1.0")
+        assert "没有新提交或文件差异" in report.lines[0]
+        assert not report.failed
+    assert V("v1.1.0") not in repo.git.state().rcs
+    assert gh.dispatched == []
+
+
+def test_real_file_change_after_cascade_cuts_an_rc(repo: Repo, gh: FakeGitHub) -> None:
+    _released_line_with_cascade_only(repo, gh)
+    repo.commit("releases/v1.1.0", "g.txt", "new feature\n")
+    report = run_window(repo.git, gh, FREEZE)
+    assert any("创建 v1.1.0-rc.1" in line for line in report.lines)
+    assert gh.dispatched == [(RC_WORKFLOW, {"tag": "v1.1.0-rc.1"})]
+
+
+def test_reused_rc_with_acceptance_is_not_handed_over_again(repo: Repo, gh: FakeGitHub) -> None:
+    create_release(repo.git, V("v1.0.0"))
+    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
+    candidate, _ = create_rc(repo.git, gh, V("v1.0.0"))  # cut outside the window
+    gh.statuses[candidate.sha] = "pending"
+    report = run_window(repo.git, gh, FREEZE)
+    assert any("沿用 v1.0.0-rc.1" in line for line in report.lines)
+    assert any("staging-acceptance=pending" in line for line in report.lines)
+    assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
+
+
+def test_reused_rc_already_handed_off_is_not_resent(repo: Repo, gh: FakeGitHub) -> None:
+    create_release(repo.git, V("v1.0.0"))
+    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
+    create_rc(repo.git, gh, V("v1.0.0"))
+    gh.handoffs.add((RC_WORKFLOW, "RC v1.0.0-rc.1", "handoff"))
+    report = run_window(repo.git, gh, FREEZE)
+    assert any("已交接过" in line for line in report.lines)
+    assert not any(d[0] == RC_WORKFLOW for d in gh.dispatched)
+
+
+def test_reused_rc_never_handed_off_is_sent(repo: Repo, gh: FakeGitHub) -> None:
+    create_release(repo.git, V("v1.0.0"))
+    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
+    create_rc(repo.git, gh, V("v1.0.0"))  # e.g. `release rc` from the CLI, no workflow run
+    report = run_window(repo.git, gh, FREEZE)
+    assert any("沿用 v1.0.0-rc.1" in line for line in report.lines)
+    assert gh.dispatched == [(RC_WORKFLOW, {"tag": "v1.0.0-rc.1"})]
+
+
+def test_dry_run_freeze_reports_without_writing(repo: Repo, gh: FakeGitHub) -> None:
+    create_release(repo.git, V("v1.0.0"))
+    repo.commit("releases/v1.0.0", "f.txt", "feature\n")
+    report = run_window(repo.git, gh, FREEZE, dry_run=True)
+    assert any("dry-run：将创建 v1.0.0-rc.1" in line for line in report.lines)
+    assert any("dry-run：将触发" in line for line in report.lines)
+    assert V("v1.0.0") not in repo.git.state().rcs
+    assert gh.dispatched == []
+
+
 def test_full_window_is_idempotent_and_tolerates_delay(repo: Repo, gh: FakeGitHub) -> None:
     create_release(repo.git, V("v1.0.0"))
     repo.commit("releases/v1.0.0", "f.txt", "feature\n")
@@ -55,8 +134,9 @@ def test_full_window_is_idempotent_and_tolerates_delay(repo: Repo, gh: FakeGitHu
     assert any("创建 v1.0.0-rc.1" in line for line in freeze.lines)
     again = run_window(repo.git, gh, FREEZE)  # duplicate trigger
     assert any("沿用 v1.0.0-rc.1" in line for line in again.lines)
+    assert any("不重发 rc-ready" in line for line in again.lines)
+    # rc-ready is sent once per RC: the duplicate trigger does not hand over again.
     assert [d for d in gh.dispatched if d[0] == RC_WORKFLOW] == [
-        (RC_WORKFLOW, {"tag": "v1.0.0-rc.1"}),
         (RC_WORKFLOW, {"tag": "v1.0.0-rc.1"}),
     ]
 
