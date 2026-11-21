@@ -28,7 +28,7 @@
   just test        # pytest + vitest
   ```
 
-- 与 CI（`.github/workflows/ci.yml`，必需检查是汇总 job `ci-ok`）的对应关系：
+- `.github/workflows/ci.yml` 的汇总 job `ci-ok` 汇总下表各 job 的结果（任一失败即失败，按路径跳过的视为通过）；各 job 与本地命令的对应关系：
 
   | CI job（触发条件） | CI 执行的步骤 | 本地对应 |
   | --- | --- | --- |
