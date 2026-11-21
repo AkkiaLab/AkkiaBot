@@ -43,7 +43,7 @@ flowchart LR
 每套环境一个目录，生产环境和预发布环境互不共用：
 
 ```text
-/opt/akkiabot/production/       # 预发布环境为 /opt/akkiabot/staging/
+/srv/akkiabot/production/       # 预发布环境为 /srv/akkiabot/staging/
 ├── compose.yaml                # 来自仓库 deploy/compose.yaml（固定在某个 commit）
 ├── .env                        # compose 变量，来自 deploy/.env.example；chmod 600
 ├── app.env                     # 应用配置，来自 deploy/app.env.example；chmod 600
@@ -53,7 +53,7 @@ flowchart LR
 └── backups/                    # pg_dump 备份及 backup.log（部署时用 install -d -m 700 创建）
 ```
 
-本文以 `/opt/akkiabot/production`、`/opt/akkiabot/staging` 作为部署目录的示例。实际使用的服务器、登录方式和目录以维护者的内部运维记录为准；部署用户没有免密 sudo 时，可以把目录放在该用户的家目录下，并按实际路径替换文中的示例。
+本文以 `/srv/akkiabot/production`、`/srv/akkiabot/staging` 作为部署目录的示例（不对应任何实际环境）。实际使用的服务器、登录方式和目录以维护者的内部运维记录为准；部署用户没有免密 sudo 时，可以把目录放在该用户的家目录下，并按实际路径替换文中的示例。
 
 `.env` 和 `app.env` 含有密钥，只存在服务器上，不提交到仓库，也不要贴到 issue 或日志里。密钥都在 1Password 的 `AkkiaBot` vault 中：生产用 `prod-*` 条目（如 `prod-cloudflare`、`prod-bot`，由维护者填写），预发布与本地开发共用 `staging-*` 条目。预发布环境的 `app.env` 由 `deploy/staging/app.env.tpl` 通过 1Password 渲染（见 §8）。
 
@@ -152,8 +152,8 @@ flowchart LR
 
 ```bash
 REF=<master 上的完整 commit sha>
-sudo mkdir -p /opt/akkiabot/production && sudo chown "$USER" /opt/akkiabot/production
-cd /opt/akkiabot/production
+sudo mkdir -p /srv/akkiabot/production && sudo chown "$USER" /srv/akkiabot/production
+cd /srv/akkiabot/production
 
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
@@ -203,10 +203,10 @@ docker compose logs --tail 50 app                   # JSON 日志，含 "startin
 
 ### 5.1 升级
 
-版本流程下，staging 与生产的升级都由 `deploy/upgrade.sh` 执行（`just release-staging` / `just release-deploy production`，`docs/release.md` §4）：它在同一目录按下面的顺序完成配置检查、迁移门禁、拉镜像、备份、替换文件、启动和健康检查，失败时按是否涉及迁移决定自动回滚或停下交给人。以下是等价的手动步骤，供排障和工具不可用时使用。
+版本流程下，staging 与生产的升级都由 `deploy/upgrade.sh` 执行（`just release-staging` / `just release-deploy production`，`docs/release.md` §4）：发布工具连接哪台主机、进入哪个目录由运行机配置 `AKKIABOT_<环境>_SSH` / `AKKIABOT_<环境>_DIR` 决定（`docs/release.md` §7「运行机部署目标」），仓库不内置默认值。`upgrade.sh` 在该目录按下面的顺序完成配置检查、迁移门禁、拉镜像、备份、替换文件、启动和健康检查，失败时按是否涉及迁移决定自动回滚或停下交给人。以下是等价的手动步骤，供排障和工具不可用时使用。
 
 ```bash
-cd /opt/akkiabot/production
+cd /srv/akkiabot/production
 grep '^AKKIABOT_TAG=' .env                           # 记下当前（旧）sha，回滚时要用
 ./backup.sh                                         # 先备份（迁移不可自动回退），记下输出的文件名
 NEW=<新 commit 的完整 sha>
@@ -228,7 +228,7 @@ docker compose pull && docker compose up -d --wait
 **包含数据库迁移的版本**：`akkiabot migrate` 只能升级，旧版本代码不保证能使用新表结构，只能恢复升级前（§5.1 第二步）的备份。恢复之后，升级以来写入的数据会丢失，回滚前先在 issue 中确认。整个过程**不能启动新镜像的 `migrate` 或 `app`**，所以先把 compose 文件和镜像切回旧版本，再恢复数据库，最后启动：
 
 ```bash
-cd /opt/akkiabot/production
+cd /srv/akkiabot/production
 OLD=<升级前的完整 sha>
 DUMP=backups/akkiabot-<升级前备份的时间>.dump
 
@@ -272,12 +272,12 @@ docker compose up -d --wait
 用 cron 每天备份一次。cron 会在脚本运行前打开日志文件，所以 `backups/` 必须事先存在（§4.2 的部署步骤已经创建）：
 
 ```bash
-cd /opt/akkiabot/production
+cd /srv/akkiabot/production
 install -d -m 700 backups                           # 已存在时不会改动内容
 ./backup.sh >> backups/backup.log 2>&1 && tail -n 1 backups/backup.log   # 先手动跑一次，确认能生成备份
 crontab -e
 # 每天 03:17（服务器时区）备份生产库
-17 3 * * * cd /opt/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+17 3 * * * cd /srv/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
 ```
 
 备份保存在同一台服务器上，只能应对误操作和升级失败。需要防范整机故障时，再用 rclone 等工具把 `backups/` 同步到异地存储，这部分由维护者决定，暂不在本仓库实现。Redis 只用作缓存，不需要备份。
@@ -287,7 +287,7 @@ crontab -e
 用于误操作后找回数据，镜像版本不变。跨数据库迁移的版本回滚见 §5.2，不要直接套用本节。
 
 ```bash
-cd /opt/akkiabot/production
+cd /srv/akkiabot/production
 ./restore.sh backups/akkiabot-<时间>.dump           # 停 app/cloudflared，删库重建并导入，输出 alembic revision
 docker compose up -d --wait                          # 当前镜像的 migrate 会把表结构升级到它的版本
 ```
@@ -332,7 +332,7 @@ compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANS
 
 | 项目 | 预发布 |
 | --- | --- |
-| 目录 | `/opt/akkiabot/staging`（可以和生产在同一台机器上，也可以单独一台） |
+| 目录 | `/srv/akkiabot/staging`（可以和生产在同一台机器上，也可以单独一台） |
 | `.env` | 来自 `deploy/staging/.env.example`：`COMPOSE_PROJECT_NAME=akkiabot-staging`，`AKKIABOT_HTTP_PORT=8001`，预发布 tunnel 的 token |
 | `app.env` | 由 `deploy/staging/app.env.tpl` 用 1Password 渲染：Telegram 测试环境中**专用的 staging bot**（`TELEGRAM_TEST_ENVIRONMENT=true`），密钥来自 `AkkiaBot` vault 的 `staging-bot`、`staging-services` 条目 |
 | 域名 | `bot-api-staging.akkia.moe` |
@@ -353,8 +353,8 @@ tunnel 和 DNS 记录可以按 §7 在控制台创建，也可以用 `staging-cl
 
 ```bash
 REF=<master 上的完整 commit sha>
-sudo mkdir -p /opt/akkiabot/staging && sudo chown "$USER" /opt/akkiabot/staging
-cd /opt/akkiabot/staging
+sudo mkdir -p /srv/akkiabot/staging && sudo chown "$USER" /srv/akkiabot/staging
+cd /srv/akkiabot/staging
 
 base="https://raw.githubusercontent.com/AkkiaLab/AkkiaBot/$REF/deploy"
 curl -fsSLo compose.yaml "$base/compose.yaml"
@@ -398,7 +398,7 @@ staging 发版以 RC 为单位（`docs/release.md` §4.1）：`release-rc.yml` �
 
 ```bash
 SHA=<RC tag 指向的完整 commit sha，release-rc.yml 已推送该镜像>
-cd /opt/akkiabot/staging
+cd /srv/akkiabot/staging
 cp -p .env ".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 sed -i "s/^AKKIABOT_TAG=.*/AKKIABOT_TAG=$SHA/" .env
 # 模板有变化时，先从该 commit 更新 app.env.tpl，再重新渲染
