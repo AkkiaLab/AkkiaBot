@@ -4,9 +4,10 @@ name: Release window
 # (下车 + RC to staging), 20:xx release (seal the accepted RC, then production
 # approval). The phase is taken from the clock when the run starts, so a delayed
 # run decides like an on-time one and a repeated run changes nothing. Manual
-# entry (加车 / patch release): dispatch with phase and version.
+# entry (加车 / patch release): dispatch with phase and version; dry_run only
+# reports the decisions (no branch, RC, dispatch, PR retarget or seal).
 
-run-name: 发布窗口 ${{ inputs.phase || 'scheduled' }} ${{ inputs.version }}
+run-name: 发布窗口 ${{ inputs.phase || 'scheduled' }} ${{ inputs.version }}${{ inputs.dry_run && ' (dry-run)' || '' }}
 
 on:
   schedule:
@@ -25,6 +26,11 @@ on:
         description: Release to act on (vX.Y.Z); empty = the current regular release
         required: false
         type: string
+      dry_run:
+        description: Only report what the phase would do; write nothing
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-window
@@ -58,8 +64,10 @@ jobs:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PHASE: ${{ inputs.phase }}
           VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           args=()
           [[ -n "$PHASE" && "$PHASE" != auto ]] && args+=(--phase "$PHASE")
           [[ -n "$VERSION" ]] && args+=(--version "$VERSION")
+          [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
           python3 -m scripts.release window "${args[@]}"
