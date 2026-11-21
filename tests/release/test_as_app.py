@@ -2,7 +2,8 @@
 
 The private key below is generated for the test (a MOCK key, never used anywhere
 else). Checks that no key material is left on disk on either exit path and that
-no credential appears in any command's arguments (BOT-40 review of PR #41).
+no credential appears in any command's arguments (process listings are readable
+by other users of the host).
 """
 
 from __future__ import annotations

@@ -486,7 +486,10 @@ async def check_member_banned(ctx: ScenarioContext) -> None:
 
 
 def check_name_hidden(msg: Msg, ctx: ScenarioContext) -> None:
-    """Public notices show only a fragment of the handled member's name (BOT-37).
+    """Public notices show only a fragment of the handled member's name.
+
+    People advertise through their names and usernames, so the bot never repeats
+    them in full in the group (AGENTS.md, "群内公开消息").
 
     Long names (more than 4 characters) must not appear in full, and the
     ``@username`` never appears.
@@ -675,7 +678,7 @@ async def spam_scenario(ctx: ScenarioContext) -> None:
     purged too; its deletion is the last side effect, so once it is gone nothing
     more happens to the member. Whatever fails, the scenario only ends when that
     is settled (:func:`settle_spam`), so later scenarios never meet a late mute or
-    purge (BOT-47).
+    purge (docs/e2e-acceptance.md, "反垃圾的异步副作用").
     """
     require_antispam(ctx)
     probe = await member_posts(ctx, PURGE_PROBE_TEXT, "probe")
@@ -720,7 +723,7 @@ async def finish_spam(
     Anything that keeps us from confirming both — a missing purge, but also a
     failed read while checking or a failed unmute — raises
     :class:`SideEffectsUnsettled`, so the run stops instead of running the next
-    scenario next to a muted member or a pending purge (BOT-47).
+    scenario next to a muted member or a pending purge.
     """
     problems: list[str] = []
     unsettled: SideEffectsUnsettled | None = None

@@ -29,7 +29,7 @@ runs:
         [[ -n "$APP_ID" ]] || missing+=("variable RELEASE_APP_ID")
         [[ "$HAS_KEY" == "true" ]] || missing+=("secret RELEASE_APP_PRIVATE_KEY")
         if (( ${#missing[@]} )); then
-          echo "::error::release App not configured: ${missing[*]} (docs/release.md §7, BOT-40)"
+          echo "::error::release App not configured: ${missing[*]} (docs/release.md §7)"
           exit 1
         fi
     # The App (akkialab-agent) also has non-release uses. Request exactly the release permissions, never "whatever the

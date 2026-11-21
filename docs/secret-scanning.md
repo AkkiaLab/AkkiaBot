@@ -2,8 +2,6 @@
 
 本文说明仓库在提交前、push 前和 CI 中如何拦截凭据，以及历史基线与例外的依据。测试样例的写法（mock 命名与注释）见 `AGENTS.md`。告警发现后的响应流程不在本文范围内。
 
-> 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
-
 ### 组成
 
 | 层 | 触发时机 | 命令 | 扫描范围 |
@@ -24,7 +22,7 @@
 
 `.gitleaks.toml` 沿用 gitleaks 默认规则集（`useDefault = true`），并新增以下规则：
 
-- `akkiabot-telegram-bot-token-bare`：不依赖关键词，匹配裸的 Telegram bot token 形态（bot id + `:A` + 33–34 位）。默认的 `telegram-bot-api-token` 规则要求值前面有 `telegram` 之类的关键词，因此漏掉了 BOT-21 告警 #1 中 `BOT_TOKEN = "..."` 形式的值。本规则加上后，全量扫描就能命中该值。
+- `akkiabot-telegram-bot-token-bare`：不依赖关键词，匹配裸的 Telegram bot token 形态（bot id + `:A` + 33–34 位）。默认的 `telegram-bot-api-token` 规则要求值前面有 `telegram` 之类的关键词，因此漏掉了 GitHub secret scanning 告警 #1 中 `BOT_TOKEN = "..."` 形式的值。本规则加上后，全量扫描就能命中该值。
 
 ### 失败时怎么处理
 
@@ -36,11 +34,11 @@
 
 ### 历史基线与例外
 
-首次全量扫描在 2026-11-14 进行（BOT-24），使用本文规则，覆盖 HEAD 可达的提交以及 `--all` 范围内的远端分支。共有 5 条命中，涉及 2 个值，全部来自 BOT-7，并已在 BOT-21 中替换。`.gitleaksignore` 按精确指纹（`提交:文件:规则:行号`，不含值）只忽略这 5 条，新出现的同一个值仍会被拦截。
+首次全量扫描在 2026-11-14 进行，使用本文规则，覆盖 HEAD 可达的提交以及 `--all` 范围内的远端分支。共有 5 条命中，涉及 2 个值，都是早期测试代码里写入的 token 形态值，对应测试已改用 mock 值。`.gitleaksignore` 按精确指纹（`提交:文件:规则:行号`，不含值）只忽略这 5 条，新出现的同一个值仍会被拦截。
 
 | 值（以 sha256 前 12 位区分） | 位置（提交） | 来源证据 | 有效性验证（Telegram `getMe`，生产与测试环境） |
 | --- | --- | --- | --- |
-| `2f059ebc7649` | `test_observability.py`：`e41198a6`:29、`6a76d770`:116、`bcfa463d`:116 | GitHub 告警 #1。BOT-21 核实：该值由模型会话直接写出，未在环境变量、1Password、旧仓库或本机文件中找到 | 2026-11-14 19:55 UTC：两个环境均返回 HTTP 401 / `error_code=401`，结论为无效 |
+| `2f059ebc7649` | `test_observability.py`：`e41198a6`:29、`6a76d770`:116、`bcfa463d`:116 | GitHub 告警 #1。核实结果：该值由模型会话直接写出，未在环境变量、1Password、旧仓库或本机文件中找到 | 2026-11-14 19:55 UTC：两个环境均返回 HTTP 401 / `error_code=401`，结论为无效 |
 | `731fa294d036` | `test_telegram_utils.py`：`5cabac56`:16、`bcfa463d`:16 | 照抄自 Bot API 官方文档的示例 token：与 core.telegram.org/bots/api 页面上唯一的 token 形态值哈希一致 | 2026-11-14 20:00 UTC：两个环境均返回 HTTP 401 / `error_code=401`，结论为无效 |
 
 验证方式：值只在验证进程内从 git 历史中读取，不出现在命令参数、日志或报告里；只调用官方文档中用于测试 token 的 `getMe`，不调用会产生副作用的方法；报告只记录时间、方法、HTTP 状态码、错误码和结论。网络失败、限流或本地格式检查失败都只能记为“未验证”。如果验证结果为有效，应立即停止调用，并请凭据所有者吊销或轮换。“无效”只说明该值现在不能用，不等于证明它是人工构造的，所以来源证据与验证结果分开记录。
@@ -50,6 +48,6 @@
 master 由仓库 ruleset `master 保护`（id 27269655）保护，包含禁止删除、禁止非快进、要求 PR（仅 squash、评审线程须全部解决），以及必需状态检查。
 
 - 必需检查：`secret-scan` 和 `ci-ok`，来源为 GitHub Actions（integration_id 15368），不要求分支保持最新（`strict_required_status_checks_policy: false`）。
-- 变更记录：2026-11-14 核实时 ruleset 中没有任何必需检查。经维护者授权（BOT-24），在原有三条规则后追加了 `required_status_checks` 规则，其他字段不变，并通过 `gh api repos/AkkiaLab/AkkiaBot/rules/branches/master` 回读确认生效。
+- 变更记录：2026-11-14 核实时 ruleset 中没有任何必需检查。经维护者授权，在原有三条规则后追加了 `required_status_checks` 规则，其他字段不变，并通过 `gh api repos/AkkiaLab/AkkiaBot/rules/branches/master` 回读确认生效。
 - 仓库已开启 GitHub secret scanning 和 push protection。
 - 修改检查名称（job 的 `name`）前，要先同步修改 ruleset，否则所有 PR 都会因为等不到这两项检查而无法合并。

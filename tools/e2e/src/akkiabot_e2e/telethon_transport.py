@@ -141,7 +141,8 @@ def _role(participant: Any | None) -> Role | None:
     """Role of a ``channels.getParticipant`` result; ``None`` when not in the group.
 
     A muted member comes back as ``ChannelParticipantBanned`` too, but with
-    ``left`` unset and ``view_messages`` allowed: still a member (BOT-47).
+    ``left`` unset and ``view_messages`` allowed: still a member. Treating it as gone would make member
+    restoration try to add a merely muted member back.
     """
     if isinstance(participant, types.ChannelParticipantCreator):
         return "creator"

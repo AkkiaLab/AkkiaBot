@@ -4,7 +4,8 @@ name: Release guard
 # receivable release (not sealed), a frozen release only takes `release:fix`
 # PRs, and the head must be cut from its target release. The rules come from
 # the base branch's copy of the tooling, never from the PR itself. Read-only:
-# no secrets, no writes. The ruleset of releases/** makes it required (BOT-40).
+# no secrets, no writes. The rulesets of releases/** and master list it as a
+# required check (docs/release.md §7).
 
 on:
   pull_request:

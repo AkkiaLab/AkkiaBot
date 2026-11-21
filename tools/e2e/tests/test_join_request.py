@@ -1,4 +1,4 @@
-"""BOT-33: members.join-request against the fake bot (pending request → private notice)."""
+"""members.join-request against the fake bot (pending request → private notice)."""
 
 from __future__ import annotations
 
@@ -125,7 +125,8 @@ async def test_regressions_fail(
 async def test_preparation_grants_the_invite_right_on_an_existing_group(
     world: FakeTelegram, config: E2EConfig
 ) -> None:
-    # A fixed group prepared before BOT-33: the bot lacks "invite users".
+    # A fixed group prepared before members.join-request existed: the bot lacks
+    # "invite users", which receiving join requests needs.
     chat = world.add_chat(config.chat_title, ADMIN)
     chat.members.update({BOT.id: "admin", MEMBER.id: "member"})
     chat.rights[BOT.id] = frozenset({"delete_messages", "ban_users"})

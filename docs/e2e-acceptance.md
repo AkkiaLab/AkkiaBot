@@ -2,8 +2,6 @@
 
 本文说明如何对已实现的功能做端到端验收：两个测试用户账号通过 MTProto（[Telethon](https://docs.telethon.dev/)）在专用测试群里发命令，工具检查 bot 的真实回复并生成报告。所有 Telegram 交互都在 **Telegram 测试环境**中进行，密钥由 1Password 统一管理。
 
-> 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
-
 工具代码位于 `tools/e2e`（Python 包 `akkiabot_e2e`，命令 `akkiabot-e2e`）。它只通过 Telegram 黑盒验证，不导入产品代码；产品代码也不依赖它（import-linter 契约 `e2e-black-box`、`product-without-e2e`）。
 
 ## 1. 环境隔离：只使用 Telegram 测试环境
@@ -193,7 +191,7 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
    - `bot_username` 对应的确实是 bot。
 4. 选择测试群。只考虑**群主账号创建的、标题与 `E2E_CHAT_TITLE`（默认“AkkiaBot E2E 自动验收群”）完全一致的超级群**，并且群 id 必须在 `allowed_chat_ids` 中。同名但不在白名单中的群不会被使用，也不会因为同名而被认领。只有带 `--create-group`、且不存在白名单外的同名群时才会新建群（见 6.1 节）。
 5. 准备测试群：
-   - 邀请 bot，确保它有 `delete_messages`、`ban_users`、`invite_users` 管理员权限（手动授予的其他权限会保留；`invite_users` 是收到入群申请所必需的，BOT-33 起已有的固定测试群会在准备阶段自动补上）；
+   - 邀请 bot，确保它有 `delete_messages`、`ban_users`、`invite_users` 管理员权限（手动授予的其他权限会保留；`invite_users` 是收到入群申请所必需的，在这项要求出现之前准备的固定测试群会在准备阶段自动补上）；
    - 普通成员如果在封禁列表中（上次群管理或反垃圾场景运行中断遗留），先解除封禁；
    - 两个测试账号互加联系人（已是联系人时跳过）。Telegram 默认只允许联系人把用户拉进群，而且把退出或被移出超级群的用户再拉回来，要求双方是双向联系人（否则报 `USER_NOT_MUTUAL_CONTACT`）。联系人关系长期有效；首次加联系人时两个账号需要同在一个群里（例如固定测试群），否则账号拿不到对方的信息，工具会报错说明；
    - 普通成员不在群里时（包括新建的群），由群主账号直接把成员拉入群（`channels.inviteToChannel`），不使用邀请链接。拉人失败（例如 `USER_PRIVACY_RESTRICTED`、`PEER_FLOOD`，或 Telegram 在 `missing_invitees` 中返回该成员）时如实报错并停止，**不回退为链接入群**。
@@ -231,7 +229,7 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
 
 | 场景 | 内容 |
 | --- | --- |
-| `antispam.enabled` | 成员先发一条普通消息（清理探针），群主用 `/config` 开启“反垃圾”；成员再发一条明显的博彩广告：`E2E_ANTISPAM_TIMEOUT`（默认 60）秒内广告被删除，成员被禁言，bot 发出带成员提及的“内容命中反垃圾策略”通知，提及只显示名字片段（BOT-37）；随后 `E2E_ANTISPAM_PURGE_DELAY + E2E_REPLY_TIMEOUT` 秒内探针作为成员历史被清理。报告记录广告从发出到删除的耗时。结束时（无论成败）先确认反垃圾的异步处理已经结束（见下文“反垃圾的异步副作用”），再解除禁言 |
+| `antispam.enabled` | 成员先发一条普通消息（清理探针），群主用 `/config` 开启“反垃圾”；成员再发一条明显的博彩广告：`E2E_ANTISPAM_TIMEOUT`（默认 60）秒内广告被删除，成员被禁言，bot 发出带成员提及的“内容命中反垃圾策略”通知，提及只显示名字片段；随后 `E2E_ANTISPAM_PURGE_DELAY + E2E_REPLY_TIMEOUT` 秒内探针作为成员历史被清理。报告记录广告从发出到删除的耗时。结束时（无论成败）先确认反垃圾的异步处理已经结束（见下文“反垃圾的异步副作用”），再解除禁言 |
 | `antispam.disabled` | 关闭“反垃圾”后，成员再发同样的广告：等待 `E2E_ANTISPAM_WAIT`（默认 20）秒后消息仍在、成员未被禁言 |
 | `antispam.exempt` | 重新开启“反垃圾”，成员先发三条普通消息，再发广告：作为发言超过 3 条的老成员被豁免（同样等待后检查）。结束时关闭“反垃圾” |
 | `antispam.langfuse` | 用 Langfuse 公共 API 查询本次运行之后的 `antispam.classify` generation，`antispam.enabled` 的广告（按消息中的运行标记匹配）必须有记录。未配置 `LANGFUSE_*` 时记为跳过（不计为通过） |
@@ -243,7 +241,7 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
 | `moderation.permissions` | 普通成员发 `/config` 被拒绝；普通成员回复群主消息发 `/ban` 被拒绝；群主对自己的消息发 `/ban` 得到“无法封禁管理员或群主。”且消息未被删除 |
 | `moderation.config` | 群主在群内发 `/config`，回复带深链按钮；用私聊发送 `/start <token>` 打开菜单（含反垃圾、入群验证、警告、删除系统消息四个开关）；点击“警告”，回调提示“设置成功”且菜单刷新为新状态。若初始为开启则先关再开，最终保持开启 |
 | `moderation.warn` | 成员发两条消息，群主回复其中一条连续 `/warn`：回复依次显示 `1/3`、`2/3`，第 3 次显示已封禁，每次都只显示名字片段；检查成员在封禁列表中、两条消息已被删除。开关未开启时先走一遍 `moderation.config` 的流程。结束时（无论成败）解除封禁并由群主把成员拉回群 |
-| `moderation.ban` | 成员发三条消息，群主回复最后一条 `/ban`：回复显示删除条数不少于 3、名字渲染为提及链接且只显示名字片段（较长名字不出现全名，也不出现 `@username`，BOT-37）；检查成员在封禁列表中、三条消息已被删除。结束时同样恢复成员 |
+| `moderation.ban` | 成员发三条消息，群主回复最后一条 `/ban`：回复显示删除条数不少于 3、名字渲染为提及链接且只显示名字片段（较长名字不出现全名，也不出现 `@username`）；检查成员在封禁列表中、三条消息已被删除。结束时同样恢复成员 |
 | `antispam.spam-command` | 成员回复群主消息发 `/spam` 得到“无法举报管理员或群主。”；群主回复成员消息发 `/spam`，回复“已被封禁（垃圾信息）”，成员进入封禁列表、消息被删除。结束时恢复成员 |
 | `members.join-request` | 入群**申请**阶段（不是入群后的验证）：成员退群，群主导出一个需要管理员审批的邀请链接，成员用它申请入群（Telegram 返回“申请已发送”，成员不入群）。在管理员处理之前，成员必须在与 bot 的私聊中收到固定的等待提示 `Hello, please wait for the admin to approve your request.`（只认申请之后的新消息），并且成员仍不在群里（bot 不得自行批准）。结束时（无论成败）群主拒绝该申请，再把成员直接拉回群。申请不算链接入群，报告中单独记为“成员通过需审批的链接申请入群” |
 | `members.service-message` | 成员退群后通过邀请链接重新入群（要验证的就是真实入群，所以保留链接入群），两条系统消息都被 bot 删除（此场景最后执行）。如果 Telegram 没有返回其中任一条系统消息的 id，记为失败（未验证），不算通过 |
@@ -251,9 +249,9 @@ PR 级运行（`just e2e`，即 `--serve`）**不新建群**：只复用固定�
 
 反垃圾场景（`antispam.enabled`）排在最前面：反垃圾只检查已记录发言不超过 3 条的成员，而其他场景都会让成员发言。`--serve` 每次使用新的数据库，所以完整运行时成员在 `antispam.enabled` 时一定是“新成员”；不加 `--serve`、复用数据库长期保留的外部 bot 时，加 `--fresh-group` 让每次运行使用新建的专用群（`just e2e-staging` 已默认加上），否则成员在旧群中的发言数会累计，`antispam.enabled` 会因豁免而失败（见 6.2 节“持久化被测 bot 的数据准备”）。被测 bot 没有配置 LLM（`LLM_API_KEY`、`LLM_MODEL`）时，反垃圾场景记为跳过（⏭️，原因“缺少凭据或配置”），整次运行不算通过；只验收其他功能时用 `--scenarios commands,moderation,members`。普通成员举报普通成员需要第三个账号，由单元测试覆盖（`apps/server/tests/test_antispam.py`）。
 
-反垃圾的异步副作用（BOT-47）：bot 在后台处理群消息，LLM 判定最长可用 `ANTISPAM_TIMEOUT`（默认 45 秒，超时则放行），命中后删除广告、禁言并发通知，再过 `ANTISPAM_PURGE_DELAY`（默认 5 秒）清理该成员已记录的全部历史消息（包括这期间新发的消息），通知在 `ANTISPAM_NOTICE_TTL` 后自删。`antispam.enabled` 因此不以 `E2E_REPLY_TIMEOUT` 判定广告处理，而是等到 `E2E_ANTISPAM_TIMEOUT`（被测 bot 的判定预算加 Telegram 调用余量，改动 bot 的 `ANTISPAM_TIMEOUT` 时须同步调大）；并以探针被清理作为“这次处理已全部结束”的信号。场景失败时同样先确认结束：预算内 bot 一直没有处理广告，视为已放行、不会再有迟到动作，后续场景照常执行；bot 处理了广告但清理没有在窗口内出现，则无法确认副作用已结束，该场景记为失败（同时保留原失败原因），其余场景以“运行中止”跳过，本次运行不会写 `success`。确认过程本身出错（例如读取消息或成员状态时网络、RPC 失败），或结束时解除禁言失败，同样按“未确认结束”中止，报告保留原失败原因。不要用加长固定等待或调换场景顺序来规避：判定慢于 `E2E_REPLY_TIMEOUT` 却仍在预算内时，过早放弃会让迟到的禁言和清理落进后续场景；即使 `antispam.enabled` 通过，延迟的历史清理也会删掉后续场景刚发的消息。被禁言的成员仍在群里，恢复成员时先解除禁言，不会把它当作已退群再拉人。广告处理耗时超过 `E2E_REPLY_TIMEOUT` 时只在报告中记录，是否需要调整 LLM 延迟由反垃圾的指标（`antispam_llm_*`）和维护者判断，验收工具不改被测 bot 的配置。
+反垃圾的异步副作用：bot 在后台处理群消息，LLM 判定最长可用 `ANTISPAM_TIMEOUT`（默认 45 秒，超时则放行），命中后删除广告、禁言并发通知，再过 `ANTISPAM_PURGE_DELAY`（默认 5 秒）清理该成员已记录的全部历史消息（包括这期间新发的消息），通知在 `ANTISPAM_NOTICE_TTL` 后自删。`antispam.enabled` 因此不以 `E2E_REPLY_TIMEOUT` 判定广告处理，而是等到 `E2E_ANTISPAM_TIMEOUT`（被测 bot 的判定预算加 Telegram 调用余量，改动 bot 的 `ANTISPAM_TIMEOUT` 时须同步调大）；并以探针被清理作为“这次处理已全部结束”的信号。场景失败时同样先确认结束：预算内 bot 一直没有处理广告，视为已放行、不会再有迟到动作，后续场景照常执行；bot 处理了广告但清理没有在窗口内出现，则无法确认副作用已结束，该场景记为失败（同时保留原失败原因），其余场景以“运行中止”跳过，本次运行不会写 `success`。确认过程本身出错（例如读取消息或成员状态时网络、RPC 失败），或结束时解除禁言失败，同样按“未确认结束”中止，报告保留原失败原因。不要用加长固定等待或调换场景顺序来规避：判定慢于 `E2E_REPLY_TIMEOUT` 却仍在预算内时，过早放弃会让迟到的禁言和清理落进后续场景；即使 `antispam.enabled` 通过，延迟的历史清理也会删掉后续场景刚发的消息。被禁言的成员仍在群里，恢复成员时先解除禁言，不会把它当作已退群再拉人。广告处理耗时超过 `E2E_REPLY_TIMEOUT` 时只在报告中记录，是否需要调整 LLM 延迟由反垃圾的指标（`antispam_llm_*`）和维护者判断，验收工具不改被测 bot 的配置。
 
-`moderation.warn`、`moderation.ban`、`antispam.spam-command` 会真实封禁普通成员账号，并在场景结束时（包括失败时）解除封禁、由群主账号直接把成员拉回群，后续场景不受影响。不用邀请链接的原因：Telegram 按账号限制短时间内通过链接入群的次数（BOT-27、BOT-28），而群主拉人不占用成员账号的入群额度。只有 `captcha.verify`、`members.service-message` 保留成员通过邀请链接入群，因为这两项要验证的就是真实入群。`members.join-request` 只用需审批的链接提交申请（申请随后被拒绝，成员由群主拉回），不算链接入群，但同样是成员账号的一次链接操作，报告中单独计数。群主拉人失败时，该场景记为失败，其余场景以“运行中止”跳过，不回退为链接入群。如果运行被强行中断，成员可能停留在封禁状态；下次运行的准备阶段会先解除封禁再由群主拉成员入群，并在报告的准备步骤中注明。
+`moderation.warn`、`moderation.ban`、`antispam.spam-command` 会真实封禁普通成员账号，并在场景结束时（包括失败时）解除封禁、由群主账号直接把成员拉回群，后续场景不受影响。不用邀请链接的原因：Telegram 按账号限制短时间内通过链接入群的次数（见 §7“入群限流”），而群主拉人不占用成员账号的入群额度。只有 `captcha.verify`、`members.service-message` 保留成员通过邀请链接入群，因为这两项要验证的就是真实入群。`members.join-request` 只用需审批的链接提交申请（申请随后被拒绝，成员由群主拉回），不算链接入群，但同样是成员账号的一次链接操作，报告中单独计数。群主拉人失败时，该场景记为失败，其余场景以“运行中止”跳过，不回退为链接入群。如果运行被强行中断，成员可能停留在封禁状态；下次运行的准备阶段会先解除封禁再由群主拉成员入群，并在报告的准备步骤中注明。
 
 bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊中默认不引用），所以场景在私聊里把 bot 发来的下一条消息当作回复；群内仍要求回复引用了请求消息。
 
@@ -278,7 +276,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
 ### 6.2 staging 发版验收（差异）
 
-按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异（BOT-16 决定，BOT-34 实现）：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
+按分层验收（`AGENTS.md`），单个任务只跑受影响的场景（`just e2e --scenarios …`）。staging 发版验收针对**已部署的 staging 栈**执行，默认只验收差异：被测对象是 staging bot（`staging-bot` 条目）、`bot-api-staging.akkia.moe` 和 `staging.akkiabot-webapp.pages.dev`，本机不启动 bot。环境模板为 `tools/e2e/staging-release.env.tpl`。
 
 版本流程（`docs/release.md` §4.1）下，第 1–3 步和第 5 步由 `just release-staging <RC tag> <场景>` 在同一把 staging 锁内完成；以下是它执行的内容和手动执行时的步骤。
 
@@ -315,7 +313,7 @@ bot 在私聊中回复时不会引用原消息（PTB 的 `reply_text` 在私聊�
 
 #### 持久化被测 bot 的数据准备
 
-staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态会累计：成员发言数（`chat_member.message_count`）、各项开关、警告次数。反垃圾只检查发言不超过 3 条的成员（`ANTISPAM_EXEMPT_MESSAGE_COUNT`），而一次全量运行会让普通成员发言十几条，所以第二次在同一个群里运行时，`antispam.enabled` 的广告会被豁免：消息不删除、成员不禁言，指标只出现 `antispam_verdict_total{verdict="skipped",action="exempt"}`，`antispam.langfuse` 也因没有判定而失败（BOT-27 曾在 staging 上复现）。
+staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态会累计：成员发言数（`chat_member.message_count`）、各项开关、警告次数。反垃圾只检查发言不超过 3 条的成员（`ANTISPAM_EXEMPT_MESSAGE_COUNT`），而一次全量运行会让普通成员发言十几条，所以第二次在同一个群里运行时，`antispam.enabled` 的广告会被豁免：消息不删除、成员不禁言，指标只出现 `antispam_verdict_total{verdict="skipped",action="exempt"}`，`antispam.langfuse` 也因没有判定而失败（曾在 staging 上复现）。
 
 约束：
 
@@ -327,7 +325,7 @@ staging bot 的 PostgreSQL 在多次验收之间保留，按群保存的状态�
 
 ### 6.3 每周清理旧的 staging 发版验收群
 
-经维护者授权（BOT-28/BOT-30），每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
+经维护者授权，每周清理一次 6.2 节留下的旧验收群；一周内没有 staging 发版就不运行。
 
 **触发**：`.github/workflows/e2e-prune-trigger.yml` 每周一 03:17 UTC 运行（也可在 Actions 页面手动运行）。它只用 GitHub GraphQL API 逐页检查 master 的全部提交，看过去 7 天内是否有 commit 被写入 `staging-acceptance` 状态（不按提交时间截断，重新验收旧提交也算）。API 出错或提交数超出检查上限时，workflow 直接失败，不会当作“无发版”：
 
@@ -390,7 +388,7 @@ just e2e-turnstile-test-keys    # = just e2e --scenarios captcha.test-keys
   - 超过上限时，停止本次验收，剩余场景标记为跳过（原因“限流中止”）；
   - 两次发送之间至少间隔 `E2E_SEND_INTERVAL`（默认 2 秒）；
   - 每次 FloodWait 的账号、方法、秒数和重试次数都写入报告（6 节“结果”），用于判断是哪类操作触发了限流。
-- **入群限流**：Telegram 按成员账号统计短时间内的入群次数，短时间内多次链接入群后，后续链接入群会被要求等待（BOT-27）。所以成员恢复和新群准备都改由群主拉人，只有 `captcha.verify`、`members.service-message` 通过链接入群（`members.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证）；PR 级和 staging 差异验收都只跑明确涉及的场景，通常不产生链接入群。入群次数减少后，两次验收之间不再要求固定间隔（维护者于 BOT-16 决定，取消此前“两次全量验收至少间隔约 1 小时”）。失败后先查清原因再重跑，不盲目连续重试；遇到 FloodWait 超过上限或群主拉人被限流（`PEER_FLOOD`）时如实报错停止，不回退为链接入群。
+- **入群限流**：Telegram 按成员账号统计短时间内的入群次数，短时间内多次链接入群后，后续链接入群会被要求等待。所以成员恢复和新群准备都改由群主拉人，只有 `captcha.verify`、`members.service-message` 通过链接入群（`members.join-request` 只提交一次需审批的申请，Telegram 是否把它计入同一额度未经验证）；PR 级和 staging 差异验收都只跑明确涉及的场景，通常不产生链接入群。入群次数减少后，两次验收之间不再要求固定间隔（维护者已取消此前“两次全量验收至少间隔约 1 小时”的要求）。失败后先查清原因再重跑，不盲目连续重试；遇到 FloodWait 超过上限或群主拉人被限流（`PEER_FLOOD`）时如实报错停止，不回退为链接入群。
 - **白名单**：只用 `allowed_user_ids` 中的账号发消息，只在 `allowed_chat_ids` 中的群（或本次用 `--create-group` 新建或按操作标识找回的群）里操作；不清理历史消息。删除群只有 `prune-groups --apply` 一个入口，范围见 6.3 节。
 
 ## 8. Sentry

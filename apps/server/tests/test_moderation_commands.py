@@ -178,7 +178,7 @@ async def test_ban_deletes_history_and_records_restriction(
     assert _deleted_ids(api) == sorted(m["message_id"] for m in posted)
     reply = api.calls_to("sendMessage")[-1]
     assert reply["parse_mode"] == "MarkdownV2"
-    # Only a fragment of the name is shown (BOT-37).
+    # Only a fragment of the name is shown: people advertise through their names.
     assert reply["text"] == (f"[Sp…ot](tg://user?id={TARGET_ID}) 已被封禁，删除了 3 条消息。")
     async with session_scope(runtime.session_factory) as session:
         member = await ChatMemberRepository(session).get(CHAT, TARGET_ID)
@@ -416,7 +416,7 @@ async def test_target_who_left_can_still_be_banned(
     assert [int(c["user_id"]) for c in api.calls_to("banChatMember")] == [TARGET_ID]
 
 
-# ---------------------------------------------------------------- receipts (BOT-48)
+# ---------------------------------------------------------------- receipts
 
 
 def _commands(command: str, result: str) -> float:

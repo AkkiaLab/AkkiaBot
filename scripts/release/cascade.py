@@ -252,7 +252,7 @@ def _close_resolved(
     between, or the old target was sealed. So an issue is resolved when its
     source tip is contained in the target it recorded *or* in the source's
     current target; looking only at the current hop would leave the old
-    direction's issue open forever (BOT-40 drill).
+    direction's issue open forever (seen in a release drill).
     """
     for issue in gh.open_conflict_issues():
         match = MARKER_RE.search(issue.body)

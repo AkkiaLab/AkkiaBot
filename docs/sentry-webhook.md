@@ -1,6 +1,6 @@
 # Sentry webhook 签名中继
 
-本文说明 Sentry 新增报错、回归和 resolved 的 webhook 如何经签名中继转发给一个可选的外部通知 webhook，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`。本链路由 BOT-55（旧工作区编号，已不可访问）建立。转发之后如何处理（例如建任务、去重、对账）由下游接收方自行负责，不在本仓库范围内。
+本文说明 Sentry 新增报错、回归和 resolved 的 webhook 如何经签名中继转发给一个可选的外部通知 webhook，以及部署、验证、停用和恢复方法。Sentry SDK 的接入见 `docs/observability.md`。转发之后如何处理（例如建任务、去重、对账）由下游接收方自行负责，不在本仓库范围内。
 
 ## 1. 数据流
 

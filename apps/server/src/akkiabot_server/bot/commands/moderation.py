@@ -51,7 +51,7 @@ async def reply(message: Message, text: str, *, parse_mode: str | None = None) -
 
     The command message can disappear while the command runs (deleted by its
     author, another bot or an admin); quoting it would then fail with
-    "Message to be replied not found" (BOT-48).
+    "Message to be replied not found".
     """
     return await message.reply_text(
         text,
