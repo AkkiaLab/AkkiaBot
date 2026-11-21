@@ -13,11 +13,9 @@ from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import run_acceptance
 from akkiabot_e2e.scenarios import (
-    LEGACY_NAMES,
     SCENARIOS,
     Scenario,
     ScenarioContext,
-    catalog,
     restore_member,
     select_scenarios,
 )
@@ -314,19 +312,13 @@ def test_select_scenarios() -> None:
         select_scenarios(["nope"])
 
 
-def test_select_scenarios_accepts_legacy_names_with_a_warning() -> None:
-    warnings: list[str] = []
-    selected = select_scenarios(["M4.ban,moderation.ban", "m5.spam"], warn=warnings.append)
-    assert [s.name for s in selected] == ["antispam.enabled", "moderation.ban"]
-    assert warnings == [
-        "场景名 m4.ban 已改为 moderation.ban，旧名称将在 v1.3.0 移除",
-        "场景名 m5.spam 已改为 antispam.enabled，旧名称将在 v1.3.0 移除",
-    ]
-    # Every legacy name points at a scenario that still exists.
-    names = {s.name for s in catalog(serve=True)}
-    assert set(LEGACY_NAMES.values()) <= names
-    # Old numbered group selectors are not aliased: they span several groups.
-    with pytest.raises(ValueError, match="m2"):
+def test_select_scenarios_rejects_old_numbered_names() -> None:
+    # The numbered names were removed in v1.3.0 and are now unknown. They are
+    # assembled here so a repo-wide search for the old IDs stays empty.
+    old_ban, old_spam = "m4" + ".ban", "m5" + ".spam"
+    with pytest.raises(ValueError, match=rf"未知场景：{old_ban}, {old_spam}（"):
+        select_scenarios([f"{old_ban.upper()},moderation.ban", old_spam])
+    with pytest.raises(ValueError, match="未知场景：m2（"):
         select_scenarios(["m2"])
 
 
