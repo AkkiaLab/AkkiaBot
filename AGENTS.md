@@ -17,6 +17,28 @@
 
 - PR 标题和正文写清改了什么、怎么验证的；CI 不检查标题格式或任务编号。
 
+## 推送前本地检查
+
+- 新检出先执行 `just setup`（Python 与前端依赖、pre-commit / pre-push 钩子），只装一侧依赖会让另一侧的检查失败。
+- 每次推送前在仓库根目录依次运行下面三条，全部通过才推送；合入目标分支最新提交后重新运行。即使只改了一侧也跑全量：CI 按路径跳过 job，不等于本地可以跳过。
+
+  ```bash
+  just lint        # ruff check / ruff format --check / import-linter + biome
+  just typecheck   # pyright + tsc
+  just test        # pytest + vitest
+  ```
+
+- `.github/workflows/ci.yml` 的汇总 job `ci-ok` 汇总下表各 job 的结果（任一失败即失败，按路径跳过的视为通过）；各 job 与本地命令的对应关系：
+
+  | CI job（触发条件） | CI 执行的步骤 | 本地对应 |
+  | --- | --- | --- |
+  | `python`（Python、部署脚本、`justfile` 等改动） | `just lint-py`、`just typecheck-py`、`just test-py`，并连真实 PostgreSQL / Redis 跑集成测试与 `akkiabot migrate` | 三条通用命令覆盖前三步；改动迁移、repository 或缓存时另跑 `just test-integration`（需先 `just services`） |
+  | `web`（前端、`tools/api-types`、`justfile` 等改动） | `just lint-web`、生成的 API 类型无差异、`just typecheck-web`、`just test-web`、生产构建及无开发期 Telegram mock 检查 | 三条通用命令覆盖 lint / typecheck / test；改动接口时运行 `just gen-api` 并提交生成结果；改动前端时另跑 `just build-web` |
+  | `docker`（Dockerfile、compose、依赖等改动） | 构建镜像、版本冒烟、compose 栈冒烟、备份与迁移回滚演练 | 改动这些文件时至少跑 `just docker-build`；compose 冒烟与回滚演练以 CI 结果为准 |
+  | `secret-scan`（每次都运行） | 扫描全部可达提交中的凭据 | pre-push 钩子自动扫描未推送提交并运行 `tests/test_secret_samples.py`；`just secret-scan` 复现 CI 全量扫描 |
+
+- 本地通过不代替 CI；CI 失败时在本地复现上表对应命令修复，不要跳过钩子或检查。
+
 ## 开源边界
 
 - 仓库是公开的，按普通开源项目维护：文档、代码注释、测试、workflow 和配置注释面向没有内部系统权限的外部读者，不写内部流程、团队角色、内部任务的进度或一次性操作记录。
