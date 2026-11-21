@@ -125,7 +125,8 @@ class FakeBot:
     no_ban: bool = False
     """Reply as if banned, but never ban."""
     full_names: bool = False
-    """Mention handled members by full name and @username (before BOT-37)."""
+    """Mention handled members by full name and @username (the old behaviour,
+    before public mentions were limited to a name fragment)."""
     members_can_moderate: bool = False
     """Skip the permission check."""
     stale_menu: bool = False

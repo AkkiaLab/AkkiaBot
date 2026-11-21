@@ -1,4 +1,4 @@
-"""BOT-29: the owner adds the member back, flood waits are itemised, skipped is not passed."""
+"""The owner adds the member back, flood waits are itemised, skipped is not passed."""
 
 from __future__ import annotations
 

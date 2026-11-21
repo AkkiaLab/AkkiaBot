@@ -633,14 +633,14 @@ async def test_member_left_muted_by_an_interrupted_run_is_restored(world: FakeTe
     assert chat.restricted == set()
 
 
-# ------------------------------------ antispam: asynchronous side effects (BOT-47)
+# ------------------------------------------- antispam: asynchronous side effects
 #
 # The real guard acts in the background: the LLM verdict may take up to
 # ANTISPAM_TIMEOUT (45 s), and the spammer's history is purged
 # ANTISPAM_PURGE_DELAY (5 s) after the mute. The fake bot defers those side
 # effects by a number of account operations (``spam_lag`` / ``purge_lag``), so
 # these runs are deterministic. Scenarios run in catalog order: antispam.enabled first,
-# then moderation.warn, as in the staging release acceptance of BOT-40.
+# then moderation.warn, as in a full staging release acceptance run.
 
 SPAM_THEN_WARN = ["antispam.enabled", "moderation.warn"]
 

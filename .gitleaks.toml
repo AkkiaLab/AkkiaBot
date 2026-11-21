@@ -6,7 +6,8 @@ useDefault = true
 
 # The default `telegram-bot-api-token` rule only fires when a keyword such as
 # "telegram" sits right before the value, so it missed a token-shaped value in a
-# plain `BOT_TOKEN = "..."` assignment (BOT-21, GitHub secret scanning alert #1).
+# plain `BOT_TOKEN = "..."` assignment (GitHub secret scanning alert #1, see
+# docs/secret-scanning.md).
 # This rule matches the bare shape anywhere (same shape as tests/test_secret_samples.py):
 # numeric bot id, ":", then "A" + 33-34 token characters.
 [[rules]]

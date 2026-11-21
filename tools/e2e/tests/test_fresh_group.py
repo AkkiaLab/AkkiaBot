@@ -1,4 +1,4 @@
-"""Repeated runs against a bot whose database persists (staging, BOT-27).
+"""Repeated runs against a bot whose database persists (staging).
 
 The fake bot keeps per-chat member message counts across runs, like the
 deployed staging bot does in PostgreSQL.

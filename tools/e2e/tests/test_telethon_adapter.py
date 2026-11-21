@@ -137,7 +137,7 @@ def _banned(*, left: bool, view_messages: bool) -> types.ChannelParticipantBanne
 
 def test_muted_member_is_still_a_member() -> None:
     # A spam mute arriving late made restore_member think the member had left
-    # and try to add it again (BOT-47, RC2 of BOT-40).
+    # and try to add it again (seen in a staging release acceptance run).
     assert _role(_banned(left=False, view_messages=False)) == "member"
     assert _role(_banned(left=False, view_messages=True)) is None  # banned
     assert _role(_banned(left=True, view_messages=False)) is None  # muted, then left

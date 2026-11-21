@@ -169,7 +169,7 @@ def _is_ancestor(git: Git, ancestor: str, descendant: str) -> bool:
 
 
 #: Cloudflare in front of the bot API and the Mini App answers 403 to urllib's
-#: default ``Python-urllib`` user agent (BOT-40 staging rehearsal).
+#: default ``Python-urllib`` user agent (seen in a staging rehearsal).
 USER_AGENT = "akkiabot-release (+https://github.com/AkkiaLab/AkkiaBot)"
 
 

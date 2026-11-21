@@ -1,6 +1,6 @@
 # 版本开发、逐级上合与发布流程
 
-本文是“按版本开发与自动发布”在仓库中的实现说明与运行手册。文中的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处（来源：BOT-38 方案、BOT-39 实现、BOT-40 平台接入与 staging 演练）。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
+本文是“按版本开发与自动发布”在仓库中的实现说明与运行手册。分层验收的场景选择仍以 `AGENTS.md` 与 `docs/e2e-acceptance.md` 为准，服务器操作细节以 `docs/operations.md` 为准。
 
 工具入口：`just release <命令>`（即 `python -m scripts.release`，代码在 `scripts/release/`，只依赖 Python 标准库、`git` 和 `gh`）。GitHub Actions 与运行机执行同一份代码。
 
@@ -94,7 +94,7 @@ flowchart LR
    5. 执行 `just e2e-staging --record-status <sha> --baseline <基线> --scenarios <场景>`（不带场景时全量）；
    6. 结束后释放租约（包括失败）。唯一例外：前端运行超时或查询出错时，工具先取消该运行，必要时强制取消，并等 GitHub 确认它已结束；无法确认时（找不到运行，或取消后仍未结束）**保留租约**并以退出码 11 结束，因为迟到的上传仍可能覆盖下一个 RC。恢复：在 Actions 中确认该 `webapp-deploy` 运行已结束，再执行 `just release lease release <sha>`，然后重跑；租约最迟在到期时间自动失效。
 5. staging 租约（`scripts/release/lease.py`）：引用 `refs/release/staging-lease` 指向一个租约 commit，它的父提交是被租用的 sha，提交说明记录持有者和到期时间（默认 6 小时）。取得租约用 `--force-with-lease` 原子地“不存在才创建”，过期租约用比较并交换接管；释放同样只删除自己的租约。staging Mini App 的**所有**上传（`webapp-deploy.yml`，手动运行也一样）在上传前用 master 上的工具执行 `lease check <sha>`，只有租约有效且正好属于该 sha 时才上传。因此另一个 RC 或一次手动部署都无法在验收期间替换前端；后端和验收由同一个持有租约的进程执行。手动部署 staging 前端须先取得租约：`just release lease acquire <sha>`，用完后执行 `just release lease release <sha>`。查看当前租约：`just release lease show`。该引用不在 `refs/heads`、`refs/tags` 下，不受分支或 tag 规则约束，也不会触发工作流。
-6. 基线：该 sha 的**祖先**中、`staging-acceptance=success` 且不被其他已验收祖先包含的最近一个（`just release baseline <sha>`）。只认祖先，补丁谱系（从旧 tag 切出）不会拿到较新常规版本的验收结果，反之亦然；不使用“全局最近一次成功”。引导期的首个 RC 以旧流程在 master 上已验收的生产版本为基线（§6）。没有已验收祖先时必须全量验收。
+6. 基线：该 sha 的**祖先**中、`staging-acceptance=success` 且不被其他已验收祖先包含的最近一个（`just release baseline <sha>`）。只认祖先，补丁谱系（从旧 tag 切出）不会拿到较新常规版本的验收结果，反之亦然；不使用“全局最近一次成功”。没有已验收祖先时必须全量验收。
 7. 场景选择、跳过原因、`success` 的含义和 PEER_FLOOD/FloodWait 处理不变（`docs/e2e-acceptance.md` §6、§6.2）。区间内没有明确涉及的场景时仍按现行规则选 `commands.help` 作最小冒烟，并在发版记录中写明。
 
 ### 4.2 封版（`release-seal.yml` / `just release seal vX.Y.Z`）
@@ -155,32 +155,18 @@ flowchart LR
 - 发布：没有 RC、RC 过期或未通过验收时**停止并报错**，不封版；通过时触发 `release-seal.yml`，随后进入生产审批。已有正式 tag 时跳过。
 - 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release-app create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。维护者汇总发布范围与加车理由；生产切换需维护者审批。
 
-## 6. 首次引导（已完成）
+## 6. 首次引导
 
-2026-11-16（BOT-40）已按确认的方案（BOT-38）引导：`releases/v1.0.0` 从 master `3c0ed15` 创建，首个 RC `v1.0.0-rc.1` 的差异基线为 `5f5227a`。此后 master 不再接收实现 PR（`release-guard` 是 master 的必需检查）。以下为引导前的记录。
+仓库里还没有任何版本分支或 tag 时，工具不会推导首个版本：首个版本号由维护者显式指定（`just release-app create vX.Y.Z`），从 master 创建。创建后 master 不再接收实现 PR（`release-guard` 是 master 的必需检查），存量的 master PR 由各自实现者改提到该 release（`gh pr edit <号> --base releases/vX.Y.Z` 并按 §2 变基）。
 
-2026-11-15 核对（只读）：
-
-- 远端没有任何 `v*` tag，也没有 `releases/*` 分支；只有 master 和一个历史任务分支。
-- master 规则集“master 保护”：禁止删除和强制推送，只允许 squash 合并的 PR、需要解决评审线程、必需检查 `ci-ok` / `secret-scan`，**没有绕过者**；仓库只允许 squash 合并。
-- 已安装的 App：评审专用 App（当时独立于发布，后改名为 `akkialab-agent`，同时负责评审和发布，见 §7）、只读集成 App、Cloudflare Pages；没有发布 App。环境 `webapp-production` 有审批人 `AkkiaS7` 且只允许 master；没有 `production` 环境。
-
-建议的首个版本为 **`v1.0.0`**（常规版本，从合并本流程之后的 master 创建）：这是新 monorepo 的第一个正式版本，此前生产运行的 `5f5227a` 不补打正式 tag（它不是经本流程封版的版本）。若维护者另有编号偏好，在创建前说明即可，工具不会自动推导首个版本。
-
-引导步骤（BOT-40，平台接入完成后执行）：
-
-1. `just release-app create v1.0.0`；之后新任务提向 `releases/v1.0.0`，存量的 master PR 由各自实现者改提（`gh pr edit <号> --base releases/v1.0.0` 并按 §2 变基），不批量中断。
-2. 首个 RC 的差异基线自动选到 `5f5227a`（祖先中最近的已验收 commit）。
-3. 首次封版、生产审批与部署按 §4 执行。
-
-## 7. 平台接入清单（BOT-40）
+## 7. 平台接入清单
 
 | 项 | 需要的配置 | 说明 |
 | --- | --- | --- |
 | GitHub App `akkialab-agent`（承担发布流水线写操作，取代原独立发布 App） | 安装权限：Contents R/W、Pull requests R/W、Issues R/W、Actions R/W、Administration R/W（编辑规则集）、Commit statuses R、Checks R、Metadata R；不开 webhook。流水线签发 token 时显式请求这组权限（以 `scripts/release/app_permissions.py` 为准，`release-setup` 的 `permission-*` 输入、`as-app.sh` 请求体与之一致，由 `tests/release/test_app_permissions.py` 校验）。该 App 的 bot 用户 ID 为 356702926，工具按 ID 识别，不按登录名；该 App 的其他用途（评审、合并）另按用途缩权，在本仓库之外维护 | 权限变更需维护者确认。改 release 权限时，同一 App 其他用途的工具要同步核对 |
 | 仓库变量 `RELEASE_APP_ID`、secret `RELEASE_APP_PRIVATE_KEY`；运行机 1Password `AkkiaBot/release-app` | 共用 App 的 App ID 与**发布专用私钥**（与其他用途的私钥分开，经 stdin 写入） | 未配置时上合/窗口/RC/封版工作流明确失败，不伪装成功。轮换：App 设置页新建私钥 → 写入 1Password 与 secret（均经 stdin）→ 手动运行一次 `release-cascade.yml` 确认 → 删除旧私钥 |
 | 规则集 `releases`（`refs/heads/releases/**`） | 禁止删除、强制推送；PR 需评审并只允许 squash；必需检查 `ci-ok`、`secret-scan`、`release-guard`；绕过者：`akkialab-agent`（App ID 5760780） | App 绕过用于上合 merge 与冲突解决的快进落地 |
-| master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入 `akkialab-agent` | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（BOT-40 演练实测） |
+| master 规则集 | 现有规则保留；必需检查加入 `release-guard`；绕过者加入 `akkialab-agent` | 上合以 merge commit 推入 master，与“只允许 squash 的 PR”兼容。`release-guard` 必须是必需检查，否则提向 master 的普通 PR 即使检查失败也能合并（已在演练中实测） |
 | 规则集 `releases 封版` | 目标 branch，include 初始为空（工具维护），规则 `update`、`deletion`、`non_fast_forward`，**无绕过者** | 名称须完全一致 |
 | tag 规则集 `版本 tag 创建`、`版本 tag 不可变`（`refs/tags/v*`） | 前者限制创建，绕过者仅 `akkialab-agent`；后者禁止更新、删除，**无绕过者** | 规则集的绕过对整套规则生效，所以不可变规则单独放在无绕过者的规则集中：App 和管理员都不能移动或删除正式 tag 与 RC tag |
 | 环境 `production` | 审批人 `AkkiaS7`；部署分支只允许 master | `verify` 会检查审批人存在 |
@@ -192,5 +178,5 @@ flowchart LR
 ## 8. 测试与已知限制
 
 - `tests/release/` 用真实的本地 git 仓库（bare origin）和内存版 GitHub 覆盖：版本解析与语义排序、常规/小版本来源、冻结分类、PR 基分支检查、下车、连续上合与 merge 关系、重复/延迟/并发推送、已封版目标跳过与来源补传播、冲突暂停/去重/上下文/恢复/落地门禁、RC 过期、谱系基线与补丁分叉、封版的验收/过期/锁定未生效/竞态/幂等续做、正式 tag 门禁、生产审批阻断与同 tag 重试、发布窗口的跳过/幂等/延迟；`deploy/upgrade.sh` 用假的 docker/curl/op 覆盖成功、幂等重试、配置缺项、迁移门禁、拉取/备份失败不改动、部分失败自动回滚、迁移后失败不回滚、回滚失败。
-- 真实 GitHub 规则集、App 权限、环境审批、发布通知 webhook、staging 部署与验收、ssh 生产通路都**未在本 PR 中实测**，在 BOT-40 中接入并演练；生产部署本身不在演练范围内。
+- 真实 GitHub 规则集、App 权限、环境审批、发布通知 webhook、staging 部署与验收、ssh 生产通路无法在单元测试中覆盖，已在平台接入时单独演练；生产部署本身不在演练范围内。
 - `e2e-prune-trigger.yml` 只扫描 master 历史中的 `staging-acceptance`：RC 在上合到 master 之前（例如处于冲突暂停）写入的状态，要等上合后才会被统计。

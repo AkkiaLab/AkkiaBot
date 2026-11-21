@@ -127,7 +127,7 @@ def test_conflict_pauses_one_direction_dedupes_and_resumes(repo: Repo, gh: FakeG
 def test_conflict_issue_of_a_rerouted_direction_is_closed_once_resolved(
     repo: Repo, gh: FakeGitHub
 ) -> None:
-    """BOT-40 drill: the source is sealed and a newer patch release now carries its
+    """Seen in a release drill: the source is sealed and a newer patch release now carries its
     changes, so the conflict continues as a new direction. The issue of the old
     direction must be closed, not left open forever."""
     _bootstrap(repo)
@@ -269,7 +269,7 @@ def test_land_forward_pr_refuses_sealed_target(repo: Repo, gh: FakeGitHub) -> No
 
 def test_conflict_not_duplicated_when_issue_listing_lags(repo: Repo, gh: FakeGitHub) -> None:
     """GitHub's issue listing is eventually consistent: a run that just created the
-    conflict issue must not create it again when it re-plans (BOT-40 drill)."""
+    conflict issue must not create it again when it re-plans (seen in a release drill)."""
     _bootstrap(repo)
     run_cascade(repo.git, gh, trigger="sync")
     repo.commit("releases/v1.0.1", "README.md", "patch line\n", "CHG-91: patch")
