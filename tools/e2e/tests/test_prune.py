@@ -1,4 +1,4 @@
-"""``prune-groups``: weekly clean-up of old staging release acceptance groups (BOT-30)."""
+"""``prune-groups``: weekly clean-up of old staging release acceptance groups."""
 
 from __future__ import annotations
 

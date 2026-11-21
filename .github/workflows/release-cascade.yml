@@ -9,7 +9,8 @@ name: Release cascade
 # `release-forward-conflict` issue and post to the optional release
 # notification webhook once.
 #
-# Writes need the release App (bypass on releases/** and master, BOT-40). The
+# Writes need the release App: it is the ruleset bypass actor on releases/** and
+# master, so the merge commits of a forward merge can land (docs/release.md §7). The
 # tooling always comes from master; `pull_request_target` never checks out PR code.
 
 on:

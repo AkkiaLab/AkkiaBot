@@ -2,8 +2,6 @@
 
 本文说明后端在服务器上的部署、配置、升级与回滚、备份与恢复、DNS 和预发布环境。日志、指标、dashboard 与告警见 `docs/observability.md`。前端 Mini App 部署在 Cloudflare Pages，见 `docs/webapp.md`。架构依据见 `docs/architecture.md` §4、§5.4。
 
-> 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
-
 ## 1. 总览
 
 ```mermaid

@@ -1,4 +1,5 @@
-"""The e2e fake bot masks names exactly like the real bot (BOT-37)."""
+"""The e2e fake bot masks names exactly like the real bot (public mentions show
+only a fragment of the name, see AGENTS.md "群内公开消息")."""
 
 import pytest
 

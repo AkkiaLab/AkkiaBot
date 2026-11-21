@@ -196,7 +196,7 @@ async def test_new_member_spam_is_removed(
 async def test_spam_notice_shows_only_a_name_fragment(
     api: FakeBotApi, llm: FakeLlm, group: Group
 ) -> None:
-    """The ad in the spammer's name / @username is not repeated by the notice (BOT-37)."""
+    """The ad in the spammer's name / @username is not repeated by the notice."""
     await group.enable()
     api.clear()
     llm.queue(verdict_json(True, "gambling", 0.97))
@@ -528,7 +528,7 @@ async def test_admin_report_bans_directly(
 async def test_admin_report_receipt_after_the_command_vanished(
     runtime: Runtime, api: FakeBotApi, group: Group
 ) -> None:
-    """BOT-48: the /spam message disappears while the ban runs; the ban happens
+    """The /spam message disappears while the ban runs; the ban happens
     once, is counted as done and the receipt still reaches the chat."""
     target = await group.say(SPAMMER_ID, "buy now")
     api.clear()

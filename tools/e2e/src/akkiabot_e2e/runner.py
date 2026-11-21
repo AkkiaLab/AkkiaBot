@@ -243,7 +243,8 @@ async def _run_scenarios(
             aborted = ("aborted", "群主拉人失败，运行中止，未执行")
         except SideEffectsUnsettled as exc:
             # The bot may still act on the member (mute, history purge): whatever
-            # runs next could be hit by it, so nothing else runs (BOT-47).
+            # runs next could be hit by it, so nothing else runs
+            # (docs/e2e-acceptance.md, "反垃圾的异步副作用").
             result.status, result.detail = "failed", f"{exc}{_first_failure(exc)}"
             aborted = ("aborted", "前一场景的异步副作用未确认结束，运行中止，未执行")
         except Exception as exc:

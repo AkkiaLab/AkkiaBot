@@ -1,4 +1,4 @@
-"""Weekly clean-up of old staging release acceptance groups (BOT-30).
+"""Weekly clean-up of old staging release acceptance groups.
 
 Every ``just e2e-staging`` run creates a group of its own (``--fresh-group``,
 see :func:`akkiabot_e2e.group.fresh_group_title`), so the test accounts' group

@@ -30,8 +30,8 @@ set -euo pipefail
 
 # The script normally arrives on stdin (`bash -s`). Bash reads such a script as
 # it goes, so a command that reads stdin (op inject does) would swallow the rest
-# of it and the script would end silently with status 0 half way through (BOT-40
-# staging rehearsal). Hence the whole body is one function, parsed completely
+# of it and the script would end silently with status 0 half way through (seen in
+# a staging rehearsal). Hence the whole body is one function, parsed completely
 # before anything runs, and it runs with stdin from /dev/null.
 main() {
 

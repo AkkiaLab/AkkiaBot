@@ -206,7 +206,7 @@ def test_bad_arguments() -> None:
 
 def test_upgrade_piped_on_stdin_runs_to_the_end(stack: dict[str, Path]) -> None:
     """`deploy` pipes the script into `bash -s`; a command reading stdin (op inject)
-    must not swallow the rest of the script (BOT-40: it ended silently with 0)."""
+    must not swallow the rest of the script (it once ended silently with 0)."""
     full_env = {
         "PATH": f"{stack['bin']}:{os.environ['PATH']}",
         "FAKE_SRC": str(stack["src"]),
