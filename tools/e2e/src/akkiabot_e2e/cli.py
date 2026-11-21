@@ -473,10 +473,8 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     if missing:
         print(_skipped_report(missing).to_markdown(redact))
         return EXIT_SKIPPED
-    # Validate before touching Telegram; renamed scenarios are reported once, here.
-    select_scenarios(
-        args.scenarios, serve=args.serve, warn=lambda msg: print(f"提示：{msg}", file=sys.stderr)
-    )
+    # Validate before touching Telegram.
+    select_scenarios(args.scenarios, serve=args.serve)
     if args.serve and args.fresh_group:
         # PR-level runs reuse the fixed test group with the member staying in it;
         # creating groups is for staging release runs only (docs/e2e-acceptance.md §3.1).

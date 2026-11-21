@@ -159,7 +159,7 @@ just e2e                    # 复用测试群，执行全部场景（一般不�
 uv run akkiabot-e2e list    # 列出所有场景
 ```
 
-场景名形如 `<分组>.<场景>`，按功能分组：`antispam`（反垃圾）、`commands`（`/help`、`/id`、`/ip`）、`moderation`（权限、`/config`、`/warn`、`/ban`）、`captcha`（入群验证）、`members`（入群申请与系统消息）。`--scenarios` 可以写分组，也可以写完整场景名。早期以编号为前缀的旧场景名暂时仍可使用，工具会在标准错误中提示对应的新名称；v1.3.0 起不再接受。
+场景名形如 `<分组>.<场景>`，按功能分组：`antispam`（反垃圾）、`commands`（`/help`、`/id`、`/ip`）、`moderation`（权限、`/config`、`/warn`、`/ban`）、`captcha`（入群验证）、`members`（入群申请与系统消息）。`--scenarios` 可以写分组，也可以写完整场景名；早期以编号为前缀的旧场景名自 v1.3.0 起已移除，按未知场景报错。
 
 本工具只用于 PR 级和 staging 发版验收。prod 不运行它：只做配置、健康和非 Telegram 的冒烟检查，Telegram 相关能力通过自然流量的日志、指标、链路和告警观测，未观测不算通过（规则见 `AGENTS.md` 的分层验收）。
 

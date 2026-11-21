@@ -1212,30 +1212,6 @@ def catalog(*, serve: bool) -> tuple[Scenario, ...]:
     return SCENARIOS + LOCAL_SCENARIOS if serve else SCENARIOS
 
 
-#: Scenario names used before the feature-based naming, accepted with a warning so
-#: release notes and commands written earlier keep working. Remove in v1.3.0.
-LEGACY_NAMES: dict[str, str] = {
-    "m2.help": "commands.help",
-    "m2.id": "commands.id",
-    "m2.id-reply": "commands.id-reply",
-    "m3.ip": "commands.ip",
-    "m3.ip-reply": "commands.ip-reply",
-    "m4.permissions": "moderation.permissions",
-    "m4.config": "moderation.config",
-    "m4.warn": "moderation.warn",
-    "m4.ban": "moderation.ban",
-    "m5.spam": "antispam.enabled",
-    "m5.disabled": "antispam.disabled",
-    "m5.exempt": "antispam.exempt",
-    "m5.langfuse": "antispam.langfuse",
-    "m5.spam-command": "antispam.spam-command",
-    "m7.captcha": "captcha.verify",
-    "m7.captcha-test-keys": "captcha.test-keys",
-    "m2.join-request": "members.join-request",
-    "m2.service-message": "members.service-message",
-}
-
-
 def groups() -> list[str]:
     """Selectable groups, in catalog order."""
     return list(dict.fromkeys(s.group for s in SCENARIOS))
@@ -1245,13 +1221,11 @@ def select_scenarios(
     selectors: list[str] | None,
     *,
     serve: bool = False,
-    warn: Callable[[str], None] | None = None,
 ) -> list[Scenario]:
     """Select by group (``moderation``) or exact name (``commands.ip``); default: all.
 
     Local-only scenarios (:data:`LOCAL_SCENARIOS`) are selected by exact name
-    only, and only with ``serve``. A name from :data:`LEGACY_NAMES` selects its
-    new name and is reported through ``warn``.
+    only, and only with ``serve``.
     """
     if not selectors:
         return list(SCENARIOS)
@@ -1261,10 +1235,6 @@ def select_scenarios(
             item = raw.strip().lower()
             if not item:
                 continue
-            if item in LEGACY_NAMES:
-                if warn is not None:
-                    warn(f"场景名 {item} 已改为 {LEGACY_NAMES[item]}，旧名称将在 v1.3.0 移除")
-                item = LEGACY_NAMES[item]
             wanted.add(item)
     local = {s.name for s in LOCAL_SCENARIOS}
     if wanted & local and not serve:
