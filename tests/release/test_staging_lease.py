@@ -193,6 +193,7 @@ def test_cli_production_does_not_promote_frontend_after_failed_check(
         deploy, "environment_lock", lambda name: __import__("contextlib").nullcontext()
     )
     monkeypatch.setenv("AKKIABOT_PRODUCTION_DIR", "~/stack-production")
+    monkeypatch.setenv("AKKIABOT_PRODUCTION_SSH", "prod-host.example.invalid")
     args = cli.build_parser().parse_args(["deploy", "production", "v1.0.0"])
     assert cli.cmd_deploy(repo.git, gh, args) == deploy.PUBLIC_HEALTH_FAILED
     assert gh.dispatched == []  # webapp-promote.yml not triggered

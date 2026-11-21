@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("env", choices=sorted(deploy.ENVIRONMENTS))
     p.add_argument("tag")
     p.add_argument("--allow-migration", action="store_true", help="负责人已确认本次数据库迁移")
-    p.add_argument("--ssh", help="覆盖目标 ssh 主机（默认取 AKKIABOT_<ENV>_SSH；空字符串表示本机）")
+    p.add_argument("--ssh", help="覆盖目标 ssh 主机（默认取 AKKIABOT_<ENV>_SSH；local 表示本机）")
     p.add_argument("--dir", help="覆盖目标目录（默认取 AKKIABOT_<ENV>_DIR，未配置时报错）")
     p.add_argument("--scenarios", help="staging：差异验收场景（逗号分隔）")
     p.add_argument("--accept", action="store_true", help="staging：部署后在同一把锁内执行验收")

@@ -293,9 +293,9 @@ def test_production_deploy_requires_owner_approval(
     assert result.code == 7
     assert "已自动回滚" in result.lines[-1]
     args, _ = runner.calls[-1]
-    assert args[:2] == ["ssh", "prod-host.example.invalid"]
-    assert "--migrations unchanged" in args[2]
-    assert "--render-template" not in args[2]
+    assert args[:3] == ["ssh", "--", "prod-host.example.invalid"]
+    assert "--migrations unchanged" in args[3]
+    assert "--render-template" not in args[3]
     # Retrying the same tag is allowed (the tag never moves).
     runner.code = 0
     assert deploy.deploy(repo.git, gh, target, "v1.0.0", run=runner, log=lambda _: None).code == 0

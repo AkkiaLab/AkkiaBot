@@ -23,7 +23,7 @@ def sh(cwd: Path, *args: str) -> str:
 
 #: Fictional deploy targets for tests (``.invalid`` never resolves).
 EXAMPLE_TARGETS = {
-    "AKKIABOT_STAGING_SSH": "",
+    "AKKIABOT_STAGING_SSH": "local",
     "AKKIABOT_STAGING_DIR": "/srv/akkiabot-staging",
     "AKKIABOT_PRODUCTION_SSH": "prod-host.example.invalid",
     "AKKIABOT_PRODUCTION_DIR": "~/stack-production",

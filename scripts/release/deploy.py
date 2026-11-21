@@ -25,6 +25,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shlex
 import subprocess
 import urllib.error
@@ -129,6 +130,28 @@ def read_targets_file(path: Path) -> dict[str, str]:
     return values
 
 
+#: Value of ``AKKIABOT_<ENV>_SSH`` (or ``--ssh``) that runs the deploy on this machine.
+LOCAL = "local"
+
+#: An ssh destination: ``[user@]host`` / ``Host`` alias. A leading ``-`` could be taken as an
+#: ssh option, so it is refused (``ssh --`` is used as well).
+_SSH_DESTINATION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*")
+
+
+def _check_directory(key: str, value: str) -> None:
+    if any(ch in value for ch in "\0\n\r"):
+        raise ReleaseError(f"{key} 含有控制字符")
+    if not (value.startswith("/") or value == "~" or value.startswith("~/")):
+        raise ReleaseError(f"{key} 必须是绝对路径或以 ~/ 开头")
+
+
+def _check_ssh(key: str, value: str) -> None:
+    if value != LOCAL and not _SSH_DESTINATION.fullmatch(value):
+        raise ReleaseError(
+            f"{key} 只能是 {LOCAL!r}（本机）或 ssh 主机 / Host 别名（不能以 - 开头，不含空白和 shell 字符）"
+        )
+
+
 def resolve_target(
     name: str,
     *,
@@ -140,10 +163,11 @@ def resolve_target(
     """Combine the public environment with where it runs on this machine.
 
     Precedence: command-line ``ssh`` / ``directory`` > process environment > targets file.
-    ``AKKIABOT_<ENV>_DIR`` is required (there is no built-in default host or path, so a
-    missing configuration can never reach a real server); ``AKKIABOT_<ENV>_SSH`` names an
-    ssh host (usually a ``Host`` alias of ``~/.ssh/config``), empty or unset means this
-    machine.
+    Both settings are required and there is no built-in host or path, so a missing or
+    partial configuration can never reach a real server or a wrong local stack:
+    ``AKKIABOT_<ENV>_DIR`` is an absolute path or ``~/...``; ``AKKIABOT_<ENV>_SSH`` is an ssh
+    host (usually a ``Host`` alias of ``~/.ssh/config``) or ``local`` for this machine.
+    Error messages name the setting and the reason only, never the configured value.
     """
     env = ENVIRONMENTS.get(name)
     if env is None:
@@ -155,32 +179,47 @@ def resolve_target(
     )
     from_file = read_targets_file(path) if needs_file else {}
 
-    def setting(cli: str | None, key: str) -> str | None:
+    def setting(cli: str | None, key: str) -> str:
         if cli is not None:
-            return cli
-        if key in environ:
-            return environ[key]
-        return from_file.get(key)
+            value = cli
+        elif key in environ:
+            value = environ[key]
+        else:
+            value = from_file.get(key, "")
+        return value.strip()
 
-    resolved_dir = (setting(directory, dir_key) or "").strip()
-    resolved_ssh = (setting(ssh, ssh_key) or "").strip()
-    if not resolved_dir:
+    resolved_dir = setting(directory, dir_key)
+    resolved_ssh = setting(ssh, ssh_key)
+    missing = [
+        key for key, value in ((dir_key, resolved_dir), (ssh_key, resolved_ssh)) if not value
+    ]
+    if missing:
         raise ReleaseError(
-            f"未配置 {name} 的部署目录：设置环境变量 {dir_key}（ssh 主机用 {ssh_key}，"
-            f"留空表示本机），或写入 {path}，或用 --dir/--ssh 指定；"
-            "见 docs/release.md §7「运行机部署目标」"
+            f"{name} 的部署目标未配置完整，缺少 {'、'.join(missing)}（{dir_key} 为栈目录；"
+            f"{ssh_key} 为 ssh 主机，在本机部署须显式写 {LOCAL}）。设置环境变量、写入 {path}，"
+            "或用 --dir/--ssh 指定；见 docs/release.md §7「运行机部署目标」"
         )
-    for key, value in ((dir_key, resolved_dir), (ssh_key, resolved_ssh)):
-        if any(ch.isspace() for ch in value):
-            raise ReleaseError(f"{key} 不能包含空白字符：{value!r}")
+    _check_directory(dir_key, resolved_dir)
+    _check_ssh(ssh_key, resolved_ssh)
     return Target(
         name=env.name,
         directory=resolved_dir,
-        ssh=resolved_ssh or None,
+        ssh=None if resolved_ssh == LOCAL else resolved_ssh,
         health_url=env.health_url,
         webapp_version_url=env.webapp_version_url,
         template=env.template,
     )
+
+
+def shell_directory(directory: str) -> str:
+    """``directory`` as one shell word: quoted literally, except that a leading ``~/``
+    stays unquoted so the host shell expands it to the deploy user's home."""
+    if directory == "~":
+        return "~"
+    if directory.startswith("~/"):
+        rest = directory[2:]
+        return "~/" + shlex.quote(rest) if rest else "~/"
+    return shlex.quote(directory)
 
 
 #: Exit codes of deploy/upgrade.sh and what they mean for the operator.
@@ -222,9 +261,9 @@ def template_environment() -> dict[str, str]:
 
 def host_shell(target: Target, command: str) -> list[str]:
     """argv running ``command`` inside the target directory (locally or over ssh)."""
-    remote = f"cd {target.directory} && {command}"
+    remote = f"cd -- {shell_directory(target.directory)} && {command}"
     if target.ssh:
-        return ["ssh", target.ssh, remote]
+        return ["ssh", "--", target.ssh, remote]
     return ["bash", "-c", remote]
 
 
