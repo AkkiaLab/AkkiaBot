@@ -17,7 +17,7 @@ TELEGRAM_TEST_ENVIRONMENT=true
 # --- whois (/ip)
 WHOIS_IPINFO_TOKEN=op://AkkiaBot/staging-services/ipinfo_token
 
-# --- antispam (M5): OpenAI-compatible LLM + Langfuse, shared dev/staging services
+# --- antispam: OpenAI-compatible LLM + Langfuse, shared dev/staging services
 LLM_BASE_URL=op://AkkiaBot/staging-services/llm_base_url
 LLM_API_KEY=op://AkkiaBot/staging-services/llm_api_key
 LLM_MODEL=op://AkkiaBot/staging-services/llm_model

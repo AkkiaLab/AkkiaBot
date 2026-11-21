@@ -214,7 +214,7 @@ class FakeBot:
         )
 
     def on_join_request(self, world: FakeTelegram, chat: FakeChat, user_id: int) -> None:
-        """Tell the applicant, in private, to wait for an admin (legacy behaviour)."""
+        """Tell the applicant, in private, to wait for an admin."""
         # Telegram sends chat_join_request only to admins with "invite users".
         if "invite_users" not in chat.rights.get(self.user.id, frozenset()):
             return

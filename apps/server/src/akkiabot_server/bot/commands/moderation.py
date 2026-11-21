@@ -175,7 +175,7 @@ async def execute_ban(request: Request, context: Context, *, note: str = "") -> 
 
 async def warn_command(update: Update, context: Context) -> str | None:
     message, chat = update.effective_message, update.effective_chat
-    # Like botlab-core: tell everyone (not only admins) when the feature is off.
+    # Tell everyone (not only admins) when the feature is off.
     if (
         message is not None
         and chat is not None

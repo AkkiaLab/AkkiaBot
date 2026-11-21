@@ -57,7 +57,7 @@ def _result(report: Report):
     return result
 
 
-def test_notice_text_is_the_legacy_text() -> None:
+def test_notice_text_is_the_fixed_text() -> None:
     assert JOIN_REQUEST_TEXT == "Hello, please wait for the admin to approve your request."
 
 

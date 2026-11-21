@@ -6,9 +6,6 @@
 * ``akkiabot serve`` — run the bot and the HTTP API in one event loop.
 * ``akkiabot openapi [--output FILE]`` — write the OpenAPI document (used by
   ``just gen-api``); needs no configuration.
-* ``akkiabot import-legacy LEGACY_DB [--dry-run] [--report FILE]`` — one-shot
-  import of group settings and warning counts from a read-only copy of the Go
-  botlab-core SQLite file (M10, docs/operations.md §9). Prints a diff report.
 """
 
 import argparse
@@ -24,7 +21,6 @@ from akkiabot_core.config import (
     load_observability_settings,
     load_settings,
 )
-from akkiabot_core.db import create_engine, create_session_factory
 from akkiabot_core.db.migrate import upgrade
 from akkiabot_core.observability import configure_logging, setup_observability
 from akkiabot_server import __version__, release_name
@@ -41,26 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", help="启动机器人与 HTTP API")
     openapi = sub.add_parser("openapi", help="输出 OpenAPI 文档（just gen-api 使用）")
     openapi.add_argument("--output", "-o", type=Path, help="写入文件，默认输出到 stdout")
-    legacy = sub.add_parser(
-        "import-legacy",
-        help="从 Go 版 botlab-core 的 SQLite 只读副本导入群配置与警告数（M10）",
-    )
-    legacy.add_argument("legacy_db", type=Path, help="旧库 sqlite.db 的只读副本")
-    legacy.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="只输出差异报告，不写入；未配置 DB_URL 时按空库计算",
-    )
-    legacy.add_argument(
-        "--report", type=Path, help="另外把差异写成 JSON 文件（必须是不存在的新文件）"
-    )
-    legacy.add_argument(
-        "--recent-hours",
-        type=int,
-        default=48,
-        help="从旧库最后活动时间往前算的“最近”窗口：导入这段时间的消息 id，"
-        "并列出这段时间内被禁言的成员（默认 48）",
-    )
     return parser
 
 
@@ -124,63 +100,6 @@ def _serve() -> int:
     return 0
 
 
-def _import_legacy(
-    legacy_db: Path, *, dry_run: bool, report: Path | None, recent_hours: int = 48
-) -> int:
-    """Exit codes: 0 ok, 1 statistics mismatch (nothing written), 2 bad input/config."""
-    import asyncio
-    import os
-    import sys
-
-    from akkiabot_server import legacy_import
-
-    obs = load_observability_settings()
-    # Logs go to stderr so stdout carries only the report.
-    configure_logging(obs.log_level, fmt=obs.log_format, stream=sys.stderr)
-    if report is not None:
-        # Validate before reading or writing anything: the report must never
-        # replace the legacy database (same path, symlink or hard link).
-        try:
-            legacy_import.check_report_path(report, legacy_db)
-        except legacy_import.LegacyImportError as exc:
-            logger.error("legacy import failed: %s", exc)
-            return 2
-    db_url = None
-    if os.environ.get("DB_URL"):
-        try:
-            db_url = load_database_settings().url
-        except ValidationError as exc:
-            logger.error("invalid database configuration: %s", exc)
-            return 2
-
-    async def run() -> legacy_import.ImportPlan:
-        snapshot = legacy_import.read_legacy(legacy_db, recent_hours=recent_hours)
-        if db_url is None:
-            return await legacy_import.run_import(snapshot, None, dry_run=dry_run)
-        engine = create_engine(db_url)
-        try:
-            factory = create_session_factory(engine)
-            return await legacy_import.run_import(snapshot, factory, dry_run=dry_run)
-        finally:
-            await engine.dispose()
-
-    try:
-        plan = asyncio.run(run())
-    except legacy_import.LegacyImportError as exc:
-        logger.error("legacy import failed: %s", exc)
-        return 2
-    print(legacy_import.render_report(plan, source=legacy_db, dry_run=dry_run), end="")
-    if report is not None:
-        data = legacy_import.plan_to_json(plan, source=legacy_db, dry_run=dry_run)
-        # "x": never overwrite, even if the file appeared after the check.
-        with report.open("x", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    if not plan.consistent:
-        logger.error("legacy import aborted: source statistics do not match the plan")
-        return 1
-    return 0
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "migrate":
@@ -189,15 +108,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _serve()
     if args.command == "openapi":
         return _openapi(args.output)
-    if args.command == "import-legacy":
-        if args.recent_hours < 1:
-            build_parser().error("--recent-hours 必须是正整数")
-        return _import_legacy(
-            args.legacy_db,
-            dry_run=args.dry_run,
-            report=args.report,
-            recent_hours=args.recent_hours,
-        )
     print(f"akkiabot {__version__}")
     return 0
 
