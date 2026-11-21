@@ -183,7 +183,7 @@ def _list_unrun(
     selected = {s.name for s in scenarios}
     for scenario in [*scenarios, *(s for s in catalog if s.name not in selected)]:
         result = ScenarioResult(
-            scenario.name, scenario.milestone, scenario.description, status="skipped"
+            scenario.name, scenario.group, scenario.description, status="skipped"
         )
         if scenario.name in selected:
             result.skip_reason, result.detail = cause
@@ -215,7 +215,7 @@ async def _run_scenarios(
     aborted: tuple[str, str] | None = None
     for scenario in [*scenarios, *(s for s in catalog if s.name not in selected)]:
         result = ScenarioResult(
-            scenario.name, scenario.milestone, scenario.description, status="skipped"
+            scenario.name, scenario.group, scenario.description, status="skipped"
         )
         report.results.append(result)
         if scenario.name not in selected:
@@ -268,7 +268,7 @@ def _first_failure(exc: BaseException, depth: int = 0) -> str:
 
 async def _check_message_log(ctx: ScenarioContext, probe: MessageLogProbe) -> ScenarioResult:
     result = ScenarioResult(
-        "m2.message-log", "M2", "群消息被记录到 message_log（只存 ID）", status="failed"
+        "messages.log", "messages", "群消息被记录到 message_log（只存 ID）", status="failed"
     )
     expected = list(ctx.plain_message_ids)
     try:

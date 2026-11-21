@@ -28,7 +28,7 @@ from akkiabot_e2e.testing import (
     live_env,
 )
 
-M5 = ["m5.spam", "m5.langfuse"]
+ANTISPAM = ["antispam.enabled", "antispam.langfuse"]
 
 
 async def _no_sleep(_: float) -> None:
@@ -46,7 +46,7 @@ async def _run(
 ) -> Report:
     return await run_acceptance(
         config,
-        select_scenarios(scenarios or M5),
+        select_scenarios(scenarios or ANTISPAM),
         connect=Connector(world),
         run_id=run_id,
         allow_create=True,
@@ -73,20 +73,36 @@ async def test_reused_group_exempts_the_member_on_a_later_run(
 ) -> None:
     """Reproduces the staging failure: the member's count carries over between runs."""
     registry = FakeRegistry()
-    first = await _run(world, config, registry, "run-1", fresh_group=False, scenarios=["m5", "m2"])
+    first = await _run(
+        world,
+        config,
+        registry,
+        "run-1",
+        fresh_group=False,
+        scenarios=["antispam", "commands", "members"],
+    )
     assert first.status == "passed"
     # The allowlist now holds the group, as 1Password does on staging.
     reused = replace(config, allowed_chat_ids=frozenset(registry.allowed))
     second = await _run(world, reused, registry, "run-2", fresh_group=False)
     assert _chat(second)["id"] == _chat(first)["id"]
-    assert _statuses(second)["m5.spam"] == "failed"  # exempt: more than 3 messages
+    assert _statuses(second)["antispam.enabled"] == "failed"  # exempt: more than 3 messages
     assert world.chats[_chat(second)["id"]].message_counts[MEMBER.id] > 3
 
 
-async def test_fresh_group_makes_m5_repeatable(world: FakeTelegram, config: E2EConfig) -> None:
+async def test_fresh_group_makes_antispam_repeatable(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
     registry = FakeRegistry()
     reports = [
-        await _run(world, config, registry, run_id, fresh_group=True, scenarios=["m5", "m2"])
+        await _run(
+            world,
+            config,
+            registry,
+            run_id,
+            fresh_group=True,
+            scenarios=["antispam", "commands", "members"],
+        )
         for run_id in ("run-1", "run-2", "run-3")
     ]
     for report in reports:
@@ -116,8 +132,8 @@ async def test_fresh_group_never_adopts_the_allowlisted_group(
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["run", "--scenarios", "m5"], False),
-        (["run", "--fresh-group", "--scenarios", "m5"], True),
+        (["run", "--scenarios", "antispam"], False),
+        (["run", "--fresh-group", "--scenarios", "antispam"], True),
         (["run", "--record-status", "a" * 40], True),
     ],
 )

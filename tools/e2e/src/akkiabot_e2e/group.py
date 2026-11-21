@@ -265,11 +265,11 @@ async def prepare_group(
         actions.append(f"授予 bot 管理员权限：{', '.join(sorted(BOT_ADMIN_RIGHTS))}")
 
     if await admin.is_banned(chat_id, member_user.id):
-        # Left over by an interrupted M4 run (/warn, /ban ban the member, then restore it).
+        # Left over by an interrupted moderation run (/warn, /ban ban the member, then restore it).
         await admin.unban(chat_id, member_user.id)
         actions.append("解除普通成员账号的封禁（上次运行中断时遗留）")
     elif await admin.is_restricted(chat_id, member_user.id):
-        # Left over by an interrupted M5 run (spam detection mutes the member).
+        # Left over by an interrupted antispam run (spam detection mutes the member).
         await admin.unban(chat_id, member_user.id)
         actions.append("解除普通成员账号的禁言（上次运行中断时遗留）")
     # The owner can only add the member back if they are *mutual* contacts:
@@ -281,7 +281,7 @@ async def prepare_group(
         actions.append("两个测试账号互加联系人（群主拉人入群需要双向联系人）")
     if await member.find_chat(chat_id) is None:
         # The owner adds the member: joins by link are what Telegram rate-limits
-        # per account, and only m7.captcha / m2.service-message need a real one.
+        # per account, and only captcha.verify / members.service-message need a real one.
         await owner_add_member(admin, chat_id, member_user.id)
         actions.append("群主把普通成员账号拉入群")
     if await admin.participant_role(chat_id, member_user.id) != "member":

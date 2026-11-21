@@ -44,7 +44,7 @@ async def run(
         config = load_config(live_env(E2E_ALLOWED_CHAT_IDS=ids, E2E_REPLY_TIMEOUT="0.3"))
     return await run_acceptance(
         config,
-        select_scenarios(["m2.help"]),
+        select_scenarios(["commands.help"]),
         connect=Connector(world),
         run_id="test-run",
         allow_create=allow_create,

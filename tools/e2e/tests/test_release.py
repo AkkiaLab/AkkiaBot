@@ -40,7 +40,7 @@ def _report(
             "webapp_sha_at_start": verified,
             "webapp_sha_at_end": verified,
         }
-    report.results = [ScenarioResult(f"s{i}", "M7", "d", status=s) for i, s in enumerate(statuses)]  # type: ignore[arg-type]
+    report.results = [ScenarioResult(f"s{i}", "x", "d", status=s) for i, s in enumerate(statuses)]  # type: ignore[arg-type]
     report.not_automated = not_automated or []
     report.finish()
     return report
@@ -63,8 +63,8 @@ def test_record_gate_requires_every_scenario_executed() -> None:
     report = Report(run_id="run-1", status="failed", started_at="now")
     report.release = dict.fromkeys(("target_sha", "webapp_sha_at_start", "webapp_sha_at_end"), SHA)
     report.results = [
-        ScenarioResult("s0", "M4", "d", status="passed"),
-        ScenarioResult("s1", "M2", "d", status="skipped", skip_reason="not_selected"),
+        ScenarioResult("s0", "moderation", "d", status="passed"),
+        ScenarioResult("s1", "commands", "d", status="skipped", skip_reason="not_selected"),
     ]
     report.finish()
     assert report.status == "passed"
@@ -139,7 +139,7 @@ def test_record_status_never_with_local_server(capsys: pytest.CaptureFixture[str
 
 @pytest.mark.parametrize(
     "extra",
-    [["--scenarios", "m7"], ["--baseline", SHA_B]],
+    [["--scenarios", "captcha"], ["--baseline", SHA_B]],
     ids=["scenarios-without-baseline", "baseline-without-scenarios"],
 )
 def test_diff_record_needs_both_scenarios_and_baseline(
@@ -151,7 +151,7 @@ def test_diff_record_needs_both_scenarios_and_baseline(
 
 
 def test_baseline_only_with_record_status(capsys: pytest.CaptureFixture[str]) -> None:
-    code = cli.main(["run", "--scenarios", "m2", "--baseline", SHA_B], env=live_env())
+    code = cli.main(["run", "--scenarios", "commands", "--baseline", SHA_B], env=live_env())
     assert code == cli.EXIT_USAGE
     assert "需与 --record-status 同用" in capsys.readouterr().err
 
@@ -285,11 +285,13 @@ def _diff_report(*statuses: str, verified: str | None = SHA, baseline: str = SHA
             "webapp_sha_at_end": verified,
         }
     report.results = [
-        ScenarioResult(f"m2.s{i}", "M2", "d", status=s)  # type: ignore[arg-type]
+        ScenarioResult(f"commands.s{i}", "commands", "d", status=s)  # type: ignore[arg-type]
         for i, s in enumerate(statuses)
     ]
     report.results += [
-        ScenarioResult(f"m5.u{i}", "M5", "d", status="skipped", skip_reason="not_selected")
+        ScenarioResult(
+            f"antispam.u{i}", "antispam", "d", status="skipped", skip_reason="not_selected"
+        )
         for i in range(2)
     ]
     report.finish()
@@ -301,7 +303,7 @@ def test_diff_record_success_names_baseline_and_scenarios() -> None:
     assert state == "success"
     assert text == (
         f"差异验收（基线 {SHA_B[:7]}）：1/1 个选中场景通过（运行 run-2）；"
-        "2 个未涉及差异、未执行；场景 m2.s0"
+        "2 个未涉及差异、未执行；场景 commands.s0"
     )
 
 
@@ -315,7 +317,7 @@ def test_diff_record_fails_when_a_selected_scenario_fails(selected: tuple[str, .
 def test_diff_record_fails_when_a_selected_scenario_is_skipped() -> None:
     report = _diff_report("passed")
     report.results[0] = ScenarioResult(
-        "m2.s0", "M2", "d", status="skipped", skip_reason="rate_limited"
+        "commands.s0", "commands", "d", status="skipped", skip_reason="rate_limited"
     )
     report.finish()
     state, text = describe(report, SHA)
@@ -342,7 +344,7 @@ def test_diff_record_description_fits_github_limit() -> None:
 def test_diff_report_markdown_lists_baseline_and_unrun_scenarios() -> None:
     md = _diff_report("passed").to_markdown(Redactor())
     assert f"差异验收：基线 `{SHA_B}`" in md
-    assert "执行场景 `m2.s0`" in md
+    assert "执行场景 `commands.s0`" in md
     assert "其余 2 个场景未涉及基线以来的改动" in md
     assert "未选中（本次改动未涉及）" in md
 
@@ -434,11 +436,13 @@ def _diff_cli(
         seen["fresh_group"] = kwargs["fresh_group"]
         report = Report(run_id=kwargs["run_id"], status="failed", started_at="-")
         report.results = [
-            ScenarioResult(s.name, s.milestone, "d", status=outcome)  # type: ignore[arg-type]
+            ScenarioResult(s.name, s.group, "d", status=outcome)  # type: ignore[arg-type]
             for s in scenarios
         ]
         report.results.append(
-            ScenarioResult("m5.spam", "M5", "d", status="skipped", skip_reason="not_selected")
+            ScenarioResult(
+                "antispam.enabled", "antispam", "d", status="skipped", skip_reason="not_selected"
+            )
         )
         report.finish()
         return report
@@ -465,7 +469,15 @@ def _diff_cli(
     monkeypatch.setattr(cli, "_vault", lambda: None)
     monkeypatch.setattr("akkiabot_e2e.bot_api.check_test_bot", fake_check)
     env = live_env(E2E_WEBAPP_URL="https://webapp.example.test")
-    argv = ["run", "--record-status", SHA, "--baseline", SHA_B, "--scenarios", "m2.join-request"]
+    argv = [
+        "run",
+        "--record-status",
+        SHA,
+        "--baseline",
+        SHA_B,
+        "--scenarios",
+        "members.join-request",
+    ]
     code = cli.main([*argv, "--report-dir", str(tmp_path / "r")], env=env)
     return code, seen
 
@@ -473,13 +485,13 @@ def _diff_cli(
 def test_cli_diff_record_success(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     code, seen = _diff_cli(tmp_path, monkeypatch, "passed")
     assert code == cli.EXIT_PASSED
-    assert seen["scenarios"] == ["m2.join-request"]
+    assert seen["scenarios"] == ["members.join-request"]
     assert seen["fresh_group"] is True
     assert seen["baseline_checked"] == (SHA_B, SHA, "AkkiaLab/AkkiaBot")
     state, text = seen["status"]
     assert state == "success"
     assert f"基线 {SHA_B[:7]}" in text
-    assert "场景 m2.join-request" in text
+    assert "场景 members.join-request" in text
     (md,) = (tmp_path / "r").glob("*/report.md")
     assert f"差异验收：基线 `{SHA_B}`" in md.read_text(encoding="utf-8")
 
@@ -494,6 +506,6 @@ def test_diff_record_never_selects_local_only_scenarios(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     argv = ["run", "--record-status", SHA, "--baseline", SHA_B]
-    code = cli.main([*argv, "--scenarios", "m7.captcha-test-keys"], env=live_env())
+    code = cli.main([*argv, "--scenarios", "captcha.test-keys"], env=live_env())
     assert code == cli.EXIT_USAGE
     assert "只能与 --serve 一起使用" in capsys.readouterr().err

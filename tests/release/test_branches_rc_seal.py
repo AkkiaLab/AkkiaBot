@@ -157,7 +157,7 @@ def test_baseline_follows_the_lineage(repo: Repo, gh: FakeGitHub) -> None:
     repo.push(rc1.sha, "refs/tags/v1.0.0")
 
     # Regular line moves on and gets accepted.
-    repo.commit("master", "m2.txt", "m2\n")
+    repo.commit("master", "next2.txt", "n2\n")
     create_release(repo.git, V("v1.1.0"))
     repo.commit("releases/v1.1.0", "r.txt", "r\n")
     rc11, _ = create_rc(repo.git, gh, V("v1.1.0"))

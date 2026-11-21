@@ -1,4 +1,4 @@
-"""Local Mini App hosting, builds and key switching for m7.captcha-test-keys (no browser)."""
+"""Local Mini App hosting, builds and key switching for captcha.test-keys (no browser)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""BOT-33: m2.join-request against the fake bot (pending request → private notice)."""
+"""BOT-33: members.join-request against the fake bot (pending request → private notice)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ async def _no_sleep(_: float) -> None:
 async def _run(world: FakeTelegram, config: E2EConfig) -> Report:
     return await run_acceptance(
         config,
-        select_scenarios(["m2.join-request"]),
+        select_scenarios(["members.join-request"]),
         connect=Connector(world),
         run_id="test-run",
         allow_create=True,
@@ -53,7 +53,7 @@ def _group(world: FakeTelegram):
 
 
 def _result(report: Report):
-    (result,) = [r for r in report.results if r.name == "m2.join-request"]
+    (result,) = [r for r in report.results if r.name == "members.join-request"]
     return result
 
 
