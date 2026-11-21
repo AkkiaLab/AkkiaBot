@@ -266,7 +266,7 @@ async def service_message_scenario(ctx: ScenarioContext) -> None:
         )
 
 
-#: The bot's private notice to someone who asked to join (same text as the legacy bot).
+#: The bot's private notice to someone who asked to join (fixed text, see README).
 JOIN_REQUEST_TEXT = "Hello, please wait for the admin to approve your request."
 
 
@@ -307,7 +307,7 @@ async def join_request_scenario(ctx: ScenarioContext) -> None:
         ctx.record("bot 私聊等待提示", notice)
         check(
             notice.text == JOIN_REQUEST_TEXT,
-            f"私聊提示与旧版不一致：{notice.text!r}（应为 {JOIN_REQUEST_TEXT!r}）",
+            f"私聊提示与约定文案不一致：{notice.text!r}（应为 {JOIN_REQUEST_TEXT!r}）",
         )
         role = await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id)
         ctx.record("检查成员是否仍在申请阶段", role=role)

@@ -1,6 +1,6 @@
 """``/config``: group switches edited through inline buttons in a private chat.
 
-Flow (same as botlab-core): ``/config`` in a group checks the sender's rights
+Flow: ``/config`` in a group checks the sender's rights
 and replies with a deep link → the link opens a private chat and ``/start``
 consumes the one-time payload (bound to that group *and* that user) → the bot
 shows one toggle button per switch → each button press re-checks the rights in

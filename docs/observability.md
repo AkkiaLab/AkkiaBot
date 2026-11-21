@@ -1,6 +1,6 @@
 # 可观测性：Grafana Alloy、dashboard 与告警
 
-本文说明日志和指标如何从服务器进入 Grafana Cloud，以及版本化的 dashboard、告警规则如何维护和发布。异常走 Sentry、LLM 调用走 Langfuse，见 `docs/architecture.md` §5.5；Sentry 报错 webhook 的签名中继见 `docs/sentry-webhook.md`；部署步骤见 `docs/operations.md`。任务范围见 `docs/migration-plan.md` M9。
+本文说明日志和指标如何从服务器进入 Grafana Cloud，以及版本化的 dashboard、告警规则如何维护和发布。异常走 Sentry、LLM 调用走 Langfuse，见 `docs/architecture.md` §5.5；Sentry 报错 webhook 的签名中继见 `docs/sentry-webhook.md`；部署步骤见 `docs/operations.md`。
 
 > 文中括注的 `BOT-<编号>` 是旧工作区的任务编号，已不可访问，只作历史出处；相关结论已写在本文中。
 
@@ -53,7 +53,7 @@ flowchart LR
 
 - `prometheus.scrape` 每 30 秒抓取 `app:9464/metrics`（job `akkiabot`），同时用 Alloy 内置的 blackbox exporter 探测 `http://app:8000/readyz`（job `akkiabot-readyz`，指标 `probe_success`）。
 - `remote_write` 给所有序列加上外部标签 `env`。
-- 业务指标的定义见 `packages/core/src/akkiabot_core/observability/metrics.py`，清单见 `docs/architecture.md` §5.5。为本里程碑新增了两组：
+- 业务指标的定义见 `packages/core/src/akkiabot_core/observability/metrics.py`，清单见 `docs/architecture.md` §5.5。其中两组需要额外说明：
   - `akkiabot_captcha_started_total`：入群验证漏斗的起点（新成员被禁言，并收到验证）。
   - `akkiabot_telegram_poll_total{result}`、`akkiabot_telegram_poll_last_success_timestamp_seconds`：polling 心跳。群里没人说话时 `updates_total` 本来就不会增长，但长轮询每次超时都会返回，所以用心跳判断“bot 是否停止接收 update”比用 update 量更可靠。webhook 模式不安装心跳，时间戳保持 0，告警规则会排除这种情况。
 
@@ -80,7 +80,7 @@ dev 和 staging 共用一个 Grafana Cloud stack，生产使用另一组凭据�
 | | `cloud_token` | Access policy token，scope 为 `metrics:write`、`logs:write`（可以另加 `metrics:read`、`logs:read`，方便排障时查询）。Alloy 用它推送数据。 |
 | | `grafana_sa_token` | Grafana 实例内的 service account token，角色为 Admin。`grafana_sync.py` 用它上传 dashboard 和告警。 |
 | | `prometheus_url`、`prometheus_user`、`loki_url`、`loki_user` | Alloy 的推送地址和实例 ID。不是密钥，可以用 `grafana_sync.py discover` 查出来再填入。 |
-| `prod-grafana` | 同上 | 生产（M10 切换前准备）。 |
+| `prod-grafana` | 同上 | 生产。 |
 
 预发布机器上，`deploy/staging/grafana.env.tpl` 会把这些值渲染进 `.env`（`docs/operations.md` §8）。
 
@@ -132,7 +132,7 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 
 边界：预初始化只保证序列在进程中以 0 创建。若 Alloy（抓取间隔 30 秒）在第一次错误发生前采到 0，且查询窗口内同时包含错误前后的样本，`increase()` / `rate()` 可以识别该增量；这是本改动的保证范围。新进程在第一次被抓取之前就出错时，第一个样本已经大于 0，结果取决于查询窗口内重启前的样本，不作保证：新值小于旧值（计数器重置）时计入；新值大于旧值时只计差值，例如旧值和新值都是 1 时漏算；窗口内没有旧样本（停机时间长于窗口，或全新环境）时也漏算。这些情况用 promtool 单元测试固定在 `deploy/observability/tests/counter-prewarm.test.yaml`，`just promql-test` 运行（需要 docker，使用开发栈同一个 otel-lgtm 镜像中的 promtool）。
 
-为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中：`staging` 和 `production`（生产栈于 M10 切换时开始上报，BOT-16）。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
+为什么需要“环境停止上报”：多个环境共用一个 stack 时，只要还有任一环境在上报，`/readyz 失败` 的查询就有数据，它的 noDataState 不会生效；某个环境的 Alloy 或主机失联后，它的序列只会被当作 MissingSeries 移除，不会告警（[Grafana 官方说明](https://grafana.com/docs/grafana/latest/alerting/guides/missing-data/)）。所以要对每个预期环境单独用 `absent()` 检测。预期环境列在 `alerting/env-missing.yaml` 的 `environments` 中：`staging` 和 `production`。临时指定可以用 `just grafana-sync sync --env staging --env production`。本地 lgtm 不加载这条模板。
 
 通知默认走 Grafana Cloud 的默认 notification policy 和 contact point（stack 所有者的邮箱）。另外可以选配一个签名 webhook，见 §5.1。
 

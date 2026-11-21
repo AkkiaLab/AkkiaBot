@@ -8,7 +8,7 @@ Group messages (text or media caption) go through::
         ``notice_ttl``.
 
 Members with more than ``exempt_message_count`` recorded messages are exempt
-(botlab-core used 3); administrators are never acted upon. Every verdict is
+(3 by default); administrators are never acted upon. Every verdict is
 stored in ``message_log.spam_verdict`` (the text only for hits, for auditing)
 and counted in ``antispam_verdict_total{verdict,action}``.
 

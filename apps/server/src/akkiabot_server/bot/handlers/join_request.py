@@ -1,8 +1,7 @@
 """Pending join requests: tell the applicant to wait for an admin.
 
-Kept from the legacy bot (botlab-core ``joinRequestHandler``) so the switch is
-seamless: when someone asks to join a chat through a link that requires
-approval, the bot sends them one private message. It never approves or
+When someone asks to join a chat through a link that requires approval, the
+bot sends them one private message. It never approves or
 declines the request itself; that stays with the chat's admins. This is the
 stage *before* the user is a member; the join captcha only starts once the
 request is approved and the user actually joins (``chat_member``).
@@ -26,7 +25,7 @@ from akkiabot_server.bot.types import Context
 
 logger = logging.getLogger(__name__)
 
-#: Same text as the legacy bot, word for word.
+#: Fixed text; the e2e acceptance checks it word for word.
 PENDING_APPROVAL_TEXT: Final = "Hello, please wait for the admin to approve your request."
 
 

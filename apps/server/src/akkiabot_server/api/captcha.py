@@ -1,6 +1,6 @@
 """``POST /api/v1/captcha/verify``: the Mini App submits Turnstile + initData.
 
-Checks run in this order (docs/migration-plan.md M6): Turnstile → initData
+Checks run in this order (README, "入群验证"): Turnstile → initData
 (signature and ``auth_date``) → challenge exists, pending, not expired → the
 initData user is the challenged user → the member is still under a *captcha*
 mute → unmute → ``answerWebAppQuery`` receipt. Every refusal is a

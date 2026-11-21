@@ -115,7 +115,7 @@ e2e-session-store role *args:
 e2e-bootstrap-bot *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e bootstrap-bot {{ args }}
 
-# Start the bot (test environment) from this checkout and run the live M2/M3 acceptance
+# Start the bot (test environment) from this checkout and run the live acceptance scenarios
 e2e *args:
     uv run akkiabot-e2e op-exec --env-file tools/e2e/staging.env.tpl -- akkiabot-e2e run --serve {{ args }}
 
