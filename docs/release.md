@@ -95,7 +95,7 @@ flowchart LR
    6. 结束后释放租约（包括失败）。唯一例外：前端运行超时或查询出错时，工具先取消该运行，必要时强制取消，并等 GitHub 确认它已结束；无法确认时（找不到运行，或取消后仍未结束）**保留租约**并以退出码 11 结束，因为迟到的上传仍可能覆盖下一个 RC。恢复：在 Actions 中确认该 `webapp-deploy` 运行已结束，再执行 `just release lease release <sha>`，然后重跑；租约最迟在到期时间自动失效。
 5. staging 租约（`scripts/release/lease.py`）：引用 `refs/release/staging-lease` 指向一个租约 commit，它的父提交是被租用的 sha，提交说明记录持有者和到期时间（默认 6 小时）。取得租约用 `--force-with-lease` 原子地“不存在才创建”，过期租约用比较并交换接管；释放同样只删除自己的租约。staging Mini App 的**所有**上传（`webapp-deploy.yml`，手动运行也一样）在上传前用 master 上的工具执行 `lease check <sha>`，只有租约有效且正好属于该 sha 时才上传。因此另一个 RC 或一次手动部署都无法在验收期间替换前端；后端和验收由同一个持有租约的进程执行。手动部署 staging 前端须先取得租约：`just release lease acquire <sha>`，用完后执行 `just release lease release <sha>`。查看当前租约：`just release lease show`。该引用不在 `refs/heads`、`refs/tags` 下，不受分支或 tag 规则约束，也不会触发工作流。
 6. 基线：该 sha 的**祖先**中、`staging-acceptance=success` 且不被其他已验收祖先包含的最近一个（`just release baseline <sha>`）。只认祖先，补丁谱系（从旧 tag 切出）不会拿到较新常规版本的验收结果，反之亦然；不使用“全局最近一次成功”。引导期的首个 RC 以旧流程在 master 上已验收的生产版本为基线（§6）。没有已验收祖先时必须全量验收。
-7. 场景选择、跳过原因、`success` 的含义和 PEER_FLOOD/FloodWait 处理不变（`docs/e2e-acceptance.md` §6、§6.2）。区间内没有明确涉及的场景时仍按现行规则选 `m2.help` 作最小冒烟，并在发版记录中写明。
+7. 场景选择、跳过原因、`success` 的含义和 PEER_FLOOD/FloodWait 处理不变（`docs/e2e-acceptance.md` §6、§6.2）。区间内没有明确涉及的场景时仍按现行规则选 `commands.help` 作最小冒烟，并在发版记录中写明。
 
 ### 4.2 封版（`release-seal.yml` / `just release seal vX.Y.Z`）
 

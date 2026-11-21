@@ -123,7 +123,7 @@ e2e *args:
 # real widget (headless Chromium), local bot and Mini App, Telegram test environment.
 # Needs `just e2e-browser-setup` once per machine. Not a substitute for the staging real-widget run.
 e2e-turnstile-test-keys *args:
-    just e2e --scenarios m7.captcha-test-keys {{ args }}
+    just e2e --scenarios captcha.test-keys {{ args }}
 
 # Install the headless Chromium for `e2e-turnstile-test-keys` (system libraries via sudo)
 e2e-browser-setup:
