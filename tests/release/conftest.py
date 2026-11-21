@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from scripts.release import deploy
 from scripts.release.git import Git
 from scripts.release.github import SEALED_RULE_TYPES, Issue, PullRequest, review_problems
 
@@ -18,6 +19,28 @@ def sh(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+
+#: Fictional deploy targets for tests (``.invalid`` never resolves).
+EXAMPLE_TARGETS = {
+    "AKKIABOT_STAGING_SSH": "local",
+    "AKKIABOT_STAGING_DIR": "/srv/akkiabot-staging",
+    "AKKIABOT_PRODUCTION_SSH": "prod-host.example.invalid",
+    "AKKIABOT_PRODUCTION_DIR": "~/stack-production",
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_deploy_targets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Never read the developer's real target file or environment in tests."""
+    for name in deploy.ENVIRONMENTS:
+        for key in deploy.target_keys(name):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(deploy.TARGETS_FILE_ENV, str(tmp_path / "no-release-targets.env"))
+
+
+def example_target(name: str) -> deploy.Target:
+    return deploy.resolve_target(name, environ=EXAMPLE_TARGETS)
 
 
 @dataclass

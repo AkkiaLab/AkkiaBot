@@ -14,7 +14,7 @@ from scripts.release.schedule import Phase
 from scripts.release.seal import seal
 from scripts.release.versions import ReleaseError, Version
 from scripts.release.window import RC_READY_ARTIFACT, RC_WORKFLOW, SEAL_WORKFLOW, run_window
-from tests.release.conftest import FakeGitHub, Repo
+from tests.release.conftest import FakeGitHub, Repo, example_target
 
 V = Version.parse
 PREPARE = datetime(2026, 11, 19, 8, 30, tzinfo=UTC)  # Thu 16:30 UTC+8
@@ -247,7 +247,7 @@ def test_staging_deploy_passes_gates_to_upgrade(
     monkeypatch.setattr(deploy, "fetch_json", lambda url: {"sha": sha})
     runner = RecordingRunner(old)
     result = deploy.deploy(
-        repo.git, gh, deploy.TARGETS["staging"], "v1.0.0-rc.1", run=runner, log=lambda _: None
+        repo.git, gh, example_target("staging"), "v1.0.0-rc.1", run=runner, log=lambda _: None
     )
     assert result.code == 0
     args, script = runner.calls[-1]
@@ -263,7 +263,7 @@ def test_staging_deploy_refuses_stale_rc(repo: Repo, gh: FakeGitHub) -> None:
     repo.commit("releases/v1.0.0", "late.txt", "late\n")
     runner = RecordingRunner(old)
     with pytest.raises(ReleaseError, match="已过期"):
-        deploy.deploy(repo.git, gh, deploy.TARGETS["staging"], "v1.0.0-rc.1", run=runner)
+        deploy.deploy(repo.git, gh, example_target("staging"), "v1.0.0-rc.1", run=runner)
     assert runner.calls == []
 
 
@@ -275,7 +275,7 @@ def test_production_deploy_requires_owner_approval(
     gh.statuses[sha] = "success"
     seal(repo.git, gh, V("v1.0.0"), log=lambda _: None)
     runner = RecordingRunner(old)
-    target = deploy.TARGETS["production"]
+    target = example_target("production")
     with pytest.raises(ReleaseError, match="审批"):
         deploy.deploy(repo.git, gh, target, "v1.0.0", run=runner)
     assert runner.calls == []  # nothing ran on the server
@@ -293,9 +293,9 @@ def test_production_deploy_requires_owner_approval(
     assert result.code == 7
     assert "已自动回滚" in result.lines[-1]
     args, _ = runner.calls[-1]
-    assert args[:2] == ["ssh", "greencloud-tyo-01"]
-    assert "--migrations unchanged" in args[2]
-    assert "--render-template" not in args[2]
+    assert args[:3] == ["ssh", "--", "prod-host.example.invalid"]
+    assert "--migrations unchanged" in args[3]
+    assert "--render-template" not in args[3]
     # Retrying the same tag is allowed (the tag never moves).
     runner.code = 0
     assert deploy.deploy(repo.git, gh, target, "v1.0.0", run=runner, log=lambda _: None).code == 0
@@ -335,5 +335,5 @@ def test_rollback_across_migration_is_refused(repo: Repo, gh: FakeGitHub) -> Non
     newer = repo.commit("master", f"{deploy.MIGRATIONS_DIR}/0002_y.py", "y\n")  # running version
     runner = RecordingRunner(newer)
     with pytest.raises(ReleaseError, match=r"§5\.2"):
-        deploy.deploy(repo.git, gh, deploy.TARGETS["production"], "v1.0.0", run=runner)
+        deploy.deploy(repo.git, gh, example_target("production"), "v1.0.0", run=runner)
     assert len(runner.calls) == 1  # only read the current version

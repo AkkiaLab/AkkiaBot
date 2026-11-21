@@ -25,11 +25,12 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shlex
 import subprocess
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,24 +60,192 @@ class Target:
     template: str | None
 
 
-TARGETS = {
-    "staging": Target(
+@dataclass(frozen=True)
+class Environment:
+    """The public, versioned part of a deploy target. Where the stack lives (ssh host and
+    directory) is machine-local configuration, see ``resolve_target``."""
+
+    name: str
+    health_url: str
+    webapp_version_url: str | None
+    template: str | None
+
+
+ENVIRONMENTS = {
+    "staging": Environment(
         name="staging",
-        directory="/opt/akkiabot/staging",
-        ssh=None,
         health_url="https://bot-api-staging.akkia.moe/readyz",
         webapp_version_url="https://staging.akkiabot-webapp.pages.dev/version.json",
         template="staging/app.env.tpl",
     ),
-    "production": Target(
+    "production": Environment(
         name="production",
-        directory="~/akkiabot/production",
-        ssh="greencloud-tyo-01",
         health_url="https://bot-api.akkia.moe/readyz",
         webapp_version_url=None,
         template=None,
     ),
 }
+
+#: Overrides the location of the machine-local target file.
+TARGETS_FILE_ENV = "AKKIABOT_RELEASE_TARGETS_FILE"
+
+
+def default_targets_file(environ: Mapping[str, str] = os.environ) -> Path:
+    """``$AKKIABOT_RELEASE_TARGETS_FILE``, else ``$XDG_CONFIG_HOME/akkiabot/release-targets.env``
+    (``~/.config`` when unset)."""
+    if environ.get(TARGETS_FILE_ENV):
+        return Path(environ[TARGETS_FILE_ENV]).expanduser()
+    base = environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "akkiabot" / "release-targets.env"
+
+
+def target_keys(name: str) -> tuple[str, str]:
+    """Names of the (ssh, directory) settings of one environment."""
+    prefix = f"AKKIABOT_{name.upper()}"
+    return f"{prefix}_SSH", f"{prefix}_DIR"
+
+
+def _file_value(raw: str) -> str | None:
+    """Value part of one ``KEY=VALUE`` line, or ``None`` when it is not supported.
+
+    The value is taken exactly as written: either unquoted without any whitespace (so
+    an inline ``# comment`` is refused instead of becoming part of the value), or one
+    single- / double-quoted string with nothing after the closing quote, whose content
+    is kept verbatim (no escapes, no trimming).
+    """
+    if raw[:1] in ('"', "'"):
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        if end == -1 or raw[end + 1 :]:
+            return None
+        return raw[1:end]
+    if any(ch.isspace() for ch in raw):
+        return None
+    return raw
+
+
+def read_targets_file(path: Path) -> dict[str, str]:
+    """``KEY=VALUE`` lines (optionally prefixed by ``export``); blank lines and lines
+    starting with ``#`` are ignored. Values are never rewritten: see ``_file_value``;
+    anything else is an error naming the line, never echoing it. A missing file is an
+    empty configuration."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ReleaseError(f"无法读取部署目标配置 {path}：{exc.strerror}") from exc
+    values: dict[str, str] = {}
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, raw = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        if not sep or not key or any(ch.isspace() for ch in key):
+            raise ReleaseError(f"部署目标配置 {path} 第 {number} 行不是 KEY=VALUE 格式")
+        value = _file_value(raw)
+        if value is None:
+            raise ReleaseError(
+                f"部署目标配置 {path} 第 {number} 行（{key}）的值不受支持：未加引号的值不能含空白"
+                "（不支持行内 # 注释）；加引号时引号内原样使用，引号后不能再有内容"
+            )
+        values[key] = value
+    return values
+
+
+#: Value of ``AKKIABOT_<ENV>_SSH`` (or ``--ssh``) that runs the deploy on this machine.
+LOCAL = "local"
+
+#: An ssh destination: ``[user@]host`` / ``Host`` alias. A leading ``-`` could be taken as an
+#: ssh option, so it is refused (``ssh --`` is used as well).
+_SSH_DESTINATION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*")
+
+
+def _check_directory(key: str, value: str) -> None:
+    if any(ch in value for ch in "\0\n\r"):
+        raise ReleaseError(f"{key} 含有控制字符")
+    if value != value.strip():
+        raise ReleaseError(f"{key} 首尾不能有空白（不会自动去除，以免指向另一个目录）")
+    if not (value.startswith("/") or value == "~" or value.startswith("~/")):
+        raise ReleaseError(f"{key} 必须是绝对路径或以 ~/ 开头")
+
+
+def _check_ssh(key: str, value: str) -> None:
+    if value != LOCAL and not _SSH_DESTINATION.fullmatch(value):
+        raise ReleaseError(
+            f"{key} 只能是 {LOCAL!r}（本机）或 ssh 主机 / Host 别名（不能以 - 开头，不含空白和 shell 字符）"
+        )
+
+
+def resolve_target(
+    name: str,
+    *,
+    ssh: str | None = None,
+    directory: str | None = None,
+    environ: Mapping[str, str] = os.environ,
+    targets_file: Path | None = None,
+) -> Target:
+    """Combine the public environment with where it runs on this machine.
+
+    Precedence: command-line ``ssh`` / ``directory`` > process environment > targets file.
+    Both settings are required and there is no built-in host or path, so a missing or
+    partial configuration can never reach a real server or a wrong local stack:
+    ``AKKIABOT_<ENV>_DIR`` is an absolute path or ``~/...``; ``AKKIABOT_<ENV>_SSH`` is an ssh
+    host (usually a ``Host`` alias of ``~/.ssh/config``) or ``local`` for this machine.
+    Error messages name the setting and the reason only, never the configured value.
+    """
+    env = ENVIRONMENTS.get(name)
+    if env is None:
+        raise ReleaseError(f"未知环境 {name}（可选：{', '.join(sorted(ENVIRONMENTS))}）")
+    path = targets_file or default_targets_file(environ)
+    ssh_key, dir_key = target_keys(name)
+    needs_file = (ssh is None and ssh_key not in environ) or (
+        directory is None and dir_key not in environ
+    )
+    from_file = read_targets_file(path) if needs_file else {}
+
+    def setting(cli: str | None, key: str) -> str:
+        if cli is not None:
+            value = cli
+        elif key in environ:
+            value = environ[key]
+        else:
+            value = from_file.get(key, "")
+        return value  # never trimmed or rewritten: what is configured is what runs
+
+    resolved_dir = setting(directory, dir_key)
+    resolved_ssh = setting(ssh, ssh_key)
+    missing = [
+        key for key, value in ((dir_key, resolved_dir), (ssh_key, resolved_ssh)) if not value
+    ]
+    if missing:
+        raise ReleaseError(
+            f"{name} 的部署目标未配置完整，缺少 {'、'.join(missing)}（{dir_key} 为栈目录；"
+            f"{ssh_key} 为 ssh 主机，在本机部署须显式写 {LOCAL}）。设置环境变量、写入 {path}，"
+            "或用 --dir/--ssh 指定；见 docs/release.md §7「运行机部署目标」"
+        )
+    _check_directory(dir_key, resolved_dir)
+    _check_ssh(ssh_key, resolved_ssh)
+    return Target(
+        name=env.name,
+        directory=resolved_dir,
+        ssh=None if resolved_ssh == LOCAL else resolved_ssh,
+        health_url=env.health_url,
+        webapp_version_url=env.webapp_version_url,
+        template=env.template,
+    )
+
+
+def shell_directory(directory: str) -> str:
+    """``directory`` as one shell word: quoted literally, except that a leading ``~/``
+    stays unquoted so the host shell expands it to the deploy user's home."""
+    if directory == "~":
+        return "~"
+    if directory.startswith("~/"):
+        rest = directory[2:]
+        return "~/" + shlex.quote(rest) if rest else "~/"
+    return shlex.quote(directory)
+
 
 #: Exit codes of deploy/upgrade.sh and what they mean for the operator.
 UPGRADE_RESULTS = {
@@ -117,9 +286,9 @@ def template_environment() -> dict[str, str]:
 
 def host_shell(target: Target, command: str) -> list[str]:
     """argv running ``command`` inside the target directory (locally or over ssh)."""
-    remote = f"cd {target.directory} && {command}"
+    remote = f"cd -- {shell_directory(target.directory)} && {command}"
     if target.ssh:
-        return ["ssh", target.ssh, remote]
+        return ["ssh", "--", target.ssh, remote]
     return ["bash", "-c", remote]
 
 

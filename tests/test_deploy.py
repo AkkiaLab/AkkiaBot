@@ -433,7 +433,7 @@ def test_documented_cron_line_needs_backups_dir_first(
     """cron's shell opens backups/backup.log before backup.sh can create the directory."""
     work, env = backup_env
     shutil.copy(DEPLOY / "backup.sh", work / "backup.sh")
-    command = _cron_command().replace("/opt/akkiabot/production", str(work))
+    command = _cron_command().replace("/srv/akkiabot/production", str(work))
 
     # Without the directory the redirection fails and backup.sh never runs.
     failed = subprocess.run(["/bin/sh", "-c", command], env=env, check=False, timeout=60)

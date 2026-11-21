@@ -12,7 +12,7 @@ from scripts.release.github import GhError, RunNotTerminatedError
 from scripts.release.rc import create_rc
 from scripts.release.seal import seal
 from scripts.release.versions import ReleaseError, Version
-from tests.release.conftest import FakeGitHub, Repo
+from tests.release.conftest import FakeGitHub, Repo, example_target
 
 V = Version.parse
 NOW = datetime(2026, 11, 19, 10, 30, tzinfo=UTC)
@@ -87,7 +87,7 @@ def test_release_staging_holds_the_lease_until_acceptance_ends(
     result = deploy.release_staging(
         repo.git,
         gh,
-        deploy.TARGETS["staging"],
+        example_target("staging"),
         "v1.0.0-rc.1",
         scenarios=None,
         accept=True,
@@ -137,7 +137,7 @@ def test_release_staging_stops_on_any_failed_check(
     result = deploy.release_staging(
         repo.git,
         gh,
-        deploy.TARGETS["staging"],
+        example_target("staging"),
         "v1.0.0-rc.1",
         scenarios=None,
         accept=True,
@@ -176,7 +176,7 @@ def test_production_public_health_failure_stops_before_frontend(
         return subprocess.CompletedProcess(args, 0, "0" * 40 if stdin is None else "", "")
 
     result = deploy.deploy(
-        repo.git, gh, deploy.TARGETS["production"], "v1.0.0", run=host, log=lambda _: None
+        repo.git, gh, example_target("production"), "v1.0.0", run=host, log=lambda _: None
     )
     assert result.code == deploy.PUBLIC_HEALTH_FAILED
     assert "公网 /readyz" in result.lines[-1]
@@ -192,6 +192,8 @@ def test_cli_production_does_not_promote_frontend_after_failed_check(
     monkeypatch.setattr(
         deploy, "environment_lock", lambda name: __import__("contextlib").nullcontext()
     )
+    monkeypatch.setenv("AKKIABOT_PRODUCTION_DIR", "~/stack-production")
+    monkeypatch.setenv("AKKIABOT_PRODUCTION_SSH", "prod-host.example.invalid")
     args = cli.build_parser().parse_args(["deploy", "production", "v1.0.0"])
     assert cli.cmd_deploy(repo.git, gh, args) == deploy.PUBLIC_HEALTH_FAILED
     assert gh.dispatched == []  # webapp-promote.yml not triggered
@@ -222,7 +224,7 @@ def test_unconfirmed_frontend_run_keeps_the_lease(
     result = deploy.release_staging(
         repo.git,
         gh,
-        deploy.TARGETS["staging"],
+        example_target("staging"),
         "v1.0.0-rc.1",
         scenarios=None,
         accept=True,
