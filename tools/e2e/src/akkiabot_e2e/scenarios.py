@@ -1,4 +1,4 @@
-"""M2–M5 and M7 acceptance scenarios, driven by real user accounts.
+"""Acceptance scenarios, driven by real user accounts.
 
 Each scenario sends messages as a test user, waits for the bot's reply and
 checks what a user actually sees: the rendered text (MarkdownV2 must be
@@ -46,7 +46,7 @@ class HttpResult:
 
 
 class WebProbe(Protocol):
-    """Plain HTTP against the deployed Mini App and API (M7)."""
+    """Plain HTTP against the deployed Mini App and API (captcha)."""
 
     async def get(self, url: str) -> HttpResult: ...
 
@@ -106,7 +106,7 @@ class ScenarioContext:
     plain_message_ids: list[int] = field(default_factory=list)
     """Ordinary (non-command) group messages sent this run; used for the message_log check."""
     antispam: bool = False
-    """The bot under test has an LLM configured (M5)."""
+    """The bot under test has an LLM configured (antispam)."""
     antispam_wait: float = 20.0
     antispam_timeout: float = 60.0
     """How long the bot may take to act on spam (its classification budget + margin)."""
@@ -118,13 +118,13 @@ class ScenarioContext:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     web: WebProbe | None = None
     api_base_url: str | None = None
-    """Public API of the bot under test (M7)."""
+    """Public API of the bot under test (captcha)."""
     webapp_url: str | None = None
-    """Expected Mini App origin (M7); ``None`` accepts whatever the bot links to."""
+    """Expected Mini App origin (captcha); ``None`` accepts whatever the bot links to."""
     not_automated: list[str] = field(default_factory=list)
     """Steps a scenario could not perform automatically; reported, never counted as passed."""
     turnstile_lab: TurnstileLab | None = None
-    """Local Mini App with Turnstile test keys (``m7.captcha-test-keys``, ``--serve`` only)."""
+    """Local Mini App with Turnstile test keys (``captcha.test-keys``, ``--serve`` only)."""
     test_keys: list[str] = field(default_factory=list)
     """Scenarios that ran on Cloudflare's test keys: reported as their own class of evidence."""
 
@@ -142,9 +142,14 @@ ScenarioFn = Callable[[ScenarioContext], Awaitable[None]]
 @dataclass(frozen=True, slots=True)
 class Scenario:
     name: str
-    milestone: str
+    """``<group>.<case>``, e.g. ``moderation.ban``."""
     description: str
     run: ScenarioFn
+
+    @property
+    def group(self) -> str:
+        """The feature the scenario covers (``antispam``, ``moderation`` ...); selectable."""
+        return self.name.split(".", 1)[0]
 
 
 def check(condition: bool, message: str) -> None:
@@ -196,7 +201,7 @@ def check_code(reply: Msg, value: str, what: str) -> None:
     check(value in code_spans(reply), f"{what} {value!r} 没有以行内代码显示")
 
 
-# ------------------------------------------------------------------ M2
+# ------------------------------------------------- commands / members
 
 
 async def help_scenario(ctx: ScenarioContext) -> None:
@@ -320,7 +325,7 @@ async def join_request_scenario(ctx: ScenarioContext) -> None:
             await restore_member(ctx)
 
 
-# ------------------------------------------------------------------ M3
+# ------------------------------------------------------- commands: /ip
 
 IP_LABELS = ("IP", "Location", "AS", "Org", "ISP")
 IP_SAMPLE = "1.1.1.1"
@@ -350,7 +355,7 @@ async def ip_reply_scenario(ctx: ScenarioContext) -> None:
     _check_ip_reply(await ask(ctx, "/ip", reply_to=anchor.id), IP_SAMPLE)
 
 
-# ------------------------------------------------------------------ M4
+# ---------------------------------------------------------- moderation
 
 CONFIG_FORBIDDEN = "需要群主或具有封禁成员权限的管理员才能使用 /config。"
 WARN_DISABLED = "请先通过 /config 开启警告功能。"
@@ -457,7 +462,7 @@ async def restore_member(ctx: ScenarioContext) -> None:
     """Undo a ban of the member account: unban, then the owner adds it back.
 
     Not through an invite link: Telegram rate-limits an account's joins by link,
-    and only m7.captcha / m2.service-message need a real join. A failed add
+    and only captcha.verify / members.service-message need a real join. A failed add
     (``InviteFailed``) stops the run; it never falls back to a link.
 
     A muted member is still in the group: the mute is lifted (same call as an
@@ -525,7 +530,7 @@ async def permissions_scenario(ctx: ScenarioContext) -> None:
 
 
 async def config_scenario(ctx: ScenarioContext) -> None:
-    """/config → private menu → toggle "警告" (ending enabled, ready for m4.warn)."""
+    """/config → private menu → toggle "警告" (ending enabled, ready for moderation.warn)."""
     menu = await open_config_menu(ctx)
     if _enabled(menu, WARN_LABEL):
         menu = await toggle(ctx, menu, WARN_LABEL)  # exercise both directions
@@ -581,7 +586,7 @@ async def ban_scenario(ctx: ScenarioContext) -> None:
         await restore_member(ctx)
 
 
-# ------------------------------------------------------------------ M5
+# ------------------------------------------------------------ antispam
 
 ANTISPAM_LABEL = "反垃圾"
 SPAM_NOTICE = "内容命中反垃圾策略"
@@ -710,7 +715,7 @@ async def spam_scenario(ctx: ScenarioContext) -> None:
 async def finish_spam(
     ctx: ScenarioContext, ad: Msg | None, probe: Msg, deadline: float, *, settled: bool
 ) -> None:
-    """Cleanup of ``m5.spam``: settle the bot's side effects, then lift the mute.
+    """Cleanup of ``antispam.enabled``: settle the bot's side effects, then lift the mute.
 
     Anything that keeps us from confirming both — a missing purge, but also a
     failed read while checking or a failed unmute — raises
@@ -745,7 +750,7 @@ def purge_window(ctx: ScenarioContext) -> float:
 
 
 async def settle_spam(ctx: ScenarioContext, ad: Msg, probe: Msg, deadline: float) -> None:
-    """After a failed ``m5.spam``: make sure the bot will not act on the member later.
+    """After a failed ``antispam.enabled``: make sure the bot will not act on the member later.
 
     Settled when either the bot never acted on the ad within its budget
     (``deadline``; it then lets the message pass), or it acted and the history
@@ -826,14 +831,16 @@ async def langfuse_scenario(ctx: ScenarioContext) -> None:
     if ctx.traces is None:
         raise ScenarioSkipped("未配置 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY，无法查询 Langfuse")
     if not ctx.classified_markers:
-        raise ScenarioSkipped("本次运行没有需要核对的判定（先运行 m5.spam）", reason="not_selected")
+        raise ScenarioSkipped(
+            "本次运行没有需要核对的判定（先运行 antispam.enabled）", reason="not_selected"
+        )
     counts = await ctx.traces.wait_for_markers(ctx.classified_markers, since=ctx.started_at)
     ctx.record("查询 Langfuse generation", counts=counts)
     missing = [marker for marker, count in counts.items() if not count]
     check(not missing, f"Langfuse 中没有这些判定的记录：{missing}")
 
 
-# ------------------------------------------------------------------ M7
+# ------------------------------------------------------------- captcha
 
 CAPTCHA_LABEL = "入群验证"
 CAPTCHA_PROMPT_BUTTON = "开始入群验证"
@@ -845,7 +852,7 @@ _CHALLENGE = re.compile(
     r"/captcha\?challenge=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
 TURNSTILE_NOT_AUTOMATED = (
-    "m7.captcha：真实 Turnstile 挑战的完成与随后的解除禁言需要真人在浏览器中完成，"
+    "captcha.verify：真实 Turnstile 挑战的完成与随后的解除禁言需要真人在浏览器中完成，"
     "工具不求解挑战、也不使用测试 key；本次只验证到“未通过 Turnstile 的提交被拒绝且成员保持禁言”"
 )
 
@@ -907,7 +914,7 @@ async def captcha_scenario(ctx: ScenarioContext) -> None:
         if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is not None:
             await ctx.member.leave(ctx.chat.id)
             ctx.record("成员退群")
-        anchor = await post_anchor(ctx, "M7 入群验证开始")
+        anchor = await post_anchor(ctx, "E2E 入群验证开始")
         link = await ctx.admin.export_invite_link(ctx.chat.id)
         await ctx.member.join_by_link(link)
         ctx.record("成员通过邀请链接入群")
@@ -988,7 +995,7 @@ WIDGET_ERROR_TEXT = "人机验证组件加载失败"
 #: The API's message for ``turnstile_failed`` (Siteverify rejected the token).
 SITEVERIFY_REJECTED_TEXT = "人机验证未通过"
 TEST_KEYS_NOTE = (
-    "m7.captcha-test-keys：使用 Cloudflare 官方 Turnstile 测试 key，在本地构建的 Mini App "
+    "captcha.test-keys：使用 Cloudflare 官方 Turnstile 测试 key，在本地构建的 Mini App "
     "和本机被测 bot 上验证业务链路；它证明 widget → 提交 → Siteverify → 解除/保持禁言的链路，"
     "不证明真实挑战可被真人通过，不能替代 staging 的真实 widget 证据"
 )
@@ -997,7 +1004,7 @@ TEST_KEYS_NOTE = (
 def require_turnstile_lab(ctx: ScenarioContext) -> TurnstileLab:
     if ctx.turnstile_lab is None:
         raise ScenarioSkipped(
-            "仅在本地 --serve 并显式选择 m7.captcha-test-keys 时运行（需要本地 Mini App 与浏览器）"
+            "仅在本地 --serve 并显式选择 captcha.test-keys 时运行（需要本地 Mini App 与浏览器）"
         )
     return ctx.turnstile_lab
 
@@ -1060,7 +1067,7 @@ async def captcha_test_keys_scenario(ctx: ScenarioContext) -> None:
         if await ctx.admin.participant_role(ctx.chat.id, ctx.member_user.id) is not None:
             await ctx.member.leave(ctx.chat.id)
             ctx.record("成员退群")
-        anchor = await post_anchor(ctx, "M7 入群验证（官方测试 key）开始")
+        anchor = await post_anchor(ctx, "E2E 入群验证（官方测试 key）开始")
         # The owner adds the member back: a join like any other for the captcha,
         # without spending one of the member's rate-limited link joins.
         await owner_add_member(ctx.admin, ctx.chat.id, ctx.member_user.id)
@@ -1137,64 +1144,59 @@ async def captcha_test_keys_scenario(ctx: ScenarioContext) -> None:
 
 
 SCENARIOS: tuple[Scenario, ...] = (
-    # M5 first: the spam check only applies to members with at most 3 recorded
+    # Antispam first: the spam check only applies to members with at most 3 recorded
     # messages, and every scenario below makes the member post more.
     Scenario(
-        "m5.spam", "M5", "开启反垃圾后，新成员的明显广告被删除并禁言，发出通知", spam_scenario
+        "antispam.enabled", "开启反垃圾后，新成员的明显广告被删除并禁言，发出通知", spam_scenario
     ),
-    Scenario("m5.disabled", "M5", "关闭反垃圾后，同样的广告不再处理", disabled_scenario),
-    Scenario("m5.exempt", "M5", "发言超过 3 条的老成员发广告被豁免", exempt_scenario),
-    Scenario("m5.langfuse", "M5", "每次判定都能在 Langfuse 中查到", langfuse_scenario),
-    Scenario("m2.help", "M2", "/help 返回命令列表", help_scenario),
-    Scenario("m2.id", "M2", "/id 返回群 ID 与发送者 ID（行内代码）", id_scenario),
-    Scenario("m2.id-reply", "M2", "回复群主消息的 /id 额外显示被回复者 ID", id_reply_scenario),
-    Scenario("m3.ip", "M3", "/ip 1.1.1.1 返回五个字段且 MarkdownV2 渲染正确", ip_scenario),
-    Scenario("m3.ip-reply", "M3", "回复带标签 IP 的消息执行 /ip", ip_reply_scenario),
+    Scenario("antispam.disabled", "关闭反垃圾后，同样的广告不再处理", disabled_scenario),
+    Scenario("antispam.exempt", "发言超过 3 条的老成员发广告被豁免", exempt_scenario),
+    Scenario("antispam.langfuse", "每次判定都能在 Langfuse 中查到", langfuse_scenario),
+    Scenario("commands.help", "/help 返回命令列表", help_scenario),
+    Scenario("commands.id", "/id 返回群 ID 与发送者 ID（行内代码）", id_scenario),
+    Scenario("commands.id-reply", "回复群主消息的 /id 额外显示被回复者 ID", id_reply_scenario),
+    Scenario("commands.ip", "/ip 1.1.1.1 返回五个字段且 MarkdownV2 渲染正确", ip_scenario),
+    Scenario("commands.ip-reply", "回复带标签 IP 的消息执行 /ip", ip_reply_scenario),
     Scenario(
-        "m4.permissions",
-        "M4",
+        "moderation.permissions",
         "普通成员 /config、/ban 被拒绝；不能封禁群主",
         permissions_scenario,
     ),
-    Scenario("m4.config", "M4", "/config 深链进入私聊，点击开关切换“警告”", config_scenario),
-    # m4.warn / m4.ban ban the member, then unban it and the owner adds it back.
-    Scenario("m4.warn", "M4", "/warn 计数，达到上限自动封禁并删除历史消息", warn_scenario),
-    Scenario("m4.ban", "M4", "/ban 封禁成员并删除其历史消息", ban_scenario),
+    Scenario("moderation.config", "/config 深链进入私聊，点击开关切换“警告”", config_scenario),
+    # moderation.warn / moderation.ban ban the member, then unban it and the owner adds it back.
+    Scenario("moderation.warn", "/warn 计数，达到上限自动封禁并删除历史消息", warn_scenario),
+    Scenario("moderation.ban", "/ban 封禁成员并删除其历史消息", ban_scenario),
     Scenario(
-        "m5.spam-command",
-        "M5",
+        "antispam.spam-command",
         "成员不能举报群主；群主 /spam 直接封禁并删除历史消息",
         spam_command_scenario,
     ),
     Scenario(
-        "m7.captcha",
-        "M7",
+        "captcha.verify",
         "入群被禁言 → 群内提示 → 私聊深链 → Mini App（真实签名 initData）→ 验证接口与 CORS",
         captcha_scenario,
     ),
     # The member leaves, asks to join through an approval link; the owner
     # declines and adds it back.
     Scenario(
-        "m2.join-request",
-        "M2",
+        "members.join-request",
         "成员通过需审批的链接申请入群，批准前收到 bot 的私聊等待提示（bot 不自行审批）",
         join_request_scenario,
     ),
     # Last: it makes the member leave and rejoin the group.
     Scenario(
-        "m2.service-message", "M2", "成员退群、入群的系统消息被 bot 删除", service_message_scenario
+        "members.service-message", "成员退群、入群的系统消息被 bot 删除", service_message_scenario
     ),
 )
 
 
 #: Scenarios that only run against a bot started by ``run --serve`` and only
-#: when named explicitly: never part of a default or milestone selection, never
+#: when named explicitly: never part of a default or group selection, never
 #: part of the staging release catalog.
-TEST_KEYS_SCENARIO = "m7.captcha-test-keys"
+TEST_KEYS_SCENARIO = "captcha.test-keys"
 LOCAL_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         TEST_KEYS_SCENARIO,
-        "M7",
         "（仅本地 --serve，官方 Turnstile 测试 key）widget 固定失败、Siteverify 拒绝时保持禁言；"
         "通过时解除禁言",
         captcha_test_keys_scenario,
@@ -1207,22 +1209,70 @@ def catalog(*, serve: bool) -> tuple[Scenario, ...]:
     return SCENARIOS + LOCAL_SCENARIOS if serve else SCENARIOS
 
 
-def select_scenarios(selectors: list[str] | None, *, serve: bool = False) -> list[Scenario]:
-    """Select by milestone (``m2``) or exact name (``m3.ip``); default: all.
+#: Scenario names used before the feature-based naming, accepted with a warning so
+#: release notes and commands written earlier keep working. Remove in v1.3.0.
+LEGACY_NAMES: dict[str, str] = {
+    "m2.help": "commands.help",
+    "m2.id": "commands.id",
+    "m2.id-reply": "commands.id-reply",
+    "m3.ip": "commands.ip",
+    "m3.ip-reply": "commands.ip-reply",
+    "m4.permissions": "moderation.permissions",
+    "m4.config": "moderation.config",
+    "m4.warn": "moderation.warn",
+    "m4.ban": "moderation.ban",
+    "m5.spam": "antispam.enabled",
+    "m5.disabled": "antispam.disabled",
+    "m5.exempt": "antispam.exempt",
+    "m5.langfuse": "antispam.langfuse",
+    "m5.spam-command": "antispam.spam-command",
+    "m7.captcha": "captcha.verify",
+    "m7.captcha-test-keys": "captcha.test-keys",
+    "m2.join-request": "members.join-request",
+    "m2.service-message": "members.service-message",
+}
+
+
+def groups() -> list[str]:
+    """Selectable groups, in catalog order."""
+    return list(dict.fromkeys(s.group for s in SCENARIOS))
+
+
+def select_scenarios(
+    selectors: list[str] | None,
+    *,
+    serve: bool = False,
+    warn: Callable[[str], None] | None = None,
+) -> list[Scenario]:
+    """Select by group (``moderation``) or exact name (``commands.ip``); default: all.
 
     Local-only scenarios (:data:`LOCAL_SCENARIOS`) are selected by exact name
-    only, and only with ``serve``.
+    only, and only with ``serve``. A name from :data:`LEGACY_NAMES` selects its
+    new name and is reported through ``warn``.
     """
     if not selectors:
         return list(SCENARIOS)
-    wanted = {s.strip().lower() for selector in selectors for s in selector.split(",") if s.strip()}
+    wanted: set[str] = set()
+    for selector in selectors:
+        for raw in selector.split(","):
+            item = raw.strip().lower()
+            if not item:
+                continue
+            if item in LEGACY_NAMES:
+                if warn is not None:
+                    warn(f"场景名 {item} 已改为 {LEGACY_NAMES[item]}，旧名称将在 v1.3.0 移除")
+                item = LEGACY_NAMES[item]
+            wanted.add(item)
     local = {s.name for s in LOCAL_SCENARIOS}
     if wanted & local and not serve:
         raise ValueError(f"{', '.join(sorted(wanted & local))} 只能与 --serve 一起使用")
-    known = {s.name for s in SCENARIOS} | {s.milestone.lower() for s in SCENARIOS} | local
+    known = {s.name for s in SCENARIOS} | set(groups()) | local
     unknown = wanted - known
     if unknown:
-        raise ValueError(f"未知场景：{', '.join(sorted(unknown))}")
-    return [s for s in SCENARIOS if s.name in wanted or s.milestone.lower() in wanted] + [
+        raise ValueError(
+            f"未知场景：{', '.join(sorted(unknown))}（可用分组：{', '.join(groups())}；"
+            "场景名见 list 命令）"
+        )
+    return [s for s in SCENARIOS if s.name in wanted or s.group in wanted] + [
         s for s in LOCAL_SCENARIOS if s.name in wanted
     ]

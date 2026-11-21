@@ -6,7 +6,7 @@
 TELEGRAM_BOT_TOKEN=op://AkkiaBot/e2e-bot/bot_token
 OBSERVABILITY_SENTRY_DSN=op://AkkiaBot/staging-services/sentry_dsn
 WHOIS_IPINFO_TOKEN=op://AkkiaBot/staging-services/ipinfo_token
-# M5 antispam: OpenAI-compatible LLM + Langfuse (also read by the M5 Langfuse check)
+# antispam: OpenAI-compatible LLM + Langfuse (also read by antispam.langfuse)
 LLM_BASE_URL=op://AkkiaBot/staging-services/llm_base_url
 LLM_API_KEY=op://AkkiaBot/staging-services/llm_api_key
 LLM_MODEL=op://AkkiaBot/staging-services/llm_model
@@ -32,9 +32,9 @@ OBSERVABILITY_SENTRY_ENVIRONMENT=e2e
 # E2E_REPLY_TIMEOUT=30
 # E2E_FLOOD_MAX_WAIT=120
 # E2E_SEND_INTERVAL=2
-# Seconds M5 waits to be sure a message is NOT deleted (switch off / exempt member)
+# Seconds antispam scenarios wait to be sure a message is NOT deleted (switch off / exempt member)
 # E2E_ANTISPAM_WAIT=20
-# Seconds m5.spam waits for the bot to act on the ad: the bot's ANTISPAM_TIMEOUT
+# Seconds antispam.enabled waits for the bot to act on the ad: the bot's ANTISPAM_TIMEOUT
 # (45) plus Telegram calls; raise it together with ANTISPAM_TIMEOUT
 # E2E_ANTISPAM_TIMEOUT=60
 # The bot's ANTISPAM_PURGE_DELAY (history purge after the mute)

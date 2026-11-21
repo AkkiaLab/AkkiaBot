@@ -151,16 +151,16 @@ def test_run_without_credentials_is_skipped_not_passed(capsys: pytest.CaptureFix
 
 
 def test_run_rejects_unknown_scenario_before_connecting(capsys: pytest.CaptureFixture[str]) -> None:
-    code = cli.main(["run", "--scenarios", "m9"], env=live_env())
+    code = cli.main(["run", "--scenarios", "nope"], env=live_env())
     assert code == cli.EXIT_USAGE
     err = capsys.readouterr().err
-    assert "m9" in err
+    assert "nope" in err
     assert MOCK_ADMIN_SESSION not in err
 
 
 def test_list_scenarios(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["list"], env={}) == 0
-    assert "m3.ip-reply" in capsys.readouterr().out
+    assert "commands.ip-reply" in capsys.readouterr().out
 
 
 def test_server_env_drops_user_sessions_and_op_token(tmp_path: Path) -> None:
@@ -264,3 +264,11 @@ async def test_managed_server_extra_env_and_restart(tmp_path: Path) -> None:
     log = server.log_path.read_text()
     assert log.index("first") < log.index("second")
     assert log.count("migrated") == 2
+
+
+def test_run_warns_about_legacy_scenario_names(capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.main(["run", "--scenarios", "m4.ban,nope"], env=live_env())
+    assert code == cli.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "提示：场景名 m4.ban 已改为 moderation.ban" in err
+    assert "nope" in err

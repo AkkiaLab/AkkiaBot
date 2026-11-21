@@ -1,4 +1,4 @@
-"""Local Mini App with Cloudflare's official Turnstile test keys (``m7.captcha-test-keys``).
+"""Local Mini App with Cloudflare's official Turnstile test keys (``captcha.test-keys``).
 
 Only for ``run --serve``: the bot under test runs from this checkout, the Mini
 App is built from ``apps/webapp`` twice (always-pass and always-fail site key)

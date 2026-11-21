@@ -1,4 +1,4 @@
-"""M7: the join-captcha chain against the fake bot / Mini App / API."""
+"""The join-captcha chain against the fake bot / Mini App / API."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ async def _no_sleep(_: float) -> None:
 async def run_m7(world: FakeTelegram, config: E2EConfig, web: FakeWeb | None = None) -> Report:
     return await run_acceptance(
         config,
-        select_scenarios(["m7"]),
+        select_scenarios(["captcha"]),
         connect=Connector(world),
         run_id="test-run",
         allow_create=True,
@@ -53,7 +53,7 @@ def assert_cleaned_up(world: FakeTelegram) -> None:
     assert world.bot.settings[chat.id]["captcha"] is False
 
 
-async def test_m7_chain_passes_and_lists_turnstile_as_not_automated(
+async def test_captcha_chain_passes_and_lists_turnstile_as_not_automated(
     world: FakeTelegram, config: E2EConfig
 ) -> None:
     web = FakeWeb(world)
@@ -69,7 +69,9 @@ async def test_m7_chain_passes_and_lists_turnstile_as_not_automated(
     assert_cleaned_up(world)
 
 
-async def test_m7_evidence_never_contains_init_data(world: FakeTelegram, config: E2EConfig) -> None:
+async def test_captcha_evidence_never_contains_init_data(
+    world: FakeTelegram, config: E2EConfig
+) -> None:
     report = await run_m7(world, config)
     evidence = str(report.results[0].evidence)
     assert "fake-hash" not in evidence
@@ -87,7 +89,7 @@ async def test_m7_evidence_never_contains_init_data(world: FakeTelegram, config:
         (None, {"page_status": 404}, "HTTP 404"),
     ],
 )
-async def test_m7_regressions_are_caught_and_cleaned_up(
+async def test_captcha_regressions_are_caught_and_cleaned_up(
     world: FakeTelegram,
     config: E2EConfig,
     knob: str | None,
@@ -106,14 +108,14 @@ async def test_m7_regressions_are_caught_and_cleaned_up(
     assert_cleaned_up(world)
 
 
-async def test_m7_wrong_webapp_origin_fails(world: FakeTelegram) -> None:
+async def test_captcha_wrong_webapp_origin_fails(world: FakeTelegram) -> None:
     config = load_config(live_env(E2E_WEBAPP_URL="https://staging.example.test"))
     report = await run_m7(world, config)
     assert report.results[0].status == "failed"
     assert "不是预期的 https://staging.example.test" in report.results[0].detail
 
 
-async def test_m7_skipped_without_api(world: FakeTelegram) -> None:
+async def test_captcha_skipped_without_api(world: FakeTelegram) -> None:
     config = load_config(live_env(E2E_API_BASE_URL=""))
     report = await run_m7(world, config)
     assert report.results[0].status == "skipped"

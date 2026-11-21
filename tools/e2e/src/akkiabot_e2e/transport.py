@@ -15,8 +15,8 @@ from typing import Literal, Protocol
 Role = Literal["creator", "admin", "member"]
 
 #: Admin rights the bot needs in the test group. ``delete_messages`` is used by
-#: M2 (service messages); ``ban_users`` by M4 (/ban, /warn) and M5 (/spam);
-#: ``invite_users`` by m2.join-request (Telegram only sends ``chat_join_request``
+#: members.service-message; ``ban_users`` by moderation (/ban, /warn) and antispam (/spam);
+#: ``invite_users`` by members.join-request (Telegram only sends ``chat_join_request``
 #: to admins with this right).
 BOT_ADMIN_RIGHTS: frozenset[str] = frozenset({"delete_messages", "ban_users", "invite_users"})
 
