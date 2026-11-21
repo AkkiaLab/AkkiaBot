@@ -253,3 +253,29 @@ def test_late_bot_comment_after_reviewer_approval_blocks() -> None:
     }
     problems = ScriptedGh({}, graph).review_gate(1, HEAD)
     assert problems == ["准出之后还有未经 Reviewer 复核的评论：copilot-pull-request-reviewer[bot]"]
+
+
+def test_artifact_exists_matches_the_exact_name() -> None:
+    gh = ScriptedGh(
+        {"/artifacts": {"artifacts": [{"name": "release-rc-ready-v1.2.0-rc.1", "expired": True}]}}
+    )
+    assert gh.artifact_exists("release-rc-ready-v1.2.0-rc.1")
+    assert gh.calls[-1] == (
+        "GET",
+        "repos/AkkiaLab/AkkiaBot/actions/artifacts?name=release-rc-ready-v1.2.0-rc.1&per_page=100",
+    )
+    assert not gh.artifact_exists("release-rc-ready-v1.2.0-rc.10")
+    assert not ScriptedGh({"/artifacts": {"artifacts": []}}).artifact_exists("x")
+
+
+def test_run_pending_only_counts_unfinished_runs_with_those_titles() -> None:
+    runs = {
+        "workflow_runs": [
+            {"id": 1, "display_title": "RC v1.2.0", "status": "completed"},
+            {"id": 2, "display_title": "RC v1.1.0-rc.2", "status": "in_progress"},
+            {"id": 3, "display_title": "RC v1.2.0-rc.1", "status": "queued"},
+        ]
+    }
+    gh = ScriptedGh({"/runs": runs})
+    assert gh.run_pending("release-rc.yml", ("RC v1.2.0-rc.1", "RC v1.2.0"))
+    assert not gh.run_pending("release-rc.yml", ("RC v1.2.0-rc.2", "RC v1.2.0"))

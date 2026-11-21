@@ -138,6 +138,10 @@ class Git:
     def count(self, include: str, exclude: str) -> int:
         return int(self.out("rev-list", "--count", include, f"^{exclude}"))
 
+    def same_tree(self, a: str, b: str) -> bool:
+        """Do the two commits carry exactly the same files (tree object)?"""
+        return self.out("rev-parse", f"{a}^{{tree}}") == self.out("rev-parse", f"{b}^{{tree}}")
+
     def changed_files(self, base: str, head: str, *paths: str) -> list[str]:
         out = self.out("diff", "--name-only", base, head, "--", *paths)
         return out.splitlines() if out else []

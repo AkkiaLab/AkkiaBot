@@ -149,8 +149,9 @@ flowchart LR
 ## 5. 发布窗口与加车（`release-window.yml`）
 
 - 定时：周四、周日 16:13、18:03、20:03（UTC+8，cron 用 UTC）。GitHub 的定时任务可能延迟甚至跳过，所以每次运行按**开始时的时钟**判断阶段：16:00–18:00 准备、18:00–20:00 冻结、20:00–24:00 发布，延迟的运行与准点运行做出相同决定；重复运行不会产生新变化。
-- 准备：当前常规版本相对此前所有正式 tag 没有新提交时跳过本窗口；确保下一个常规版本存在（下车目标）。
-- 冻结：下车（§2），然后为当前版本出 RC 并触发 `release-rc.yml`（已有对应 HEAD 的 RC 时沿用）。
+- 准备：当前常规版本相对此前所有正式 tag 没有新提交，或只有上合产生的 merge、文件与上一个正式 tag 完全相同时，视为无待发布内容，跳过本窗口（冻结、发布阶段同样跳过）；否则确保下一个常规版本存在（下车目标）。
+- 冻结：下车（§2），然后为当前版本出 RC 并触发 `release-rc.yml`（已有对应 HEAD 的 RC 时沿用）。沿用的 RC 满足以下任一条件时不再触发：该 RC 的 `release-rc-ready` 已发送过（`release-rc.yml` 的 handoff 在 webhook 返回 2xx 后上传内容固定的标记 artifact `release-rc-ready-<RC tag>`（不含事件载荷，公开库的 artifact 可被下载），`tag` 与 `version` 两种入口都会写）；该 sha 已有 `staging-acceptance` 状态；仍有可能交接它的 `release-rc.yml` 运行在排队或运行（标题为 `RC <RC tag>` 或 `RC <版本>`）。webhook 未配置时 handoff 成功但不写 artifact，之后沿用该 RC 仍会补发首次通知。需要重新部署已有 RC 时手动运行 `release-rc.yml -f tag=…`（会再次发送）。
+- 演练：手动运行时勾选 `dry_run`（或在运行机执行 `python3 -m scripts.release window --phase <阶段> --dry-run`），只输出各阶段的判断，不建分支、不打 RC、不触发其他 workflow、不改 PR、不封版。注意手动运行使用 master 上的脚本与 workflow。
 - 发布：没有 RC、RC 过期或未通过验收时**停止并报错**，不封版；通过时触发 `release-seal.yml`，随后进入生产审批。已有正式 tag 时跳过。
 - 手动加车 / 小版本：`release-window.yml`，`phase` 选 `freeze` 或 `release`，`version` 填目标版本（例如先 `just release-app create v1.4.1` 创建补丁版本，PR 合入后执行 freeze 出 RC、验收后执行 release）。门禁与定时窗口完全相同。维护者汇总发布范围与加车理由；生产切换需维护者审批。
 
