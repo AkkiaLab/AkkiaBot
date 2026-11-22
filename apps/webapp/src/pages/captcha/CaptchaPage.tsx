@@ -1,10 +1,20 @@
 import { Turnstile } from "@marsidev/react-turnstile";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { VerifyResult } from "../../api/client";
-import type { CaptchaErrorCode, CaptchaVerifyRequest } from "../../api/types";
+import type {
+  CaptchaErrorCode,
+  CaptchaEventName,
+  CaptchaEventRequest,
+  CaptchaOutcome,
+  CaptchaVerifyRequest,
+} from "../../api/types";
 import type { TelegramSession } from "../../telegram";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Same patterns as the API; values that do not match are left out rather than
+// letting the server refuse the whole request.
+const PLATFORM_RE = /^[a-z_]{1,16}$/;
+const VERSION_RE = /^[0-9]{1,2}(\.[0-9]{1,3}){0,2}$/;
 
 /** Rejections where submitting again (with a fresh Turnstile token) can succeed. */
 const RETRYABLE: ReadonlySet<CaptchaErrorCode> = new Set<CaptchaErrorCode>([
@@ -29,6 +39,35 @@ export interface CaptchaPageProps {
   verify: (body: CaptchaVerifyRequest) => Promise<VerifyResult>;
   /** Delay before closing the Mini App after a successful verification. */
   closeDelayMs?: number;
+  /** Random id of this page load, sent with every request (logs only). */
+  pageId?: string;
+  /** Lifecycle telemetry sink; must never throw. */
+  report?: (body: CaptchaEventRequest) => void;
+}
+
+/** What the page showed for a verify response, as reported in `result` events. */
+export function outcomeOf(result: VerifyResult): CaptchaOutcome {
+  if (result.ok) return "passed";
+  switch (result.kind) {
+    case "rejected":
+      return result.code;
+    case "network":
+      return "network_error";
+    case "unexpected":
+      return "unexpected_response";
+  }
+}
+
+type PageFields = Pick<CaptchaVerifyRequest, "page_id" | "client_platform" | "client_version">;
+
+function pageFields(pageId: string | undefined, session: TelegramSession | null): PageFields {
+  const fields: PageFields = {};
+  if (pageId && UUID_RE.test(pageId)) fields.page_id = pageId;
+  if (session?.platform && PLATFORM_RE.test(session.platform)) {
+    fields.client_platform = session.platform;
+  }
+  if (session?.version && VERSION_RE.test(session.version)) fields.client_version = session.version;
+  return fields;
 }
 
 export function resultToState(result: VerifyResult): CaptchaState {
@@ -61,32 +100,101 @@ function precondition(props: CaptchaPageProps): string | null {
 
 export function CaptchaPage(props: CaptchaPageProps) {
   const { challengeId, session, turnstileSiteKey, verify, closeDelayMs = 1500 } = props;
+  const { pageId, report } = props;
   const [state, setState] = useState<CaptchaState>({ phase: "challenge" });
   // Bumped on retry to remount the Turnstile widget and obtain a fresh token.
   const [attempt, setAttempt] = useState(0);
+  // Submissions made by this page load (sent as `attempt`).
+  const submissions = useRef(0);
+  const loadedReported = useRef(false);
+  const closedReported = useRef(false);
   const blocked = precondition(props);
+
+  // Events need a valid challenge id and initData; without them the API
+  // refuses the report anyway.
+  const send = useCallback(
+    (event: CaptchaEventName, outcome?: CaptchaOutcome) => {
+      if (!report || !session || !challengeId || !UUID_RE.test(challengeId)) return;
+      report({
+        challenge_id: challengeId,
+        init_data: session.initData,
+        event,
+        ...(outcome ? { outcome } : {}),
+        attempt: submissions.current,
+        ...pageFields(pageId, session),
+      });
+    },
+    [report, session, challengeId, pageId],
+  );
+
+  const reportClosed = useCallback(() => {
+    if (closedReported.current) return;
+    closedReported.current = true;
+    send("closed");
+  }, [send]);
+
+  const close = useCallback(() => {
+    reportClosed();
+    session?.close();
+  }, [reportClosed, session]);
+
+  useEffect(() => {
+    if (loadedReported.current) return; // StrictMode runs effects twice
+    loadedReported.current = true;
+    send(blocked ? "page_blocked" : "page_loaded");
+  }, [send, blocked]);
+
+  useEffect(() => {
+    // Telegram tears the webview down without a reliable unload event; the
+    // first time the page is hidden counts as "closed" (best effort).
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") reportClosed();
+    };
+    window.addEventListener("pagehide", reportClosed);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pagehide", reportClosed);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, [reportClosed]);
 
   const submit = useCallback(
     async (token: string) => {
       if (!session || !challengeId) return;
+      send("turnstile_solved");
+      submissions.current += 1;
       setState({ phase: "submitting" });
+      send("submitted");
       const result = await verify({
         challenge_id: challengeId,
         init_data: session.initData,
         turnstile_token: token,
+        attempt: submissions.current,
+        ...pageFields(pageId, session),
       });
+      send("result", outcomeOf(result));
       setState(resultToState(result));
     },
-    [challengeId, session, verify],
+    [challengeId, session, verify, send, pageId],
   );
 
   useEffect(() => {
     if (state.phase !== "passed" || !session) return;
-    const timer = window.setTimeout(session.close, closeDelayMs);
+    const timer = window.setTimeout(close, closeDelayMs);
     return () => window.clearTimeout(timer);
-  }, [state.phase, session, closeDelayMs]);
+  }, [state.phase, session, close, closeDelayMs]);
+
+  const widgetFailed = (event: "turnstile_error" | "turnstile_expired") => {
+    send(event);
+    setState({
+      phase: "failed",
+      message: "人机验证组件加载失败，请重试。",
+      retryable: true,
+    });
+  };
 
   const retry = () => {
+    send("retry");
     setAttempt((n) => n + 1);
     setState({ phase: "challenge" });
   };
@@ -102,15 +210,10 @@ export function CaptchaPage(props: CaptchaPageProps) {
           attempt={attempt}
           siteKey={turnstileSiteKey ?? ""}
           onToken={submit}
-          onWidgetError={() =>
-            setState({
-              phase: "failed",
-              message: "人机验证组件加载失败，请重试。",
-              retryable: true,
-            })
-          }
+          onWidgetError={() => widgetFailed("turnstile_error")}
+          onWidgetExpire={() => widgetFailed("turnstile_expired")}
           onRetry={retry}
-          onClose={session?.close}
+          onClose={session ? close : undefined}
         />
       )}
     </main>
@@ -123,11 +226,14 @@ interface BodyProps {
   siteKey: string;
   onToken: (token: string) => void;
   onWidgetError: () => void;
+  onWidgetExpire: () => void;
   onRetry: () => void;
   onClose: (() => void) | undefined;
 }
 
-function Body({ state, attempt, siteKey, onToken, onWidgetError, onRetry, onClose }: BodyProps) {
+function Body(props: BodyProps) {
+  const { state, attempt, siteKey, onToken, onWidgetError, onWidgetExpire, onRetry, onClose } =
+    props;
   switch (state.phase) {
     case "challenge":
       return (
@@ -141,7 +247,7 @@ function Body({ state, attempt, siteKey, onToken, onWidgetError, onRetry, onClos
             options={{ theme: "auto", language: "auto" }}
             onSuccess={onToken}
             onError={onWidgetError}
-            onExpire={onWidgetError}
+            onExpire={onWidgetExpire}
           />
         </>
       );

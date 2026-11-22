@@ -8,6 +8,7 @@ import {
   miniAppReady,
   mountMiniAppSync,
   mountThemeParamsSync,
+  retrieveLaunchParams,
   retrieveRawInitData,
 } from "@telegram-apps/sdk-react";
 
@@ -15,6 +16,10 @@ export interface TelegramSession {
   /** Raw `initData` query string, sent to the backend as-is. */
   initData: string;
   close: () => void;
+  /** `Telegram.WebApp.platform` (e.g. `android`, `ios`, `tdesktop`), when known. */
+  platform?: string;
+  /** `Telegram.WebApp.version` (Bot API version of the client), when known. */
+  version?: string;
 }
 
 // The SDK is process-global (event listeners, bound CSS variables), so it is
@@ -53,5 +58,16 @@ function setUp(): TelegramSession | null {
     close: () => {
       if (closeMiniApp.isAvailable()) closeMiniApp();
     },
+    ...clientInfo(),
   };
+}
+
+/** Platform and version from the launch parameters; only used for logs. */
+function clientInfo(): Pick<TelegramSession, "platform" | "version"> {
+  try {
+    const params = retrieveLaunchParams();
+    return { platform: params.tgWebAppPlatform, version: params.tgWebAppVersion };
+  } catch {
+    return {};
+  }
 }

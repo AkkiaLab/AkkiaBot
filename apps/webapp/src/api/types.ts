@@ -7,3 +7,6 @@ export type CaptchaVerifyRequest = Schemas["CaptchaVerifyRequest"];
 export type CaptchaVerifyResponse = Schemas["CaptchaVerifyResponse"];
 export type CaptchaError = Schemas["CaptchaError"];
 export type CaptchaErrorCode = CaptchaError["error"];
+export type CaptchaEventRequest = Schemas["CaptchaEventRequest"];
+export type CaptchaEventName = Schemas["ClientEvent"];
+export type CaptchaOutcome = Schemas["ClientOutcome"];
