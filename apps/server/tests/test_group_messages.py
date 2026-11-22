@@ -1,13 +1,15 @@
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import func, select
+from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError, TimedOut
 
 from akkiabot_core.db import Chat, ChatMember, ChatSettings, MessageLog, session_scope
 from akkiabot_core.db.repositories import ChatRepository, MessageLogRepository
-from akkiabot_server.bot.handlers.group import to_incoming
+from akkiabot_server.bot.handlers.group import expected_delete_failure, to_incoming
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.services.message_log import IncomingMessage, should_record
 from akkiabot_server.testing import BOT_USER, FakeBotApi, UpdateFactory, metric_value
@@ -138,13 +140,91 @@ async def test_service_message_kept_when_disabled(
     assert api.calls_to("deleteMessage") == []
 
 
-async def test_service_message_delete_failure_is_tolerated(
-    runtime: Runtime, api: FakeBotApi, updates: UpdateFactory
+@pytest.mark.parametrize(
+    ("status", "description", "reason"),
+    [
+        (400, "Bad Request: message can't be deleted", "not_deletable"),
+        (400, "Bad Request: message to delete not found", "already_deleted"),
+        (400, "Bad Request: not enough rights to delete a message", "no_permission"),
+        (403, "Forbidden: bot was kicked from the supergroup chat", "bot_not_in_chat"),
+    ],
+)
+async def test_expected_delete_failure_is_info(
+    runtime: Runtime,
+    api: FakeBotApi,
+    updates: UpdateFactory,
+    caplog: pytest.LogCaptureFixture,
+    status: int,
+    description: str,
+    reason: str,
 ) -> None:
-    api.fail("deleteMessage", "Bad Request: message can't be deleted")
-    before = metric_value("akkiabot_handler_errors_total", handler="service_message")
-    await runtime.application.process_update(updates.service_message())
-    assert metric_value("akkiabot_handler_errors_total", handler="service_message") == before
+    api.fail("deleteMessage", description, status=status)
+    handler_errors = metric_value("akkiabot_handler_errors_total", handler="service_message")
+    api_errors = metric_value("akkiabot_telegram_api_errors_total", method="deleteMessage")
+    with caplog.at_level(logging.INFO):
+        await runtime.application.process_update(updates.service_message())
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    (record,) = [r for r in caplog.records if r.message == "service message not deleted"]
+    assert record.levelno == logging.INFO
+    assert record.__dict__["reason"] == reason
+    assert metric_value("akkiabot_handler_errors_total", handler="service_message") == (
+        handler_errors
+    )
+    assert metric_value("akkiabot_telegram_api_errors_total", method="deleteMessage") == (
+        api_errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "description"),
+    [
+        (400, "Bad Request: some new error"),
+        (403, "Forbidden: some new restriction"),
+        (500, "Internal Server Error"),
+    ],
+)
+async def test_real_delete_failure_stays_warning(
+    runtime: Runtime,
+    api: FakeBotApi,
+    updates: UpdateFactory,
+    caplog: pytest.LogCaptureFixture,
+    status: int,
+    description: str,
+) -> None:
+    api.fail("deleteMessage", description, status=status)
+    handler_errors = metric_value("akkiabot_handler_errors_total", handler="service_message")
+    api_errors = metric_value("akkiabot_telegram_api_errors_total", method="deleteMessage")
+    with caplog.at_level(logging.INFO):
+        await runtime.application.process_update(updates.service_message())
+
+    (record,) = [r for r in caplog.records if r.message == "failed to delete service message"]
+    assert record.levelno == logging.WARNING
+    # Tolerated (the handler does not crash) but still counted as an API error.
+    assert metric_value("akkiabot_handler_errors_total", handler="service_message") == (
+        handler_errors
+    )
+    assert metric_value("akkiabot_telegram_api_errors_total", method="deleteMessage") == (
+        api_errors + 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (BadRequest("Message can't be deleted"), "not_deletable"),
+        (BadRequest("Not enough rights to delete messages"), "no_permission"),
+        (BadRequest("Message to delete not found"), "already_deleted"),
+        (Forbidden("Forbidden: bot is not a member of the supergroup chat"), "bot_not_in_chat"),
+        (Forbidden("Forbidden: bot was kicked from the group chat"), "bot_not_in_chat"),
+        (Forbidden("Forbidden: some new restriction"), None),
+        (BadRequest("Message is too long"), None),
+        (TimedOut(), None),
+        (NetworkError("connection reset"), None),
+    ],
+)
+def test_expected_delete_failure(error: TelegramError, reason: str | None) -> None:
+    assert expected_delete_failure(error) == reason
 
 
 async def test_private_service_message_ignored(
