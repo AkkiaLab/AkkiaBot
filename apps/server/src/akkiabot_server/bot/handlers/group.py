@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 
 from telegram import Message, Update
-from telegram.error import TelegramError
+from telegram.error import BadRequest, Forbidden, TelegramError
 
+from akkiabot_core.observability import count_telegram_api_error
 from akkiabot_server.bot.deps import get_deps
 from akkiabot_server.bot.types import Context
 from akkiabot_server.services.chats import GROUP_TYPES
@@ -37,6 +38,36 @@ async def record_group_message(update: Update, context: Context) -> None:
     await get_deps(context).messages.record(to_incoming(message, is_service=False))
 
 
+# Bot API "Bad Request" descriptions that mean the notice cannot or need not be
+# deleted, mapped to the reason we log. These come from the group's own setup
+# (the bot is not an admin with "delete messages") or from someone else having
+# deleted the notice first; nothing on our side can fix them.
+_EXPECTED_DELETE_FAILURES: tuple[tuple[str, str], ...] = (
+    ("message to delete not found", "already_deleted"),
+    ("message can't be deleted", "no_permission"),
+    ("not enough rights", "no_permission"),
+)
+
+
+def expected_delete_failure(exc: TelegramError) -> str | None:
+    """Why deleting a service message failed, if that is expected.
+
+    Returns a short reason (``already_deleted``, ``no_permission``,
+    ``bot_not_in_chat``) for failures caused by the group's configuration or
+    by the notice already being gone, and ``None`` for real failures (network
+    errors, timeouts, rate limits, unknown Bot API errors) that need attention.
+    """
+    if isinstance(exc, Forbidden):
+        # The bot was removed from the chat after the update was sent.
+        return "bot_not_in_chat"
+    if isinstance(exc, BadRequest):
+        description = exc.message.lower()
+        for fragment, reason in _EXPECTED_DELETE_FAILURES:
+            if fragment in description:
+                return reason
+    return None
+
+
 async def handle_service_message(update: Update, context: Context) -> None:
     """Join/leave/pin… notices: make sure the chat is known, then delete the
     notice if the group enabled ``delete_service_messages``."""
@@ -51,11 +82,18 @@ async def handle_service_message(update: Update, context: Context) -> None:
     try:
         await message.delete()
     except TelegramError as exc:
-        # Typically: the bot is not an admin with "delete messages".
-        logger.warning(
-            "failed to delete service message",
-            extra={"message_id": message.message_id, "error": str(exc)},
-        )
+        reason = expected_delete_failure(exc)
+        if reason is None:
+            count_telegram_api_error("deleteMessage")
+            logger.warning(
+                "failed to delete service message",
+                extra={"message_id": message.message_id, "error": str(exc)},
+            )
+        else:
+            logger.info(
+                "service message not deleted",
+                extra={"message_id": message.message_id, "reason": reason, "error": str(exc)},
+            )
     else:
         logger.info("service message deleted", extra={"message_id": message.message_id})
 
