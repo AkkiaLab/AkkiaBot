@@ -66,7 +66,7 @@ just antispam-eval  # 用离线评测集评测反垃圾提示词（调用真实 
 
 - 测试环境：`TELEGRAM_TEST_ENVIRONMENT=true` 时 Bot API 改用 Telegram 测试环境端点（`/bot<token>/test/`），只接受测试环境 BotFather 签发的 token；默认 `false` 为生产端点。真实验收只用测试环境，见 [docs/e2e-acceptance.md](docs/e2e-acceptance.md)。
 - 接收更新：默认长轮询（`TELEGRAM_MODE=polling`）；设为 `webhook` 时需同时配置 `TELEGRAM_WEBHOOK_URL`（API 公网地址，机器人注册 `<地址>/telegram/webhook`）与 `TELEGRAM_WEBHOOK_SECRET`（校验 `X-Telegram-Bot-Api-Secret-Token`）。两种方式都显式订阅 `message`、`callback_query`、`chat_member`、`my_chat_member`、`chat_join_request`。
-- HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）与 `POST /api/v1/captcha/verify`（见下方入群验证）。CORS 只放行 `CORS_ALLOW_ORIGINS` 中列出的来源（生产为 `https://bot.akkia.moe`），未配置时不发送任何 CORS 头。
+- HTTP：`SERVER_HOST:SERVER_PORT`（默认 `0.0.0.0:8000`）提供 `/healthz`（存活）、`/readyz`（数据库与缓存连通，失败时 503）与 `POST /api/v1/captcha/verify`、`POST /api/v1/captcha/events`（见下方入群验证；后者是验证页的生命周期事件上报，只写日志和指标，见 `docs/observability.md` §1.4）。CORS 只放行 `CORS_ALLOW_ORIGINS` 中列出的来源（生产为 `https://bot.akkia.moe`），未配置时不发送任何 CORS 头。
 - 指标：`/metrics` 只在独立端口 `OBSERVABILITY_METRICS_HOST:OBSERVABILITY_METRICS_PORT`（默认 `127.0.0.1:9464`）提供，不经公网 tunnel 暴露；容器内由 compose 内网访问时把 host 设为 `0.0.0.0` 且不要发布该端口。
 - 命令：`bot/commands/__init__.py` 中的 `COMMANDS` 是唯一的声明式列表，同时生成命令处理器、`set_my_commands` 菜单和 `/help` 文本。需要私聊深链的功能用 `StartPayloadStore.create()` 生成一次性 payload（基于 `Cache.pop`，默认 `TELEGRAM_START_PAYLOAD_TTL=600` 秒），并通过 `BotDeps.on_start(kind, handler)` 注册分发。
 - 群消息：记录 `message_log`（只存 ID）与成员发言计数；首次见到某个群时写入 `chat`；按群配置 `delete_service_messages`（默认开启）删除入群、退群、置顶等系统消息。`message_log` 由定时任务按 `TELEGRAM_MESSAGE_LOG_RETENTION_DAYS`（默认 30 天）清理。

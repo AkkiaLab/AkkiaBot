@@ -108,6 +108,17 @@
       },
       {
         "type": "textbox",
+        "name": "challenge_id",
+        "label": "challenge_id",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "hide": 0
+      },
+      {
+        "type": "textbox",
         "name": "search",
         "label": "搜索（正则）",
         "query": "",
@@ -718,6 +729,185 @@
       }
     },
     {
+      "type": "bargauge",
+      "title": "验证页面漏斗（所选时间范围）",
+      "description": "Mini App 验证页面上报的事件：打开 = 页面显示了人机验证组件；求解 = Turnstile 完成；提交 = 发出验证请求；通过 = 页面收到验证成功。按次数统计，同一成员重新打开页面会再计一次。上报尽力而为，可能略少于服务端计数。",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(increase(akkiabot_captcha_client_events_total{env=\"$env\",event=\"page_loaded\"}[$__range])) or vector(0)",
+          "legendFormat": "打开",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(increase(akkiabot_captcha_client_events_total{env=\"$env\",event=\"turnstile_solved\"}[$__range])) or vector(0)",
+          "legendFormat": "求解",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(increase(akkiabot_captcha_client_events_total{env=\"$env\",event=\"submitted\"}[$__range])) or vector(0)",
+          "legendFormat": "提交",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum(increase(akkiabot_captcha_client_events_total{env=\"$env\",event=\"result\",outcome=\"passed\"}[$__range])) or vector(0)",
+          "legendFormat": "通过",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "验证页面事件（按事件）",
+      "description": "每个时间桶内验证页面上报的各类事件数，包括人机验证组件报错 / 过期、重试、关闭和无法显示组件（page_blocked）。",
+      "id": 26,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (event) (increase(akkiabot_captcha_client_events_total{env=\"$env\"}[$__rate_interval]))",
+          "legendFormat": "{{event}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "页面看到的结果与被拒上报",
+      "description": "result 事件按页面收到的结果分类（passed、各验证错误码、network_error、unexpected_response）；“拒收”是被事件接口拒绝的上报，按原因分类（initData 无效、超出单个验证的限额等）。",
+      "id": 27,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (outcome) (increase(akkiabot_captcha_client_events_total{env=\"$env\",event=\"result\"}[$__rate_interval]))",
+          "legendFormat": "{{outcome}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (reason) (increase(akkiabot_captcha_client_event_rejects_total{env=\"$env\"}[$__rate_interval]))",
+          "legendFormat": "拒收 {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "反垃圾",
       "id": 13,
@@ -726,7 +916,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 32
       },
       "panels": []
     },
@@ -743,7 +933,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -789,7 +979,7 @@
         "h": 8,
         "w": 4,
         "x": 6,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -835,7 +1025,7 @@
         "h": 8,
         "w": 7,
         "x": 10,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -891,7 +1081,7 @@
         "h": 8,
         "w": 7,
         "x": 17,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -933,7 +1123,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 33
+        "y": 41
       },
       "panels": []
     },
@@ -950,7 +1140,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 34
+        "y": 42
       },
       "targets": [
         {
@@ -995,7 +1185,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 34
+        "y": 42
       },
       "targets": [
         {
@@ -1041,7 +1231,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 34
+        "y": 42
       },
       "targets": [
         {
@@ -1083,7 +1273,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 50
       },
       "panels": []
     },
@@ -1100,7 +1290,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "targets": [
         {
@@ -1109,7 +1299,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "sum by (level) (count_over_time({env=\"$env\", service=~\"$service\", level=~\"$level\"} | chat_id=~\"$chat_id\" | user_id=~\"$user_id\" | trace_id=~\"$trace_id\" |~ \"$search\" [$__auto]))",
+          "expr": "sum by (level) (count_over_time({env=\"$env\", service=~\"$service\", level=~\"$level\"} | chat_id=~\"$chat_id\" | user_id=~\"$user_id\" | trace_id=~\"$trace_id\" | challenge_id=~\"$challenge_id\" |~ \"$search\" [$__auto]))",
           "legendFormat": "{{level}}"
         }
       ],
@@ -1149,7 +1339,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 56
       },
       "targets": [
         {
@@ -1158,7 +1348,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{env=\"$env\", service=~\"$service\", level=~\"$level\"} | chat_id=~\"$chat_id\" | user_id=~\"$user_id\" | trace_id=~\"$trace_id\" |~ \"$search\""
+          "expr": "{env=\"$env\", service=~\"$service\", level=~\"$level\"} | chat_id=~\"$chat_id\" | user_id=~\"$user_id\" | trace_id=~\"$trace_id\" | challenge_id=~\"$challenge_id\" |~ \"$search\""
         }
       ],
       "options": {

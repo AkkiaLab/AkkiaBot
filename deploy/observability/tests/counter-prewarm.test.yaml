@@ -107,3 +107,17 @@ tests:
         exp_samples:
           - labels: '{env="t"}'
             value: 0
+
+  # Captcha widget errors reported by the Mini App: the turnstile_error series
+  # is exported at 0 from process start, so three errors after a restart all
+  # count towards the alert threshold (> 2.5).
+  - interval: 30s
+    input_series:
+      - series: 'akkiabot_captcha_client_events_total{env="t",event="turnstile_error",outcome="none"}'
+        values: "0 0 1 2 3 3"
+    promql_expr_test:
+      - expr: sum by (env) (increase(akkiabot_captcha_client_events_total{event="turnstile_error"}[30m]))
+        eval_time: 2m30s
+        exp_samples:
+          - labels: '{env="t"}'
+            value: 3

@@ -6,13 +6,22 @@
 
 1. 机器人在私聊里给被验证成员发送 Mini App 按钮，URL 为 `<WEBAPP_URL>/captcha?challenge=<id>`（见 README“入群验证”）。
 2. 页面用 `@telegram-apps/sdk-react` 初始化 SDK、绑定 Telegram 主题色并调用 `ready`，取原始 `initData`。
-3. 渲染 Cloudflare Turnstile 组件；拿到 token 后自动提交 `POST <VITE_API_BASE_URL>/api/v1/captcha/verify`（`challenge_id`、`init_data`、`turnstile_token`）。请求客户端使用 openapi-fetch 和 `just gen-api` 生成的类型（`src/api/client.ts`）。
+3. 渲染 Cloudflare Turnstile 组件；拿到 token 后自动提交 `POST <VITE_API_BASE_URL>/api/v1/captcha/verify`（`challenge_id`、`init_data`、`turnstile_token`，以及只用于日志的 `page_id`、`attempt`、`client_platform`、`client_version`）。请求客户端使用 openapi-fetch 和 `just gen-api` 生成的类型（`src/api/client.ts`）。
 4. 结果展示：
    - 成功：显示后端返回的消息，1.5 秒后关闭 Mini App；
    - 已超时（`challenge_expired`）：显示超时说明和“关闭”按钮，不提供重试（成员保持禁言，需管理员处理或退群重进）；
    - 可重试失败（`turnstile_failed`、`captcha_unavailable`、`unmute_failed`、网络错误、非预期响应、Turnstile 组件报错/过期）：显示原因和“重试”按钮，重试会重新加载 Turnstile 组件以获取新 token；
    - 其他拒绝（身份无效/过期、不是本人、已完成、非 captcha 禁言等）：显示后端消息和“关闭”按钮。
 5. 页面在提交前先检查：`challenge` 不是 UUID、不在 Telegram 中打开、构建时没有配置 Turnstile site key，这三种情况直接显示错误，不渲染 Turnstile。
+
+### 页面事件上报
+
+页面把关键生命周期事件发到 `POST <VITE_API_BASE_URL>/api/v1/captcha/events`，用于在 Grafana 中按 challenge 查看“打开 → 求解 → 提交 → 结果”的完整链路（字段、指标和查询见 `docs/observability.md` §1.4）：
+
+- 页面每次加载生成一个随机 `page_id`（`crypto.randomUUID()`），`attempt` 是本页面已提交的次数；两者也随验证请求一起发送，用来区分“同一页面重复提交”和“重新打开页面后的新提交”。
+- 事件：`page_loaded`（显示了 Turnstile）/ `page_blocked`（缺少 site key 等无法显示）、`turnstile_solved`、`turnstile_error`、`turnstile_expired`、`submitted`、`result`（带 `outcome`：`passed`、验证接口的错误码、`network_error` 或 `unexpected_response`）、`retry`、`closed`（第一次 `pagehide` 或页面转入后台，以及点击“关闭”/成功后自动关闭）。
+- 只有 `challenge` 是 UUID 且拿到了 `initData` 时才上报，因为接口要求 initData 签名有效、属于被验证成员。上报是“发出即忘”（`fetch` 带 `keepalive`），失败或被拒绝都不影响页面；`closed` 在 webview 被直接销毁时可能发不出去。
+- `client_platform`、`client_version` 取自 Telegram 启动参数，不符合接口格式的值直接不发送，避免整个请求被拒绝。不采集新的身份信息，用户只通过 challenge 关联到服务端已有的 `chat_id` / `user_id`；Turnstile token 和 initData 原文都不会被记录。
 
 其他路径返回“页面不存在”。Pages 项目不放 `404.html`，因此任意未知路径（包括 `/captcha`）都会回退到根 `index.html`，由前端按 `location.pathname` 渲染。
 

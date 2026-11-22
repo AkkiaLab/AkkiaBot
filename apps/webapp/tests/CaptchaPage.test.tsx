@@ -1,19 +1,27 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createApiClient, type FetchFn, verifyCaptcha } from "../src/api/client";
+import type { CaptchaEventRequest } from "../src/api/types";
 import type { CaptchaPageProps } from "../src/pages/captcha/CaptchaPage";
-import { CaptchaPage } from "../src/pages/captcha/CaptchaPage";
+import { CaptchaPage, outcomeOf } from "../src/pages/captcha/CaptchaPage";
 import { fetchSequence, jsonResponse } from "./fetch";
 
 // Stand-in for the Cloudflare widget: one button per callback.
 vi.mock("@marsidev/react-turnstile", () => ({
-  Turnstile: (props: { onSuccess: (token: string) => void; onError: () => void }) => (
+  Turnstile: (props: {
+    onSuccess: (token: string) => void;
+    onError: () => void;
+    onExpire: () => void;
+  }) => (
     <div>
       <button type="button" onClick={() => props.onSuccess("turnstile-token")}>
         mock-turnstile-pass
       </button>
       <button type="button" onClick={() => props.onError()}>
         mock-turnstile-error
+      </button>
+      <button type="button" onClick={() => props.onExpire()}>
+        mock-turnstile-expire
       </button>
     </div>
   ),
@@ -60,6 +68,7 @@ describe("CaptchaPage submit flow", () => {
       challenge_id: CHALLENGE,
       init_data: INIT_DATA,
       turnstile_token: "turnstile-token",
+      attempt: 1,
     });
     await waitFor(() => expect(close).toHaveBeenCalledOnce());
   });
@@ -167,5 +176,124 @@ describe("CaptchaPage preconditions", () => {
   it("refuses to render without a Turnstile site key", () => {
     renderPage(fetchSequence(), { turnstileSiteKey: undefined });
     expect(screen.getByRole("alert")).toHaveTextContent("配置不完整");
+  });
+});
+
+describe("CaptchaPage telemetry", () => {
+  const PAGE = "9b2e4c1a-7d3f-4e8a-b5c6-1f2a3b4c5d6e";
+  const session = () => ({ initData: INIT_DATA, close, platform: "android", version: "8.0" });
+
+  function renderWithEvents(fetch: FetchFn, overrides: Partial<CaptchaPageProps> = {}) {
+    const events: CaptchaEventRequest[] = [];
+    renderPage(fetch, {
+      session: session(),
+      pageId: PAGE,
+      report: (body) => events.push(body),
+      ...overrides,
+    });
+    return events;
+  }
+
+  const names = (events: CaptchaEventRequest[]) =>
+    events.map((e) => (e.outcome ? `${e.event}:${e.outcome}` : e.event));
+
+  it("reports the funnel and tags the verify request with the page", async () => {
+    const fetch = fetchSequence(
+      jsonResponse(400, { error: "turnstile_failed", message: "人机验证未通过，请重试。" }),
+      jsonResponse(200, { status: "passed", message: "验证成功" }),
+    );
+    const events = renderWithEvents(fetch);
+
+    passTurnstile();
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    passTurnstile();
+    await screen.findByText("验证成功");
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+
+    expect(names(events)).toEqual([
+      "page_loaded",
+      "turnstile_solved",
+      "submitted",
+      "result:turnstile_failed",
+      "retry",
+      "turnstile_solved",
+      "submitted",
+      "result:passed",
+      "closed",
+    ]);
+    expect(events[0]).toEqual({
+      challenge_id: CHALLENGE,
+      init_data: INIT_DATA,
+      event: "page_loaded",
+      attempt: 0,
+      page_id: PAGE,
+      client_platform: "android",
+      client_version: "8.0",
+    });
+    expect(events.map((e) => e.attempt)).toEqual([0, 0, 1, 1, 1, 1, 2, 2, 2]);
+    const second = await fetch.mock.calls[1]?.[0].json();
+    expect(second).toMatchObject({ attempt: 2, page_id: PAGE, client_platform: "android" });
+  });
+
+  it("reports widget errors and expiry separately", () => {
+    const events = renderWithEvents(fetchSequence());
+    fireEvent.click(screen.getByRole("button", { name: "mock-turnstile-error" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(screen.getByRole("button", { name: "mock-turnstile-expire" }));
+    expect(names(events)).toEqual(["page_loaded", "turnstile_error", "retry", "turnstile_expired"]);
+  });
+
+  it("reports closing once, whether hidden or closed by the button", async () => {
+    const message = "这次验证已经完成，无需重复提交。";
+    const events = renderWithEvents(
+      fetchSequence(jsonResponse(409, { error: "challenge_used", message })),
+    );
+    passTurnstile();
+    await screen.findByRole("alert");
+    window.dispatchEvent(new Event("pagehide"));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(names(events).filter((n) => n === "closed")).toHaveLength(1);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a blocked page, and nothing without initData or a valid challenge", () => {
+    const blocked = renderWithEvents(fetchSequence(), { turnstileSiteKey: undefined });
+    expect(names(blocked)).toEqual(["page_blocked"]);
+
+    const noSession = renderWithEvents(fetchSequence(), { session: null });
+    const badChallenge = renderWithEvents(fetchSequence(), { challengeId: "nope" });
+    expect([...noSession, ...badChallenge]).toEqual([]);
+  });
+
+  it("leaves out page fields the API would refuse", async () => {
+    const fetch = fetchSequence(jsonResponse(200, { status: "passed", message: "ok" }));
+    const events = renderWithEvents(fetch, {
+      session: { initData: INIT_DATA, close, platform: "Weird Platform", version: "8.0-beta" },
+      pageId: "not-a-uuid",
+    });
+    passTurnstile();
+    await screen.findByText("ok");
+    expect(events[0]).toEqual({
+      challenge_id: CHALLENGE,
+      init_data: INIT_DATA,
+      event: "page_loaded",
+      attempt: 0,
+    });
+    expect(await fetch.mock.calls[0]?.[0].json()).toEqual({
+      challenge_id: CHALLENGE,
+      init_data: INIT_DATA,
+      turnstile_token: "turnstile-token",
+      attempt: 1,
+    });
+  });
+
+  it.each([
+    [{ ok: true, message: "ok" }, "passed"],
+    [{ ok: false, kind: "network" }, "network_error"],
+    [{ ok: false, kind: "unexpected", status: 502 }, "unexpected_response"],
+    [{ ok: false, kind: "rejected", code: "wrong_user", message: "x", status: 403 }, "wrong_user"],
+  ] as const)("maps %o to outcome %s", (result, outcome) => {
+    expect(outcomeOf(result)).toBe(outcome);
   });
 });

@@ -234,6 +234,7 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
 - `updates_total{type}`、`handler_duration_seconds{handler}`、`handler_errors_total{handler}`
 - `command_total{command,result}`
 - `captcha_started_total`、`captcha_total{result=passed|timeout|failed}`、`captcha_duration_seconds`
+- `captcha_client_events_total{event,outcome}`、`captcha_client_event_rejects_total{reason}`（Mini App 验证页上报的生命周期事件，见 `docs/observability.md` §1.4）
 - `antispam_verdict_total{verdict,action}`、`antispam_llm_duration_seconds`、`antispam_llm_errors_total`
 - `moderation_actions_total{action=ban|warn|mute|delete}`
 - `telegram_api_errors_total{method}`、`whois_lookup_total{provider,result}`

@@ -172,6 +172,71 @@
           }
         }
       }
+    },
+    "/api/v1/captcha/events": {
+      "post": {
+        "tags": [
+          "captcha"
+        ],
+        "summary": "上报入群验证页面事件",
+        "description": "Record a lifecycle event of the captcha page (logs and metrics only).",
+        "operationId": "reportCaptchaEvent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptchaEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "init_data_invalid、init_data_expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaEventError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "challenge_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaEventError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid_event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaEventError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptchaEventError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -193,6 +258,116 @@
         ],
         "title": "CaptchaError"
       },
+      "CaptchaEventError": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/EventRejectReason"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "CaptchaEventError"
+      },
+      "CaptchaEventRequest": {
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Challenge Id",
+            "description": "来自 Mini App URL 的 `challenge` 参数"
+          },
+          "init_data": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Init Data",
+            "description": "`Telegram.WebApp.initData` 原始字符串"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Id",
+            "description": "页面每次加载时随机生成，用于区分同一页面重复提交和重新打开"
+          },
+          "client_platform": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z_]{1,16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Platform",
+            "description": "`Telegram.WebApp.platform`"
+          },
+          "client_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{1,2}(\\.[0-9]{1,3}){0,2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Version",
+            "description": "`Telegram.WebApp.version`"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt",
+            "description": "本页面内的提交次数：验证请求为第几次提交（从 1 开始），事件为事件发生时已提交的次数"
+          },
+          "event": {
+            "$ref": "#/components/schemas/ClientEvent",
+            "description": "页面生命周期事件"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "仅 `result` 事件携带：页面收到的验证结果"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "challenge_id",
+          "init_data",
+          "event"
+        ],
+        "title": "CaptchaEventRequest"
+      },
       "CaptchaVerifyRequest": {
         "properties": {
           "challenge_id": {
@@ -207,6 +382,59 @@
             "minLength": 1,
             "title": "Init Data",
             "description": "`Telegram.WebApp.initData` 原始字符串"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Id",
+            "description": "页面每次加载时随机生成，用于区分同一页面重复提交和重新打开"
+          },
+          "client_platform": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z_]{1,16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Platform",
+            "description": "`Telegram.WebApp.platform`"
+          },
+          "client_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{1,2}(\\.[0-9]{1,3}){0,2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Version",
+            "description": "`Telegram.WebApp.version`"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt",
+            "description": "本页面内的提交次数：验证请求为第几次提交（从 1 开始），事件为事件发生时已提交的次数"
           },
           "turnstile_token": {
             "type": "string",
@@ -243,6 +471,54 @@
           "message"
         ],
         "title": "CaptchaVerifyResponse"
+      },
+      "ClientEvent": {
+        "type": "string",
+        "enum": [
+          "page_loaded",
+          "page_blocked",
+          "turnstile_solved",
+          "turnstile_error",
+          "turnstile_expired",
+          "submitted",
+          "result",
+          "retry",
+          "closed"
+        ],
+        "title": "ClientEvent",
+        "description": "Lifecycle events of the captcha page (``/api/v1/captcha/events``)."
+      },
+      "ClientOutcome": {
+        "type": "string",
+        "enum": [
+          "passed",
+          "network_error",
+          "unexpected_response",
+          "captcha_unavailable",
+          "turnstile_failed",
+          "init_data_invalid",
+          "init_data_expired",
+          "challenge_not_found",
+          "challenge_expired",
+          "challenge_used",
+          "wrong_user",
+          "not_captcha_restricted",
+          "unmute_failed"
+        ],
+        "title": "ClientOutcome",
+        "description": "``outcome`` of a :attr:`ClientEvent.RESULT` event: what the page showed."
+      },
+      "EventRejectReason": {
+        "type": "string",
+        "enum": [
+          "init_data_invalid",
+          "init_data_expired",
+          "challenge_not_found",
+          "rate_limited",
+          "invalid_event"
+        ],
+        "title": "EventRejectReason",
+        "description": "Why ``/api/v1/captcha/events`` refused a report (API error codes)."
       },
       "HTTPValidationError": {
         "properties": {

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { createApiClient, verifyCaptcha } from "./api/client";
+import { createApiClient, reportCaptchaEvent, verifyCaptcha } from "./api/client";
 import { readConfig } from "./env";
 import { CaptchaPage } from "./pages/captcha/CaptchaPage";
 import { initTelegram } from "./telegram";
@@ -21,18 +21,30 @@ export function App({ location = window.location }: AppProps) {
 function CaptchaRoute({ challengeId }: { challengeId: string | null }) {
   const config = useMemo(() => readConfig(), []);
   const session = useMemo(() => initTelegram(), []);
-  const verify = useMemo(() => {
+  // One id per page load: tells a resubmission apart from a reopened page.
+  const pageId = useMemo(() => newPageId(), []);
+  const api = useMemo(() => {
     const client = createApiClient(config.apiBaseUrl);
-    return (body: Parameters<typeof verifyCaptcha>[1]) => verifyCaptcha(client, body);
+    return {
+      verify: (body: Parameters<typeof verifyCaptcha>[1]) => verifyCaptcha(client, body),
+      report: (body: Parameters<typeof reportCaptchaEvent>[1]) => reportCaptchaEvent(client, body),
+    };
   }, [config.apiBaseUrl]);
   return (
     <CaptchaPage
       challengeId={challengeId}
       session={session}
       turnstileSiteKey={config.turnstileSiteKey}
-      verify={verify}
+      verify={api.verify}
+      report={api.report}
+      pageId={pageId}
     />
   );
+}
+
+function newPageId(): string | undefined {
+  // randomUUID needs a secure context; the Mini App is always served over HTTPS.
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : undefined;
 }
 
 function NotFound() {
