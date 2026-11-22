@@ -46,6 +46,7 @@ from akkiabot_server.bot.captcha import (
 )
 from akkiabot_server.runtime import Runtime
 from akkiabot_server.services.captcha import CaptchaRejectedError, RejectReason
+from akkiabot_server.services.captcha_telemetry import ClientOutcome, EventRateLimiter
 from akkiabot_server.services.chat_settings import Toggle
 from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
 
@@ -983,3 +984,221 @@ async def test_timeout_job_is_scheduled_outside_the_update_context(
     monkeypatch.setattr(JobQueue, "run_once", spy)
     await flow.join()
     assert seen == [{}]
+
+
+# ------------------------------------------------------- page telemetry
+
+EVENTS = "/api/v1/captcha/events"
+PAGE = "6a1f9a52-35a4-4c55-9a8e-0a4fbd1a1b2c"
+
+
+def event_body(challenge_id: uuid.UUID | str, event: str, **overrides: Any) -> dict[str, Any]:
+    return {
+        "challenge_id": str(challenge_id),
+        "init_data": init_data(),
+        "event": event,
+        "page_id": PAGE,
+        "client_platform": "android",
+        "client_version": "8.0",
+    } | overrides
+
+
+def _lines(stream: io.StringIO, message: str) -> list[dict[str, Any]]:
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    return [line for line in lines if line["message"] == message]
+
+
+async def test_verify_logs_tell_resubmission_from_reopening(
+    flow: Flow, client: httpx.AsyncClient, turnstile: respx.Route, json_logs: io.StringIO
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    page = {"page_id": PAGE, "client_platform": "ios", "client_version": "7.10"}
+    turnstile.mock(return_value=httpx.Response(200, json={"success": False}))
+    first = await client.post(VERIFY, json=body(challenge.id, attempt=1, **page))
+    assert first.json()["error"] == "turnstile_failed"
+    turnstile.mock(return_value=httpx.Response(200, json={"success": True}))
+    second = await client.post(VERIFY, json=body(challenge.id, attempt=2, **page))
+    assert second.status_code == 200, second.text
+    # Reopened page: new page id, new initData.
+    reopened = await client.post(
+        VERIFY,
+        json=body(challenge.id, attempt=1, page_id=str(uuid.uuid4()), init_data=init_data(age=5)),
+    )
+    assert reopened.json()["error"] == "challenge_used"
+
+    rejected = _lines(json_logs, "captcha verification rejected")
+    (passed,) = _lines(json_logs, "captcha passed")
+    assert [line["reason"] for line in rejected] == ["turnstile_failed", "challenge_used"]
+    assert rejected[0]["challenge_id"] == passed["challenge_id"] == str(challenge.id)
+    assert (rejected[0]["page_id"], rejected[0]["attempt"]) == (PAGE, 1)
+    assert "since_previous_attempt_seconds" not in rejected[0]
+    assert "init_data_auth_date" not in rejected[0]  # Turnstile failed before initData
+    assert (passed["page_id"], passed["attempt"]) == (PAGE, 2)
+    assert (passed["client_platform"], passed["client_version"]) == ("ios", "7.10")
+    assert passed["since_previous_attempt_seconds"] >= 0
+    assert rejected[1]["page_id"] != PAGE
+    assert rejected[1]["init_data_auth_date"] < passed["init_data_auth_date"]
+    # Request details that are not secrets only; never the token or raw initData.
+    assert MOCK_TURNSTILE_TOKEN not in json_logs.getvalue()
+    assert "hash=" not in json_logs.getvalue()
+
+
+async def test_verify_still_accepts_requests_without_page_fields(
+    flow: Flow, client: httpx.AsyncClient, turnstile: respx.Route, json_logs: io.StringIO
+) -> None:
+    """Pages loaded before the upgrade keep working."""
+    await flow.join()
+    challenge = await flow.pending()
+    assert (await client.post(VERIFY, json=body(challenge.id))).status_code == 200
+    (passed,) = _lines(json_logs, "captcha passed")
+    assert "page_id" not in passed
+    assert passed["challenge_id"] == str(challenge.id)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"client_platform": "Android <script>"},
+        {"client_version": "8.0-beta"},
+        {"attempt": -1},
+        {"page_id": "not-a-uuid"},
+        {"user_agent": "anything"},
+    ],
+)
+async def test_verify_refuses_malformed_page_fields(
+    client: httpx.AsyncClient, overrides: dict[str, Any]
+) -> None:
+    response = await client.post(VERIFY, json=body(uuid.uuid4(), **overrides))
+    assert response.status_code == 422
+
+
+async def test_page_events_are_logged_with_the_challenge(
+    flow: Flow, client: httpx.AsyncClient, json_logs: io.StringIO
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    loaded = metric_value(
+        "akkiabot_captcha_client_events_total", event="page_loaded", outcome="none"
+    )
+    passed = metric_value("akkiabot_captcha_client_events_total", event="result", outcome="passed")
+
+    for payload in (
+        event_body(challenge.id, "page_loaded", attempt=0),
+        event_body(challenge.id, "result", outcome="passed", attempt=1),
+    ):
+        response = await client.post(EVENTS, json=payload)
+        assert response.status_code == 204, response.text
+
+    assert (
+        metric_value("akkiabot_captcha_client_events_total", event="page_loaded", outcome="none")
+        == loaded + 1
+    )
+    assert (
+        metric_value("akkiabot_captcha_client_events_total", event="result", outcome="passed")
+        == passed + 1
+    )
+    first, second = _lines(json_logs, "captcha client event")
+    assert (first["chat_id"], first["user_id"]) == (CHAT, NEWBIE)
+    assert first["challenge_id"] == str(challenge.id)
+    assert (first["event"], first["page_id"], first["attempt"]) == ("page_loaded", PAGE, 0)
+    assert (first["client_platform"], first["client_version"]) == ("android", "8.0")
+    assert first["challenge_status"] == "pending"
+    assert first["trace_id"]
+    assert "outcome" not in first
+    assert (second["event"], second["outcome"]) == ("result", "passed")
+    assert "hash=" not in json_logs.getvalue()
+
+
+async def test_page_events_after_the_challenge_closed_are_still_recorded(
+    flow: Flow, client: httpx.AsyncClient, json_logs: io.StringIO
+) -> None:
+    """A page reopened after passing (or timing out) is what the events should show."""
+    await flow.join()
+    challenge = await flow.pending()
+    assert await flow.expire_now() == 1
+    response = await client.post(EVENTS, json=event_body(challenge.id, "page_loaded"))
+    assert response.status_code == 204
+    (line,) = _lines(json_logs, "captcha client event")
+    assert line["challenge_status"] == "expired"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "status", "error"),
+    [
+        ({"init_data": "user=%7B%7D&hash=" + "0" * 64}, 401, "init_data_invalid"),
+        ({"init_data": init_data(age=7200)}, 401, "init_data_expired"),
+        ({"init_data": init_data(STRANGER)}, 404, "challenge_not_found"),
+        ({"event": "result"}, 422, "invalid_event"),
+        ({"outcome": "passed"}, 422, "invalid_event"),
+    ],
+)
+async def test_page_events_are_refused_without_the_challenged_users_init_data(
+    flow: Flow,
+    client: httpx.AsyncClient,
+    json_logs: io.StringIO,
+    overrides: dict[str, Any],
+    status: int,
+    error: str,
+) -> None:
+    await flow.join()
+    challenge = await flow.pending()
+    rejects = metric_value("akkiabot_captcha_client_event_rejects_total", reason=error)
+    response = await client.post(EVENTS, json=event_body(challenge.id, "page_loaded") | overrides)
+    assert response.status_code == status
+    assert response.json()["error"] == error
+    assert metric_value("akkiabot_captcha_client_event_rejects_total", reason=error) == rejects + 1
+    assert _lines(json_logs, "captcha client event") == []
+
+
+async def test_page_events_for_unknown_challenges_are_refused(client: httpx.AsyncClient) -> None:
+    response = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded"))
+    assert response.status_code == 404
+    assert response.json()["error"] == "challenge_not_found"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"event": "custom_event"},
+        {"outcome": "anything"},
+        {"detail": "free text"},
+        {"client_platform": "x" * 17},
+    ],
+)
+async def test_page_events_accept_only_known_fields_and_values(
+    client: httpx.AsyncClient, overrides: dict[str, Any]
+) -> None:
+    response = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded") | overrides)
+    assert response.status_code == 422
+
+
+async def test_page_events_are_rate_limited_per_challenge(
+    flow: Flow, runtime: Runtime, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime.deps.captcha, "_event_limiter", EventRateLimiter(limit=2))
+    await flow.join()
+    challenge = await flow.pending()
+    statuses = [
+        (await client.post(EVENTS, json=event_body(challenge.id, "page_loaded"))).status_code
+        for _ in range(3)
+    ]
+    assert statuses == [204, 204, 429]
+    # Another challenge has its own budget (unknown here, so 404 rather than 429).
+    other = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded"))
+    assert other.status_code == 404
+
+
+async def test_cors_allows_the_event_endpoint(client: httpx.AsyncClient) -> None:
+    preflight = {
+        "Origin": WEBAPP,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    }
+    allowed = await client.options(EVENTS, headers=preflight)
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == WEBAPP
+
+
+def test_result_outcomes_cover_every_verify_error() -> None:
+    assert {r.value for r in RejectReason} <= {o.value for o in ClientOutcome}

@@ -136,6 +136,24 @@ CAPTCHA_DURATION_SECONDS = Histogram(
     buckets=(5, 10, 20, 30, 45, 60, 90, 120, 180, 240, 300, 600),
 )
 
+CAPTCHA_CLIENT_EVENTS_TOTAL = Counter(
+    "captcha_client_events_total",
+    "Lifecycle events reported by the captcha Mini App page (page_loaded, "
+    "turnstile_solved, submitted, result…); outcome is set on result events only.",
+    ["event", "outcome"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+CAPTCHA_CLIENT_EVENT_REJECTS_TOTAL = Counter(
+    "captcha_client_event_rejects_total",
+    "Captcha Mini App event reports refused by the API, by reason.",
+    ["reason"],
+    namespace=NAMESPACE,
+    registry=REGISTRY,
+)
+#: ``outcome`` label of events that carry none.
+NO_OUTCOME = "none"
+
 TELEGRAM_POLL_TOTAL = Counter(
     "telegram_poll_total",
     "getUpdates long polls, by result (ok / error).",
@@ -203,6 +221,30 @@ def count_captcha(result: str) -> None:
 
 def count_captcha_started() -> None:
     CAPTCHA_STARTED_TOTAL.inc()
+
+
+def init_captcha_client_events(
+    events: Iterable[str], outcomes: Iterable[str], rejects: Iterable[str], *, result_event: str
+) -> None:
+    """Export every captcha client event / reject series as 0 from process start
+    (same reason as :data:`CAPTCHA_RESULTS`: ``increase()`` misses the first
+    increment of a series that appears already at 1). Callers pass the enums
+    of the event API."""
+    for event in events:
+        if event != result_event:
+            CAPTCHA_CLIENT_EVENTS_TOTAL.labels(event=event, outcome=NO_OUTCOME)
+    for outcome in outcomes:
+        CAPTCHA_CLIENT_EVENTS_TOTAL.labels(event=result_event, outcome=outcome)
+    for reason in rejects:
+        CAPTCHA_CLIENT_EVENT_REJECTS_TOTAL.labels(reason=reason)
+
+
+def count_captcha_client_event(event: str, outcome: str | None = None) -> None:
+    CAPTCHA_CLIENT_EVENTS_TOTAL.labels(event=event, outcome=outcome or NO_OUTCOME).inc()
+
+
+def count_captcha_client_event_reject(reason: str) -> None:
+    CAPTCHA_CLIENT_EVENT_REJECTS_TOTAL.labels(reason=reason).inc()
 
 
 def start_telegram_poll_heartbeat() -> None:

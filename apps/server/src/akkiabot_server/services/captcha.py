@@ -51,13 +51,25 @@ from akkiabot_core.db import (
 from akkiabot_core.db.types import utcnow
 from akkiabot_core.observability import (
     count_captcha,
+    count_captcha_client_event,
+    count_captcha_client_event_reject,
     count_captcha_started,
     count_moderation_action,
     count_telegram_api_error,
+    init_captcha_client_events,
     log_context,
     observe_captcha_duration,
 )
 from akkiabot_core.telegram import InitDataError, WebAppInitData, parse_init_data, public_name
+from akkiabot_server.services.captcha_telemetry import (
+    AttemptClock,
+    ClientEvent,
+    ClientInfo,
+    ClientOutcome,
+    EventRateLimiter,
+    EventRejectedError,
+    EventRejectReason,
+)
 from akkiabot_server.services.chat_settings import ChatSettingsService
 from akkiabot_server.services.moderation import ModerationApiError, RateLimitedError
 from akkiabot_server.services.start_payload import StartPayloadStore
@@ -204,6 +216,7 @@ class CaptchaService:
         timeout: int,
         init_data_max_age: int,
         turnstile: TurnstileVerifier | None,
+        event_limiter: EventRateLimiter | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._chat_settings = chat_settings
@@ -213,6 +226,14 @@ class CaptchaService:
         self._init_data_max_age = timedelta(seconds=init_data_max_age)
         self._turnstile = turnstile
         self._locks: dict[tuple[int, int], tuple[asyncio.Lock, list[int]]] = {}
+        self._event_limiter = event_limiter or EventRateLimiter()
+        self._attempts = AttemptClock()
+        init_captcha_client_events(
+            [e.value for e in ClientEvent],
+            [o.value for o in ClientOutcome],
+            [r.value for r in EventRejectReason],
+            result_event=ClientEvent.RESULT.value,
+        )
 
     @asynccontextmanager
     async def _member_lock(self, chat_id: int, user_id: int) -> AsyncIterator[None]:
@@ -337,18 +358,45 @@ class CaptchaService:
         challenge_id: uuid.UUID,
         init_data: str,
         turnstile_token: str,
+        client: ClientInfo | None = None,
     ) -> VerifyResult:
         """Check a Mini App submission and lift the captcha mute.
 
         Raises :class:`CaptchaRejectedError`; every rejection counts as
-        ``captcha_total{result="failed"}``.
+        ``captcha_total{result="failed"}``. ``client`` (page id, submission
+        number, Telegram platform/version) and the seconds since the previous
+        request for this challenge are bound to every log line of the request,
+        to tell a resubmission from the same page from a reopened page.
         """
+        client = client or ClientInfo()
+        since_previous = self._attempts.since_previous(challenge_id)
+        with log_context(
+            challenge_id=str(challenge_id),
+            since_previous_attempt_seconds=(
+                round(since_previous, 3) if since_previous is not None else None
+            ),
+            **client.log_fields(),
+        ):
+            return await self._verify_logged(
+                api, challenge_id=challenge_id, init_data=init_data, turnstile_token=turnstile_token
+            )
+
+    async def _verify_logged(
+        self,
+        api: CaptchaApi,
+        *,
+        challenge_id: uuid.UUID,
+        init_data: str,
+        turnstile_token: str,
+    ) -> VerifyResult:
+        facts: dict[str, object] = {}
         try:
             return await self._verify(
                 api,
                 challenge_id=challenge_id,
                 init_data=init_data,
                 turnstile_token=turnstile_token,
+                facts=facts,
             )
         except CaptchaRejectedError as exc:
             count_captcha("failed")
@@ -361,7 +409,7 @@ class CaptchaService:
             with log_context(chat_id=exc.chat_id, user_id=exc.user_id):
                 logger.info(
                     "captcha verification rejected",
-                    extra={"challenge_id": str(challenge_id), "reason": exc.reason.value},
+                    extra={"reason": exc.reason.value, **facts},
                 )
             raise
 
@@ -372,6 +420,7 @@ class CaptchaService:
         challenge_id: uuid.UUID,
         init_data: str,
         turnstile_token: str,
+        facts: dict[str, object],
     ) -> VerifyResult:
         if self._turnstile is None:
             raise CaptchaRejectedError(RejectReason.UNAVAILABLE)
@@ -392,6 +441,9 @@ class CaptchaService:
                 if exc.reason == "expired"
                 else RejectReason.INIT_DATA_INVALID
             ) from None
+        # Signed by Telegram and renewed every time the Mini App is opened:
+        # a different value on a later request means the page was reopened.
+        facts["init_data_auth_date"] = int(data.auth_date.timestamp())
         if data.user is None:
             raise CaptchaRejectedError(RejectReason.INIT_DATA_INVALID)
         # 3. challenge exists, pending, not expired
@@ -402,13 +454,13 @@ class CaptchaService:
         # group and the member so the flow can be followed by chat_id in Loki.
         with log_context(chat_id=challenge.chat_id, user_id=challenge.user_id):
             try:
-                return await self._verify_challenge(api, challenge, data)
+                return await self._verify_challenge(api, challenge, data, facts)
             except CaptchaRejectedError as exc:
                 exc.chat_id, exc.user_id = challenge.chat_id, challenge.user_id
                 raise
 
     async def _verify_challenge(
-        self, api: CaptchaApi, challenge: _Snapshot, data: WebAppInitData
+        self, api: CaptchaApi, challenge: _Snapshot, data: WebAppInitData, facts: dict[str, object]
     ) -> VerifyResult:
         assert data.user is not None  # noqa: S101 - checked by _verify
         self._ensure_open(challenge)
@@ -425,8 +477,8 @@ class CaptchaService:
             "captcha passed",
             extra={
                 "target_user_id": challenge.user_id,
-                "challenge_id": str(challenge.id),
                 "duration_seconds": round(duration, 3),
+                **facts,
             },
         )
         await self._delete_prompt(api, challenge)
@@ -505,6 +557,84 @@ class CaptchaService:
             raise CaptchaRejectedError(RejectReason.CHALLENGE_EXPIRED)
         if challenge.status is not CaptchaStatus.PENDING:
             raise CaptchaRejectedError(RejectReason.CHALLENGE_USED)
+
+    # ------------------------------------------------------ page events
+    async def record_event(
+        self,
+        *,
+        challenge_id: uuid.UUID,
+        init_data: str,
+        event: ClientEvent,
+        outcome: ClientOutcome | None,
+        client: ClientInfo,
+    ) -> None:
+        """Log and count a lifecycle event reported by the captcha page.
+
+        Accepted only with valid initData of the challenged user, and at most
+        :class:`EventRateLimiter` reports per challenge. Raises
+        :class:`EventRejectedError` (counted by reason). The challenge may be in
+        any state: a page reopened after passing is exactly what this shows.
+        """
+        try:
+            await self._record_event(
+                challenge_id=challenge_id,
+                init_data=init_data,
+                event=event,
+                outcome=outcome,
+                client=client,
+            )
+        except EventRejectedError as exc:
+            count_captcha_client_event_reject(exc.reason.value)
+            logger.info(
+                "captcha client event rejected",
+                extra={"challenge_id": str(challenge_id), "reason": exc.reason.value},
+            )
+            raise
+
+    async def _record_event(
+        self,
+        *,
+        challenge_id: uuid.UUID,
+        init_data: str,
+        event: ClientEvent,
+        outcome: ClientOutcome | None,
+        client: ClientInfo,
+    ) -> None:
+        if (outcome is None) is (event is ClientEvent.RESULT):
+            raise EventRejectedError(EventRejectReason.INVALID_EVENT)
+        try:
+            data = parse_init_data(init_data, self._bot_token, max_age=self._init_data_max_age)
+        except InitDataError as exc:
+            raise EventRejectedError(
+                EventRejectReason.INIT_DATA_EXPIRED
+                if exc.reason == "expired"
+                else EventRejectReason.INIT_DATA_INVALID
+            ) from None
+        if data.user is None:
+            raise EventRejectedError(EventRejectReason.INIT_DATA_INVALID)
+        # Limit before touching the database.
+        if not self._event_limiter.allow(challenge_id):
+            raise EventRejectedError(EventRejectReason.RATE_LIMITED)
+        challenge = await self._load(challenge_id)
+        if challenge is None or challenge.user_id != data.user.id:
+            raise EventRejectedError(EventRejectReason.CHALLENGE_NOT_FOUND)
+
+        count_captcha_client_event(event.value, outcome.value if outcome else None)
+        with log_context(
+            chat_id=challenge.chat_id,
+            user_id=challenge.user_id,
+            challenge_id=str(challenge_id),
+            **client.log_fields(),
+        ):
+            logger.info(
+                "captcha client event",
+                extra={
+                    "event": event.value,
+                    **({"outcome": outcome.value} if outcome else {}),
+                    "challenge_status": challenge.status.value,
+                    "init_data_auth_date": int(data.auth_date.timestamp()),
+                },
+            )
 
     # ----------------------------------------------------------- timeout
     async def expire_due(self, api: CaptchaApi, *, now: datetime | None = None) -> int:
