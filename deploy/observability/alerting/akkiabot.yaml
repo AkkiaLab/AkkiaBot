@@ -146,3 +146,38 @@ groups:
           description: >-
             akkiabot_antispam_llm_errors_total 持续增长（timeout / api_error / parse_error）。
             失败的分类按放行处理，垃圾消息可能漏判。检查 LLM 服务状态与 Langfuse 中的调用记录。
+
+      - uid: akkiabot-captcha-widget-errors
+        title: 验证页面人机验证组件持续报错
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 2400, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              # Reported by the Mini App when the Turnstile widget fails to
+              # load or solve (not when it merely expires).
+              expr: >-
+                sum by (env) (increase(akkiabot_captcha_client_events_total{event="turnstile_error"}[30m]))
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [2.5] } }]
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels: { severity: warning, service: akkiabot }
+        annotations:
+          summary: 30 分钟内验证页面的人机验证组件报错至少 3 次，且持续 5 分钟
+          description: >-
+            Mini App 上报的 turnstile_error 持续增长：新成员打不开或完不成人机验证，会一直处于禁言状态直到超时。
+            检查 Turnstile 站点配置（允许的域名、site key）与 Cloudflare 状态；在 dashboard 日志面板筛选
+            “captcha client event”，按 challenge_id 查看单次验证的完整链路。

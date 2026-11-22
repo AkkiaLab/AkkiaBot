@@ -92,6 +92,8 @@ def test_dashboard_covers_required_signals() -> None:
         "akkiabot_handler_errors_total",
         "akkiabot_captcha_started_total",
         "akkiabot_captcha_total",
+        "akkiabot_captcha_client_events_total",
+        "akkiabot_captcha_client_event_rejects_total",
         "akkiabot_antispam_verdict_total",
         "akkiabot_antispam_llm_duration_seconds_bucket",
         "akkiabot_antispam_llm_errors_total",
@@ -101,6 +103,9 @@ def test_dashboard_covers_required_signals() -> None:
         assert metric in used, metric
     for result in ("passed", "timeout", "failed"):
         assert f'result="{result}"' in used
+    # Page funnel: opened -> solved -> submitted -> passed.
+    for event in ("page_loaded", "turnstile_solved", "submitted", "result"):
+        assert f'event="{event}"' in used
 
 
 def test_dashboard_queries_are_scoped_to_env_and_use_variables() -> None:
@@ -112,14 +117,14 @@ def test_dashboard_queries_are_scoped_to_env_and_use_variables() -> None:
         assert 'env="$env"' in expr, expr
 
 
-def test_logs_filter_by_chat_user_and_trace() -> None:
+def test_logs_filter_by_chat_user_trace_and_challenge() -> None:
     (logs,) = [p for p in _panels() if p["type"] == "logs"]
     (expr,) = [t["expr"] for t in logs["targets"]]
-    for field in ("chat_id", "user_id", "trace_id"):
+    for field in ("chat_id", "user_id", "trace_id", "challenge_id"):
         assert f'{field}=~"${field}"' in expr
     (dashboard,) = load_dashboards()
     variables = {v["name"]: v for v in dashboard["templating"]["list"]}
-    for field in ("chat_id", "user_id", "trace_id"):
+    for field in ("chat_id", "user_id", "trace_id", "challenge_id"):
         assert variables[field]["type"] == "textbox"
         assert variables[field]["query"] == ".*"  # default: everything
 
@@ -134,6 +139,7 @@ def test_alert_rules_cover_required_conditions() -> None:
         "akkiabot-readyz-failing",
         "akkiabot-handler-error-rate",
         "akkiabot-llm-errors",
+        "akkiabot-captcha-widget-errors",
     }
     for rule in rules.values():
         ref_ids = {q["refId"] for q in rule["data"]}
@@ -193,7 +199,7 @@ def test_alloy_keeps_ids_out_of_labels() -> None:
     metadata = re.search(r"stage\.structured_metadata \{(.*?)\n\t\t\}", text, re.S)
     assert labels is not None
     assert metadata is not None
-    for field in ("chat_id", "user_id", "trace_id"):
+    for field in ("chat_id", "user_id", "trace_id", "challenge_id"):
         assert field not in labels.group(1), "high-cardinality ids must not become labels"
         assert field in metadata.group(1)
 
@@ -321,14 +327,14 @@ def test_sync_uploads_dashboards_and_rules(capsys: pytest.CaptureFixture[str]) -
     assert variables["loki"]["current"]["value"] == "grafanacloud-logs"
     _, _, rules = fake.requests[4]
     uids = [r["uid"] for r in rules["rules"]]
-    assert len(uids) == 6
+    assert len(uids) == 7
     assert all(r["labels"]["akkiabot_rule"] == r["uid"] for r in rules["rules"])
     assert uids[-2:] == [  # default expected envs
         "akkiabot-env-missing-staging",
         "akkiabot-env-missing-production",
     ]
     out = capsys.readouterr().out
-    assert "6 rules" in out
+    assert "7 rules" in out
     assert "fake-grafana-token" not in out
 
 

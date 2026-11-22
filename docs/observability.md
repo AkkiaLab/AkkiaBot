@@ -37,11 +37,12 @@ flowchart LR
 
 - Alloy 通过只读挂载的 `/var/run/docker.sock` 发现容器，只采集 `com.docker.compose.project` 等于 `COMPOSE_PROJECT_NAME` 的容器。同一台机器上的生产栈和预发布栈各自有一个 Alloy，互不重复采集。
 - 标签只保留低基数字段：`env`、`service`（compose 服务名）、`container`、`level`。
-- app 和 migrate 输出的 JSON 日志会被解析，`chat_id`、`user_id`、`update_id`、`trace_id`、`handler`、`logger` 写入 Loki 的 structured metadata，不作为标签，避免基数爆炸。查询方式和标签一样：
+- app 和 migrate 输出的 JSON 日志会被解析，`chat_id`、`user_id`、`update_id`、`trace_id`、`handler`、`logger`、`challenge_id` 写入 Loki 的 structured metadata，不作为标签，避免基数爆炸。查询方式和标签一样：
 
   ```logql
   {env="staging", service="app"} | chat_id="-1001234567890"
   {env="staging", service="app"} | trace_id="3f2a…"
+  {env="staging", service="app"} | challenge_id="6a1f9a52-…"
   {env="staging", service="app", level="error"}
   ```
 
@@ -53,6 +54,7 @@ flowchart LR
 - `remote_write` 给所有序列加上外部标签 `env`。
 - 业务指标的定义见 `packages/core/src/akkiabot_core/observability/metrics.py`，清单见 `docs/architecture.md` §5.5。其中两组需要额外说明：
   - `akkiabot_captcha_started_total`：入群验证漏斗的起点（新成员被禁言，并收到验证）。
+  - `akkiabot_captcha_client_events_total{event,outcome}`、`akkiabot_captcha_client_event_rejects_total{reason}`：Mini App 验证页上报的生命周期事件和被拒绝的上报，见 §1.4。
   - `akkiabot_telegram_poll_total{result}`、`akkiabot_telegram_poll_last_success_timestamp_seconds`：polling 心跳。群里没人说话时 `updates_total` 本来就不会增长，但长轮询每次超时都会返回，所以用心跳判断“bot 是否停止接收 update”比用 update 量更可靠。webhook 模式不安装心跳，时间戳保持 0，告警规则会排除这种情况。
 
 ### 1.3 环境变量
@@ -65,6 +67,25 @@ flowchart LR
 | `AKKIABOT_COMPOSE_PROJECT` | `COMPOSE_PROJECT_NAME` | `akkiabot-dev` |
 | `AKKIABOT_METRICS_TARGET`、`AKKIABOT_READYZ_URL` | `app:9464`、`http://app:8000/readyz` | `127.0.0.1:9464`、`http://127.0.0.1:8000/readyz`（`just serve`） |
 | `GRAFANA_CLOUD_*` | `.env`，来自 1Password | 本地 lgtm 的地址，不校验凭据 |
+
+### 1.4 入群验证页面事件
+
+服务端只能看到验证请求本身；“打开了页面但没提交”“Turnstile 卡住”“重新打开页面又提交了一次”需要页面自己报告。Mini App 验证页（`docs/webapp.md`“页面事件上报”）在关键节点调用 `POST /api/v1/captcha/events`，后端写一条日志 `captcha client event` 并计数，不落库。
+
+- 接口只接受固定字段（`extra="forbid"`），`event`、`outcome` 是固定枚举，`client_platform`、`client_version` 按格式校验，其余一律 422。
+- 先校验 initData（签名与 `auth_date` 过期，与验证接口相同），再按 challenge 限流（每个 challenge 10 分钟内最多 40 条，进程内计数），最后要求 challenge 存在且 initData 用户就是被验证成员；不符合时分别返回 401 / 429 / 404，并计入 `captcha_client_event_rejects_total{reason}`。challenge 处于任何状态（通过、超时）都接受，页面在验证完成后被重新打开正是要观察的情况，日志里的 `challenge_status` 记录当时的状态。
+- 不记录 Turnstile token 和 initData 原文；日志只带 challenge 所属的 `chat_id`、`user_id`（与其他入群验证日志一致），加上 `challenge_id`、`page_id`、`attempt`、`client_platform`、`client_version`、`init_data_auth_date`（Telegram 签名的打开时间）。
+- `captcha_client_events_total` 的 `outcome` 只在 `event="result"` 时有值，其他事件为 `none`。所有 `event`/`outcome` 组合和拒绝原因在进程启动时以 0 导出（原因见 §5）。
+
+验证请求（`POST /api/v1/captcha/verify`）的每条日志也带上 `challenge_id`、`page_id`、`attempt`、`client_platform`、`client_version`，以及服务端计算的 `since_previous_attempt_seconds`（距同一 challenge 上一次验证请求的秒数，进程内记录）；通过 initData 校验之后的结果日志另带 `init_data_auth_date`。判断方法：
+
+| 现象 | 结论 |
+| --- | --- |
+| 两次请求 `page_id` 相同，`attempt` 递增 | 同一页面内重复提交（例如重试） |
+| `page_id` 不同、`init_data_auth_date` 不同 | 成员重新打开了 Mini App 后再次提交 |
+| 有 `page_loaded`，没有 `submitted` | 打开后没有完成人机验证；看是否有 `turnstile_error` / `turnstile_expired` / `closed` |
+
+旧版本页面（升级前已打开的）不带这些字段，日志里相应字段缺失，验证照常进行。
 
 ## 2. Grafana Cloud 与 1Password
 
@@ -100,17 +121,19 @@ op run --env-file deploy/observability/grafana-sync.env.tpl -- just grafana-sync
 
 ## 4. dashboard
 
-dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志的服务与级别，以及 `chat_id`、`user_id`、`trace_id` 和搜索（均为正则，默认 `.*` 表示全部）。
+dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志的服务与级别，以及 `chat_id`、`user_id`、`trace_id`、`challenge_id` 和搜索（均为正则，默认 `.*` 表示全部）。
 
 | 区块 | 面板 |
 | --- | --- |
 | 总览 | 按类型统计的 update 速率；handler 耗时 P50/P95（整体及按 handler）；handler 错误率；`/readyz` 状态；距上次成功轮询的时间；Telegram API 失败次数 |
-| 入群验证 | 漏斗：发起 → 通过 / 超时 / 失败（失败指被拒绝的验证尝试，一次验证可能失败多次）；趋势；通过耗时 P50/P95 |
+| 入群验证 | 漏斗：发起 → 通过 / 超时 / 失败（失败指被拒绝的验证尝试，一次验证可能失败多次）；趋势；通过耗时 P50/P95；验证页面漏斗：打开 → 求解 → 提交 → 通过（页面上报，§1.4）；页面事件趋势（含组件报错、重试、关闭）；页面看到的结果与被拒上报 |
 | 反垃圾 | 按判定结果和处置统计的判定量；命中率 = spam / (spam + ham)；LLM 耗时 P50/P95；按类型统计的 LLM 错误 |
 | 群管理 | ban / warn / mute / delete 的次数和趋势；按命令和结果统计的命令量 |
 | 日志 | 按级别统计的日志量，以及日志列表；都受顶部筛选变量控制 |
 
 按 `chat_id` 查一次完整的入群验证：在日志区把 `chat_id` 设为群 ID，时间范围覆盖入群时刻。可以依次看到 `member joined` → `captcha challenge created`（禁言并发出提示）→ 结果：`captcha passed`（Mini App 提交，经 HTTP API），或者 `captcha verification rejected`（附 `reason`；在加载验证之前就被拒绝的请求，例如 Turnstile 失败，也会补查所属的群并打上 `chat_id`），或者 `captcha timed out; member stays muted`。验证 API 和超时任务不是由群消息触发的，所以会额外绑定该验证所属的群 `chat_id` 和成员 `user_id`。成员在私聊中点击深链的 `/start` 属于私聊，`chat_id` 是私聊 ID；要看到这一步，改为按 `user_id` 筛选。
+
+按 challenge 看单次验证的完整链路：从 `captcha challenge created` 日志取 `challenge_id`，填入顶部 `challenge_id` 变量，可以依次看到页面事件 `captcha client event`（`event` 为 `page_loaded` → `turnstile_solved` → `submitted` → `result`，以及 `closed`）和验证请求的结果日志，用 `page_id`、`attempt`、`init_data_auth_date` 区分重复提交和重新打开（§1.4）。
 
 计数器类面板用 `or vector(0)` 兜底，所以没有发生过的事件显示为 0，而不是 No data。比值面板（命中率）和耗时分位数在分母为 0、或者还没有样本时显示 No data，这是正常的。
 
@@ -125,8 +148,9 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | 环境停止上报（每个预期环境一条） | `absent(probe_success{job="akkiabot-readyz", env="<env>"})` | 2 分钟（加上 5 分钟回溯，约 7 分钟触发） | OK（正常上报时 absent 没有结果） |
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
 | LLM 错误或超时持续出现 | 15 分钟内 `antispam_llm_errors_total` 增加 ≥ 3 | 5 分钟 | OK |
+| 验证页面人机验证组件持续报错 | 30 分钟内 `captcha_client_events_total{event="turnstile_error"}` 增加 ≥ 3 | 5 分钟 | OK（没有页面上报时不告警） |
 
-告警依赖的带标签计数器在进程启动时就以 0 导出：`rate()` / `increase()` 看不到“首次出现就已经是 1”的序列，否则重启后第一次错误会被漏算。`handler_errors_total` 和 `handler_duration_seconds` 的 `handler` 序列在 `track_handler` 装饰（即 handler 注册）时创建，新增 handler 无需另外登记；`antispam_llm_errors_total` 的 `error` 取值来自 `akkiabot_antispam.FAIL_OPEN_ERRORS`（分类器 `FailOpenError` 的全部取值）。给告警新增带标签的计数器时，按同样方式从取值的来源预先初始化。
+告警依赖的带标签计数器在进程启动时就以 0 导出：`rate()` / `increase()` 看不到“首次出现就已经是 1”的序列，否则重启后第一次错误会被漏算。`handler_errors_total` 和 `handler_duration_seconds` 的 `handler` 序列在 `track_handler` 装饰（即 handler 注册）时创建，新增 handler 无需另外登记；`antispam_llm_errors_total` 的 `error` 取值来自 `akkiabot_antispam.FAIL_OPEN_ERRORS`（分类器 `FailOpenError` 的全部取值）；`captcha_client_events_total`、`captcha_client_event_rejects_total` 的取值来自事件接口的枚举（`services/captcha_telemetry.py`），由 `CaptchaService` 创建时导出。给告警新增带标签的计数器时，按同样方式从取值的来源预先初始化。
 
 边界：预初始化只保证序列在进程中以 0 创建。若 Alloy（抓取间隔 30 秒）在第一次错误发生前采到 0，且查询窗口内同时包含错误前后的样本，`increase()` / `rate()` 可以识别该增量；这是本改动的保证范围。新进程在第一次被抓取之前就出错时，第一个样本已经大于 0，结果取决于查询窗口内重启前的样本，不作保证：新值小于旧值（计数器重置）时计入；新值大于旧值时只计差值，例如旧值和新值都是 1 时漏算；窗口内没有旧样本（停机时间长于窗口，或全新环境）时也漏算。这些情况用 promtool 单元测试固定在 `deploy/observability/tests/counter-prewarm.test.yaml`，`just promql-test` 运行（需要 docker，使用开发栈同一个 otel-lgtm 镜像中的 promtool）。
 
