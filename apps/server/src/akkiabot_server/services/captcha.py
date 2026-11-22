@@ -217,6 +217,7 @@ class CaptchaService:
         init_data_max_age: int,
         turnstile: TurnstileVerifier | None,
         event_limiter: EventRateLimiter | None = None,
+        lookup_limiter: EventRateLimiter | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._chat_settings = chat_settings
@@ -226,7 +227,10 @@ class CaptchaService:
         self._init_data_max_age = timedelta(seconds=init_data_max_age)
         self._turnstile = turnstile
         self._locks: dict[tuple[int, int], tuple[asyncio.Lock, list[int]]] = {}
+        # Per challenge, charged after the ownership check.
         self._event_limiter = event_limiter or EventRateLimiter()
+        # Per initData user, charged before the challenge lookup.
+        self._lookup_limiter = lookup_limiter or EventRateLimiter(limit=60)
         self._attempts = AttemptClock()
         init_captcha_client_events(
             [e.value for e in ClientEvent],
@@ -612,12 +616,16 @@ class CaptchaService:
             ) from None
         if data.user is None:
             raise EventRejectedError(EventRejectReason.INIT_DATA_INVALID)
-        # Limit before touching the database.
-        if not self._event_limiter.allow(challenge_id):
+        # Bound database lookups per (signed) sender before touching the
+        # database; the per-challenge budget is only charged once the challenge
+        # is known to be theirs, so invalid or foreign reports cannot exhaust it.
+        if not self._lookup_limiter.allow(data.user.id):
             raise EventRejectedError(EventRejectReason.RATE_LIMITED)
         challenge = await self._load(challenge_id)
         if challenge is None or challenge.user_id != data.user.id:
             raise EventRejectedError(EventRejectReason.CHALLENGE_NOT_FOUND)
+        if not self._event_limiter.allow(challenge_id):
+            raise EventRejectedError(EventRejectReason.RATE_LIMITED)
 
         count_captcha_client_event(event.value, outcome.value if outcome else None)
         with log_context(

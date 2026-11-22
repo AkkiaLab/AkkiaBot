@@ -13,13 +13,20 @@ mute → unmute → ``answerWebAppQuery`` receipt. Every refusal is a
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from collections.abc import Callable, Coroutine
+from typing import Any, Literal
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
-from akkiabot_core.observability import log_context, new_trace_id
+from akkiabot_core.observability import (
+    count_captcha_client_event_reject,
+    log_context,
+    new_trace_id,
+)
 from akkiabot_server.api.deps import RuntimeDep
 from akkiabot_server.bot.captcha import PtbCaptchaApi
 from akkiabot_server.services.captcha import CaptchaRejectedError, RejectReason
@@ -176,7 +183,42 @@ def _event_responses() -> dict[int | str, dict[str, object]]:
     }
 
 
-@router.post(
+_EVENT_MESSAGES: dict[EventRejectReason, str] = {
+    EventRejectReason.INIT_DATA_INVALID: "initData 无效。",
+    EventRejectReason.INIT_DATA_EXPIRED: "initData 已过期。",
+    EventRejectReason.CHALLENGE_NOT_FOUND: "验证不存在。",
+    EventRejectReason.RATE_LIMITED: "上报过于频繁。",
+    EventRejectReason.INVALID_EVENT: "请求字段或取值无效。",
+}
+
+
+def _event_error(reason: EventRejectReason) -> JSONResponse:
+    error = CaptchaEventError(error=reason, message=_EVENT_MESSAGES[reason])
+    return JSONResponse(error.model_dump(mode="json"), status_code=_EVENT_STATUS[reason])
+
+
+class _EventRoute(APIRoute):
+    """Answers request validation failures with :class:`CaptchaEventError`
+    (``invalid_event``), as declared in the OpenAPI document, instead of
+    FastAPI's ``detail`` list, which would echo the submitted values back."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def route_handler(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                count_captcha_client_event_reject(EventRejectReason.INVALID_EVENT.value)
+                return _event_error(EventRejectReason.INVALID_EVENT)
+
+        return route_handler
+
+
+event_router = APIRouter(prefix="/api/v1/captcha", tags=["captcha"], route_class=_EventRoute)
+
+
+@event_router.post(
     "/events",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_event_responses(),
@@ -195,8 +237,5 @@ async def report_captcha_event(body: CaptchaEventRequest, runtime: RuntimeDep) -
                 client=body.client(),
             )
         except EventRejectedError as exc:
-            error = CaptchaEventError(error=exc.reason, message=exc.reason.value)
-            return JSONResponse(
-                error.model_dump(mode="json"), status_code=_EVENT_STATUS[exc.reason]
-            )
+            return _event_error(exc.reason)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

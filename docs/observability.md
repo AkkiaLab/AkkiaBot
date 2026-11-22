@@ -72,8 +72,8 @@ flowchart LR
 
 服务端只能看到验证请求本身；“打开了页面但没提交”“Turnstile 卡住”“重新打开页面又提交了一次”需要页面自己报告。Mini App 验证页（`docs/webapp.md`“页面事件上报”）在关键节点调用 `POST /api/v1/captcha/events`，后端写一条日志 `captcha client event` 并计数，不落库。
 
-- 接口只接受固定字段（`extra="forbid"`），`event`、`outcome` 是固定枚举，`client_platform`、`client_version` 按格式校验，其余一律 422。
-- 先校验 initData（签名与 `auth_date` 过期，与验证接口相同），再按 challenge 限流（每个 challenge 10 分钟内最多 40 条，进程内计数），最后要求 challenge 存在且 initData 用户就是被验证成员；不符合时分别返回 401 / 429 / 404，并计入 `captcha_client_event_rejects_total{reason}`。challenge 处于任何状态（通过、超时）都接受，页面在验证完成后被重新打开正是要观察的情况，日志里的 `challenge_status` 记录当时的状态。
+- 接口只接受固定字段（`extra="forbid"`），`event`、`outcome` 是固定枚举，`client_platform`、`client_version` 按格式校验，其余一律 422，响应体与 OpenAPI 声明一致（`{"error": "invalid_event", "message": …}`），不回显提交的字段值。
+- 先校验 initData（签名与 `auth_date` 过期，与验证接口相同）；再按发送者（initData 中的用户）限制查库次数（每人 10 分钟内最多 60 次）；然后要求 challenge 存在且 initData 用户就是被验证成员；最后才扣该 challenge 的额度（10 分钟内最多 40 条）。所以伪造或他人的上报只消耗发送者自己的查库额度，不会占用或耗尽真实验证的额度。计数都在进程内。不符合时分别返回 401 / 429 / 404 / 429，并计入 `captcha_client_event_rejects_total{reason}`。challenge 处于任何状态（通过、超时）都接受，页面在验证完成后被重新打开正是要观察的情况，日志里的 `challenge_status` 记录当时的状态。
 - 不记录 Turnstile token 和 initData 原文；日志只带 challenge 所属的 `chat_id`、`user_id`（与其他入群验证日志一致），加上 `challenge_id`、`page_id`、`attempt`、`client_platform`、`client_version`、`init_data_auth_date`（Telegram 签名的打开时间）。
 - `captcha_client_events_total` 的 `outcome` 只在 `event="result"` 时有值，其他事件为 `none`。所有 `event`/`outcome` 组合和拒绝原因在进程启动时以 0 导出（原因见 §5）。
 

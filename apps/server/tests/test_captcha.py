@@ -1169,8 +1169,33 @@ async def test_page_events_for_unknown_challenges_are_refused(client: httpx.Asyn
 async def test_page_events_accept_only_known_fields_and_values(
     client: httpx.AsyncClient, overrides: dict[str, Any]
 ) -> None:
-    response = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded") | overrides)
+    rejects = metric_value("akkiabot_captcha_client_event_rejects_total", reason="invalid_event")
+    payload = event_body(uuid.uuid4(), "page_loaded") | overrides
+    response = await client.post(EVENTS, json=payload)
     assert response.status_code == 422
+    # Same shape as declared in the OpenAPI document, without echoing the input.
+    assert response.json() == {"error": "invalid_event", "message": "请求字段或取值无效。"}
+    for value in overrides.values():
+        assert value not in response.text
+    assert payload["init_data"] not in response.text
+    assert (
+        metric_value("akkiabot_captcha_client_event_rejects_total", reason="invalid_event")
+        == rejects + 1
+    )
+
+
+async def test_malformed_event_json_is_refused_the_same_way(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        EVENTS, content=b"{not json", headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_event"
+
+
+def test_event_endpoint_documents_its_422_body(runtime: Runtime) -> None:
+    operation = create_app(runtime).openapi()["paths"][EVENTS]["post"]
+    schema = operation["responses"]["422"]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/CaptchaEventError"}
 
 
 async def test_page_events_are_rate_limited_per_challenge(
@@ -1184,9 +1209,56 @@ async def test_page_events_are_rate_limited_per_challenge(
         for _ in range(3)
     ]
     assert statuses == [204, 204, 429]
-    # Another challenge has its own budget (unknown here, so 404 rather than 429).
-    other = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded"))
-    assert other.status_code == 404
+
+
+async def test_invalid_and_foreign_reports_do_not_use_up_the_challenge_budget(
+    flow: Flow, runtime: Runtime, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only reports for a challenge the sender owns are charged to it: made-up
+    ids cannot fill the table and someone else cannot exhaust a real challenge."""
+    monkeypatch.setattr(
+        runtime.deps.captcha, "_event_limiter", EventRateLimiter(limit=2, max_keys=1)
+    )
+    await flow.join()
+    challenge = await flow.pending()
+    for _ in range(5):
+        unknown = await client.post(EVENTS, json=event_body(uuid.uuid4(), "page_loaded"))
+        assert unknown.status_code == 404
+        foreign = await client.post(
+            EVENTS, json=event_body(challenge.id, "page_loaded", init_data=init_data(STRANGER))
+        )
+        assert foreign.status_code == 404
+        forged = await client.post(
+            EVENTS, json=event_body(challenge.id, "page_loaded", init_data="hash=" + "0" * 64)
+        )
+        assert forged.status_code == 401
+    statuses = [
+        (await client.post(EVENTS, json=event_body(challenge.id, "page_loaded"))).status_code
+        for _ in range(3)
+    ]
+    assert statuses == [204, 204, 429]
+
+
+async def test_challenge_lookups_are_limited_per_sender(
+    flow: Flow, runtime: Runtime, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probing made-up challenge ids is bounded per Telegram user and does not
+    affect the challenged member's own reports."""
+    monkeypatch.setattr(runtime.deps.captcha, "_lookup_limiter", EventRateLimiter(limit=3))
+    await flow.join()
+    challenge = await flow.pending()
+    stranger = init_data(STRANGER)
+    statuses = [
+        (
+            await client.post(
+                EVENTS, json=event_body(uuid.uuid4(), "page_loaded", init_data=stranger)
+            )
+        ).status_code
+        for _ in range(4)
+    ]
+    assert statuses == [404, 404, 404, 429]
+    own = await client.post(EVENTS, json=event_body(challenge.id, "page_loaded"))
+    assert own.status_code == 204
 
 
 async def test_cors_allows_the_event_endpoint(client: httpx.AsyncClient) -> None:

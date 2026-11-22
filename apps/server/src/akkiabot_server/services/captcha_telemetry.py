@@ -73,7 +73,8 @@ class EventRejectReason(StrEnum):
     """Unknown challenge, or it belongs to someone else (not told apart)."""
     RATE_LIMITED = "rate_limited"
     INVALID_EVENT = "invalid_event"
-    """``outcome`` given without a ``result`` event, or missing on one."""
+    """Malformed request: unknown field or value, or ``outcome`` given without
+    a ``result`` event (or missing on one)."""
 
 
 class EventRejectedError(Exception):
@@ -149,7 +150,13 @@ class _ExpiringCounter:
 
 
 class EventRateLimiter:
-    """At most ``limit`` event reports per challenge per ``window`` seconds."""
+    """At most ``limit`` hits per key per ``window`` seconds.
+
+    Used twice by the event API: per Telegram user (signed initData) before the
+    challenge lookup, so made-up challenge ids cost the sender's own budget and
+    bound the database queries; and per challenge, charged only once the
+    challenge is known to belong to that user, so nobody else can use it up.
+    """
 
     def __init__(
         self,
@@ -162,8 +169,8 @@ class EventRateLimiter:
         self._limit = limit
         self._counter = _ExpiringCounter(window=window, max_keys=max_keys, clock=clock)
 
-    def allow(self, challenge_id: uuid.UUID) -> bool:
-        hit = self._counter.hit(challenge_id)
+    def allow(self, key: object) -> bool:
+        hit = self._counter.hit(key)
         return hit is not None and hit[0] <= self._limit
 
 
