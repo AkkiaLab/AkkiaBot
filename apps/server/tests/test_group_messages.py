@@ -143,7 +143,7 @@ async def test_service_message_kept_when_disabled(
 @pytest.mark.parametrize(
     ("status", "description", "reason"),
     [
-        (400, "Bad Request: message can't be deleted", "no_permission"),
+        (400, "Bad Request: message can't be deleted", "not_deletable"),
         (400, "Bad Request: message to delete not found", "already_deleted"),
         (400, "Bad Request: not enough rights to delete a message", "no_permission"),
         (403, "Forbidden: bot was kicked from the supergroup chat", "bot_not_in_chat"),
@@ -180,6 +180,7 @@ async def test_expected_delete_failure_is_info(
     ("status", "description"),
     [
         (400, "Bad Request: some new error"),
+        (403, "Forbidden: some new restriction"),
         (500, "Internal Server Error"),
     ],
 )
@@ -211,9 +212,12 @@ async def test_real_delete_failure_stays_warning(
 @pytest.mark.parametrize(
     ("error", "reason"),
     [
-        (BadRequest("Message can't be deleted"), "no_permission"),
+        (BadRequest("Message can't be deleted"), "not_deletable"),
+        (BadRequest("Not enough rights to delete messages"), "no_permission"),
         (BadRequest("Message to delete not found"), "already_deleted"),
         (Forbidden("Forbidden: bot is not a member of the supergroup chat"), "bot_not_in_chat"),
+        (Forbidden("Forbidden: bot was kicked from the group chat"), "bot_not_in_chat"),
+        (Forbidden("Forbidden: some new restriction"), None),
         (BadRequest("Message is too long"), None),
         (TimedOut(), None),
         (NetworkError("connection reset"), None),

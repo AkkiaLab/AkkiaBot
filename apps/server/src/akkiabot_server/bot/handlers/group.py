@@ -38,14 +38,20 @@ async def record_group_message(update: Update, context: Context) -> None:
     await get_deps(context).messages.record(to_incoming(message, is_service=False))
 
 
-# Bot API "Bad Request" descriptions that mean the notice cannot or need not be
-# deleted, mapped to the reason we log. These come from the group's own setup
-# (the bot is not an admin with "delete messages") or from someone else having
-# deleted the notice first; nothing on our side can fix them.
-_EXPECTED_DELETE_FAILURES: tuple[tuple[str, str], ...] = (
+# Bot API error descriptions that mean the notice cannot or need not be
+# deleted, mapped to the reason we log. They come from the group's own setup,
+# Telegram's deletion limits, or someone else acting first; nothing on our side
+# can fix them. Matched case-insensitively as substrings.
+_EXPECTED_BAD_REQUESTS: tuple[tuple[str, str], ...] = (
     ("message to delete not found", "already_deleted"),
-    ("message can't be deleted", "no_permission"),
     ("not enough rights", "no_permission"),
+    # Generic refusal: missing "delete messages" right, the deletion time limit,
+    # or a notice Telegram does not allow deleting. The reply does not say which.
+    ("message can't be deleted", "not_deletable"),
+)
+_EXPECTED_FORBIDDEN: tuple[tuple[str, str], ...] = (
+    ("bot was kicked", "bot_not_in_chat"),
+    ("bot is not a member", "bot_not_in_chat"),
 )
 
 
@@ -53,18 +59,21 @@ def expected_delete_failure(exc: TelegramError) -> str | None:
     """Why deleting a service message failed, if that is expected.
 
     Returns a short reason (``already_deleted``, ``no_permission``,
-    ``bot_not_in_chat``) for failures caused by the group's configuration or
-    by the notice already being gone, and ``None`` for real failures (network
-    errors, timeouts, rate limits, unknown Bot API errors) that need attention.
+    ``not_deletable``, ``bot_not_in_chat``) for failures caused by the group's
+    configuration, Telegram's deletion limits or the notice already being gone,
+    and ``None`` for real failures (network errors, timeouts, rate limits,
+    unknown Bot API errors) that need attention.
     """
     if isinstance(exc, Forbidden):
-        # The bot was removed from the chat after the update was sent.
-        return "bot_not_in_chat"
-    if isinstance(exc, BadRequest):
-        description = exc.message.lower()
-        for fragment, reason in _EXPECTED_DELETE_FAILURES:
-            if fragment in description:
-                return reason
+        known = _EXPECTED_FORBIDDEN
+    elif isinstance(exc, BadRequest):
+        known = _EXPECTED_BAD_REQUESTS
+    else:
+        return None
+    description = exc.message.lower()
+    for fragment, reason in known:
+        if fragment in description:
+            return reason
     return None
 
 
