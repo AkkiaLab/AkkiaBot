@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createApiClient, verifyCaptcha } from "../src/api/client";
+import { describe, expect, it, vi } from "vitest";
+import { createApiClient, reportCaptchaEvent, verifyCaptcha } from "../src/api/client";
 import { fetchSequence, jsonResponse } from "./fetch";
 
 const BASE = "https://api.example.test";
@@ -62,5 +62,35 @@ describe("verifyCaptcha", () => {
       kind: "unexpected",
       status: 502,
     });
+  });
+});
+
+describe("reportCaptchaEvent", () => {
+  const EVENT = {
+    challenge_id: BODY.challenge_id,
+    init_data: BODY.init_data,
+    event: "page_loaded" as const,
+  };
+
+  it("POSTs the event with keepalive to /api/v1/captcha/events", async () => {
+    const fetch = fetchSequence(new Response(null, { status: 204 }));
+    reportCaptchaEvent(createApiClient(BASE, fetch), EVENT);
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    const request = fetch.mock.calls[0]?.[0];
+    expect(request?.url).toBe("https://api.example.test/api/v1/captcha/events");
+    expect(request?.keepalive).toBe(true);
+    expect(await request?.json()).toEqual(EVENT);
+  });
+
+  it("swallows network failures and refusals", async () => {
+    const fetch = fetchSequence(
+      new TypeError("Failed to fetch"),
+      jsonResponse(429, { error: "rate_limited", message: "rate_limited" }),
+    );
+    const client = createApiClient(BASE, fetch);
+    expect(() => reportCaptchaEvent(client, EVENT)).not.toThrow();
+    expect(() => reportCaptchaEvent(client, EVENT)).not.toThrow();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   });
 });

@@ -68,6 +68,9 @@ loki.process "app" {
 				update_id = "update_id",
 				trace_id  = "trace_id",
 				handler   = "handler",
+				// Join captcha: links the group prompt, the Mini App page events
+				// and the verify requests of one challenge.
+				challenge_id = "challenge_id",
 			}
 		}
 
@@ -77,12 +80,13 @@ loki.process "app" {
 
 		stage.structured_metadata {
 			values = {
-				logger    = "",
-				chat_id   = "",
-				user_id   = "",
-				update_id = "",
-				trace_id  = "",
-				handler   = "",
+				logger       = "",
+				chat_id      = "",
+				user_id      = "",
+				update_id    = "",
+				trace_id     = "",
+				handler      = "",
+				challenge_id = "",
 			}
 		}
 	}

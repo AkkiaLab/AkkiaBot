@@ -64,6 +64,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/captcha/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 上报入群验证页面事件
+         * @description Record a lifecycle event of the captcha page (logs and metrics only).
+         */
+        post: operations["reportCaptchaEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -73,6 +93,50 @@ export interface components {
             error: components["schemas"]["RejectReason"];
             /** Message */
             message: string;
+        };
+        /** CaptchaEventError */
+        CaptchaEventError: {
+            error: components["schemas"]["EventRejectReason"];
+            /** Message */
+            message: string;
+        };
+        /** CaptchaEventRequest */
+        CaptchaEventRequest: {
+            /**
+             * Challenge Id
+             * Format: uuid
+             * @description 来自 Mini App URL 的 `challenge` 参数
+             */
+            challenge_id: string;
+            /**
+             * Init Data
+             * @description `Telegram.WebApp.initData` 原始字符串
+             */
+            init_data: string;
+            /**
+             * Page Id
+             * @description 页面每次加载时随机生成，用于区分同一页面重复提交和重新打开
+             */
+            page_id?: string | null;
+            /**
+             * Client Platform
+             * @description `Telegram.WebApp.platform`
+             */
+            client_platform?: string | null;
+            /**
+             * Client Version
+             * @description `Telegram.WebApp.version`
+             */
+            client_version?: string | null;
+            /**
+             * Attempt
+             * @description 本页面内的提交次数：验证请求为第几次提交（从 1 开始），事件为事件发生时已提交的次数
+             */
+            attempt?: number | null;
+            /** @description 页面生命周期事件 */
+            event: components["schemas"]["ClientEvent"];
+            /** @description 仅 `result` 事件携带：页面收到的验证结果 */
+            outcome?: components["schemas"]["ClientOutcome"] | null;
         };
         /** CaptchaVerifyRequest */
         CaptchaVerifyRequest: {
@@ -87,6 +151,26 @@ export interface components {
              * @description `Telegram.WebApp.initData` 原始字符串
              */
             init_data: string;
+            /**
+             * Page Id
+             * @description 页面每次加载时随机生成，用于区分同一页面重复提交和重新打开
+             */
+            page_id?: string | null;
+            /**
+             * Client Platform
+             * @description `Telegram.WebApp.platform`
+             */
+            client_platform?: string | null;
+            /**
+             * Client Version
+             * @description `Telegram.WebApp.version`
+             */
+            client_version?: string | null;
+            /**
+             * Attempt
+             * @description 本页面内的提交次数：验证请求为第几次提交（从 1 开始），事件为事件发生时已提交的次数
+             */
+            attempt?: number | null;
             /**
              * Turnstile Token
              * @description Turnstile 组件返回的 token
@@ -104,6 +188,24 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * ClientEvent
+         * @description Lifecycle events of the captcha page (``/api/v1/captcha/events``).
+         * @enum {string}
+         */
+        ClientEvent: "page_loaded" | "page_blocked" | "turnstile_solved" | "turnstile_error" | "turnstile_expired" | "submitted" | "result" | "retry" | "closed";
+        /**
+         * ClientOutcome
+         * @description ``outcome`` of a :attr:`ClientEvent.RESULT` event: what the page showed.
+         * @enum {string}
+         */
+        ClientOutcome: "passed" | "network_error" | "unexpected_response" | "captcha_unavailable" | "turnstile_failed" | "init_data_invalid" | "init_data_expired" | "challenge_not_found" | "challenge_expired" | "challenge_used" | "wrong_user" | "not_captcha_restricted" | "unmute_failed";
+        /**
+         * EventRejectReason
+         * @description Why ``/api/v1/captcha/events`` refused a report (API error codes).
+         * @enum {string}
+         */
+        EventRejectReason: "init_data_invalid" | "init_data_expired" | "challenge_not_found" | "rate_limited" | "invalid_event";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -280,6 +382,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CaptchaError"];
+                };
+            };
+        };
+    };
+    reportCaptchaEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptchaEventRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description init_data_invalid、init_data_expired */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptchaEventError"];
+                };
+            };
+            /** @description challenge_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptchaEventError"];
+                };
+            };
+            /** @description invalid_event */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptchaEventError"];
+                };
+            };
+            /** @description rate_limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptchaEventError"];
                 };
             };
         };

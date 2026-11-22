@@ -26,6 +26,7 @@ def _base_app(**kwargs: Any) -> FastAPI:
     app = FastAPI(title="AkkiaBot", version=__version__, **kwargs)
     app.include_router(health.router)
     app.include_router(captcha.router)
+    app.include_router(captcha.event_router)
     return app
 
 
