@@ -25,11 +25,10 @@ from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import run_acceptance
 from akkiabot_e2e.scenarios import SCENARIOS
 from akkiabot_e2e.telethon_transport import TEST_DC_ADDRESSES, TelethonAccount
-from akkiabot_e2e.testing import live_env
+from akkiabot_e2e.testing import MOCK_ADMIN_SESSION, MOCK_API_HASH, live_env
 
-# mock: 人工构造的不可用 api_hash 与会话占位值，不是凭据。
-API = ApiCredentials(api_id=1, api_hash=Secret("mock-api-hash"))
-SESSION = Secret("mock-session")
+API = ApiCredentials(api_id=1, api_hash=Secret(MOCK_API_HASH))
+SESSION = Secret(MOCK_ADMIN_SESSION)
 
 
 def rpc(code: int, message: str, request: Any = None) -> errors.RPCError:
