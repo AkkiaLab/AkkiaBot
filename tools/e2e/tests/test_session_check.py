@@ -20,12 +20,13 @@ from telethon.tl.types import RpcError
 from akkiabot_e2e import cli, telethon_transport
 from akkiabot_e2e.config import ApiCredentials
 from akkiabot_e2e.errors import RateLimitExceeded, SessionInvalid, TelegramUnavailable
+from akkiabot_e2e.files import write_private_file
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.report import Report
 from akkiabot_e2e.runner import run_acceptance
 from akkiabot_e2e.scenarios import SCENARIOS
 from akkiabot_e2e.telethon_transport import TEST_DC_ADDRESSES, TelethonAccount
-from akkiabot_e2e.testing import MOCK_ADMIN_SESSION, MOCK_API_HASH, live_env
+from akkiabot_e2e.testing import MOCK_ADMIN_SESSION, MOCK_API_HASH, MOCK_MEMBER_SESSION, live_env
 
 API = ApiCredentials(api_id=1, api_hash=Secret(MOCK_API_HASH))
 SESSION = Secret(MOCK_ADMIN_SESSION)
@@ -152,14 +153,99 @@ async def test_server_error_on_get_config_is_temporary(monkeypatch: pytest.Monke
     assert "不要重新登录" in str(info.value)
 
 
+class OfflineDC:
+    """A real ``TelegramClient`` (including its own ``connect()``) whose network
+    boundary, the MTProto sender, answers every request with ``-500 No workers running``.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.sends: list[str] = []
+        self.disconnects = 0
+        real_client = telethon_transport._client
+
+        def client(api: ApiCredentials, session: Secret | None) -> Any:
+            client: Any = real_client(api, None)  # fresh session pinned to test DC2
+
+            async def sender_connect(connection: Any) -> bool:
+                return True
+
+            def send(request: Any, ordered: bool = False) -> asyncio.Future[Any]:
+                self.sends.append(type(request).__name__)
+                future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+                future.set_exception(rpc(-500, "No workers running", request))
+                return future
+
+            real_disconnect = client.disconnect
+
+            def disconnect() -> Any:
+                self.disconnects += 1
+                return real_disconnect()
+
+            client._sender.connect = sender_connect
+            client._sender.send = send
+            client.disconnect = disconnect
+            return client
+
+        monkeypatch.setattr(telethon_transport, "_client", client)
+
+
+async def test_real_connect_with_failing_initial_request_is_temporary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``TelegramClient.connect()`` sends the initial ``help.getConfig`` itself."""
+    dc = OfflineDC(monkeypatch)
+    with pytest.raises(TelegramUnavailable) as info:
+        await TelethonAccount.connect(API, SESSION, "admin")
+    assert "DC2" in str(info.value)
+    assert "-500 No workers running" in str(info.value)
+    assert "e2e-login" not in str(info.value)
+    assert dc.sends == ["InvokeWithLayerRequest"]
+    assert dc.disconnects == 1
+
+    with pytest.raises(TelegramUnavailable):
+        await telethon_transport.check_test_environment(API)
+    assert dc.disconnects == 2
+
+
+def test_cli_exit_code_75_when_the_initial_request_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dc = OfflineDC(monkeypatch)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "VaultAllowlist", lambda vault: object())
+    monkeypatch.setattr(cli, "_vault", lambda: object())
+    monkeypatch.setattr(cli, "_setup_logging", lambda: None)
+    for command in (["prune-groups"], ["check-env"]):
+        assert cli.main(command, env=live_env()) == cli.EXIT_TEMPFAIL
+        err = capsys.readouterr().err
+        assert "DC2" in err
+        assert "e2e-login" not in err
+    assert dc.disconnects == 2
+
+
+def test_session_store_names_the_role_when_the_session_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use(monkeypatch, FakeClient(get_state=rpc(401, "AUTH_KEY_UNREGISTERED")))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    session_file = tmp_path / "member.session"
+    write_private_file(session_file, MOCK_MEMBER_SESSION + "\n")
+    args = ["session-store", "--role", "member", "--session-file", str(session_file)]
+    assert cli.main(args, env=live_env()) == cli.EXIT_SESSION_INVALID
+    err = capsys.readouterr().err
+    assert "just e2e-login member" in err
+    assert "e2e-login session" not in err
+    assert session_file.exists()
+
+
 async def test_real_telethon_surfaces_the_server_error_after_its_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Local -500 simulation through Telethon's own request / retry loop.
+    """Requests after ``connect()`` go through Telethon's own request / retry loop.
 
-    Only the network sender is replaced: every request is answered with
-    ``rpc_error -500 No workers running``. Without ``raise_last_call_error``
-    Telethon would give up with a bare ``ValueError``.
+    ``connect()`` is covered above; here it is skipped so the -500 hits
+    ``updates.getState``. Without ``raise_last_call_error`` Telethon would give
+    up with a bare ``ValueError``.
     """
     sends: list[str] = []
 

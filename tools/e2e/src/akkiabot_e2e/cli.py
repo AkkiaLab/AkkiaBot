@@ -254,7 +254,7 @@ def _cmd_session_store(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     async def locked_user() -> UserInfo:
         # Connecting with an existing session: same lock as `run` / `bootstrap-bot`.
         async with session_lock():
-            return await session_user(api, session)
+            return await session_user(api, session, args.role)
 
     user = asyncio.run(locked_user())
     _store_session(args.role, user.id, session)

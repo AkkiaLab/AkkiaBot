@@ -283,8 +283,9 @@ class TelethonAccount:
     @classmethod
     async def connect(cls, api: ApiCredentials, session: Secret, role: str) -> TelethonAccount:
         client = _client(api, session)
-        await client.connect()
         try:
+            # connect() itself already sends the initial help.getConfig.
+            await client.connect()
             await ensure_test_environment(client)
             await _check_session(client)
             # Fill the entity cache so chats / users can be addressed by id.
@@ -653,9 +654,10 @@ class TelethonLogin:
 async def check_test_environment(api: ApiCredentials) -> int:
     """Connect without logging in and confirm the server is the test environment."""
     client: Any = _client(api, None)
-    await client.connect()
     try:
         try:
+            # connect() itself already sends the initial help.getConfig.
+            await client.connect()
             await ensure_test_environment(client)
         except Exception as exc:
             translated = _connect_failure(exc, client, None)
@@ -667,8 +669,8 @@ async def check_test_environment(api: ApiCredentials) -> int:
         await _disconnect(client)
 
 
-async def session_user(api: ApiCredentials, session: Secret) -> UserInfo:
-    account = await TelethonAccount.connect(api, session, "session")
+async def session_user(api: ApiCredentials, session: Secret, role: str) -> UserInfo:
+    account = await TelethonAccount.connect(api, session, role)
     try:
         return await account.me()
     finally:
