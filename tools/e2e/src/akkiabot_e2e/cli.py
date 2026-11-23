@@ -30,7 +30,7 @@ from akkiabot_e2e.config import (
     load_config,
     missing_variables,
 )
-from akkiabot_e2e.errors import E2EError
+from akkiabot_e2e.errors import E2EError, SessionInvalid, TelegramUnavailable
 from akkiabot_e2e.files import (
     ensure_private_dir,
     read_private_file,
@@ -72,6 +72,11 @@ from akkiabot_e2e.vault import BOT_ITEM, E2E_ITEM, FieldValue, Vault, shred_file
 from akkiabot_e2e.web import HttpWebProbe
 
 EXIT_PASSED, EXIT_FAILED, EXIT_USAGE, EXIT_SKIPPED = 0, 1, 2, 77
+#: Telegram rejected the stored session: log in again (``just e2e-login <role>``).
+EXIT_SESSION_INVALID = 3
+#: Temporary Telegram failure (server error such as -500, or flood wait) while
+#: connecting: retry later, do NOT log in again. 75 is EX_TEMPFAIL (sysexits.h).
+EXIT_TEMPFAIL = 75
 DEFAULT_ENV_FILE = Path("tools/e2e/staging.env.tpl")
 
 
@@ -249,7 +254,7 @@ def _cmd_session_store(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     async def locked_user() -> UserInfo:
         # Connecting with an existing session: same lock as `run` / `bootstrap-bot`.
         async with session_lock():
-            return await session_user(api, session)
+            return await session_user(api, session, args.role)
 
     user = asyncio.run(locked_user())
     _store_session(args.role, user.id, session)
@@ -510,7 +515,15 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     if args.record_status:
         state = record_status(args.record_status, report, repo=repo)
         print(f"已写入 commit status {STATUS_CONTEXT}={state}（{args.record_status}）")
-    return EXIT_PASSED if report.status == "passed" else EXIT_FAILED
+    if report.status == "passed":
+        return EXIT_PASSED
+    return _SETUP_FAILURE_EXIT.get(report.setup_failure or "", EXIT_FAILED)
+
+
+_SETUP_FAILURE_EXIT = {
+    "session_invalid": EXIT_SESSION_INVALID,
+    "telegram_unavailable": EXIT_TEMPFAIL,
+}
 
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
@@ -546,6 +559,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             case "prune-groups":
                 _setup_logging()
                 return asyncio.run(_prune(env, apply=args.apply))
+    except SessionInvalid as exc:
+        print(f"错误：{redact(str(exc))}", file=sys.stderr)
+        return EXIT_SESSION_INVALID
+    except TelegramUnavailable as exc:
+        print(f"暂时故障：{redact(str(exc))}", file=sys.stderr)
+        return EXIT_TEMPFAIL
     except (E2EError, ValueError) as exc:
         print(f"错误：{redact(str(exc))}", file=sys.stderr)
         return EXIT_USAGE

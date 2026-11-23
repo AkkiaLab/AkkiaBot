@@ -136,7 +136,7 @@ async def test_session_store_waits_for_lock_before_connecting(
     write_private_file(session_file, MOCK_ADMIN_SESSION + "\n")
     calls: list[str] = []
 
-    async def session_user(api, session) -> UserInfo:
+    async def session_user(api, session, role) -> UserInfo:
         calls.append(session.reveal())
         return ADMIN
 

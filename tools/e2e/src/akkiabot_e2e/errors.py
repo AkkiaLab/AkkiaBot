@@ -23,6 +23,25 @@ class FloodWait(E2EError):  # noqa: N818 - mirrors Telegram's FLOOD_WAIT naming
         self.seconds = seconds
 
 
+class SessionInvalid(E2EError):  # noqa: N818 - reads better in reports
+    """Telegram rejected the stored session (e.g. ``AUTH_KEY_UNREGISTERED``).
+
+    The only case where logging in again (``just e2e-login <role>``) helps.
+    """
+
+
+class TelegramUnavailable(E2EError):  # noqa: N818 - reads better in reports
+    """A temporary Telegram failure while connecting: server error or flood wait.
+
+    The session is fine; retry later instead of logging in again. ``retry_after``
+    is the wait Telegram asked for (flood wait), ``None`` for server errors.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class RateLimitExceeded(E2EError):  # noqa: N818 - reads better in reports
     """A flood wait was longer than we are willing to sleep; the run must stop."""
 
