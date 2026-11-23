@@ -12,6 +12,9 @@ from akkiabot_e2e.redaction import Redactor
 from akkiabot_e2e.scenarios import Status
 
 Overall = Literal["passed", "failed", "skipped"]
+#: ``session_invalid``: Telegram rejected the session; ``telegram_unavailable``:
+#: server error or flood wait while connecting (the session is fine).
+SetupFailure = Literal["session_invalid", "telegram_unavailable"]
 
 _ICONS: dict[str, str] = {"passed": "✅", "failed": "❌", "error": "💥", "skipped": "⏭️"}
 
@@ -68,6 +71,10 @@ class Report:
     test_keys: list[str] = field(default_factory=list)
     """Scenarios run on Cloudflare's official Turnstile test keys and the keys
     used: a class of evidence of its own, never a real challenge."""
+    setup_failure: SetupFailure | None = None
+    """Why setup failed when it was about the Telegram session, so the CLI can
+    tell an expired session (log in again) from a temporary Telegram failure
+    (retry later) by exit code."""
 
     def finish(self) -> None:
         """Overall status.

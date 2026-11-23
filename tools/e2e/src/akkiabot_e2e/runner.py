@@ -17,7 +17,9 @@ from akkiabot_e2e.errors import (
     RateLimitExceeded,
     SafetyError,
     ScenarioSkipped,
+    SessionInvalid,
     SideEffectsUnsettled,
+    TelegramUnavailable,
 )
 from akkiabot_e2e.group import GroupRegistry, fresh_group_title, prepare_group
 from akkiabot_e2e.langfuse import LangfuseProbe
@@ -126,7 +128,14 @@ async def run_acceptance(
             report.detail = f"准备阶段失败：{exc}"
             # Every scenario is still listed: selected ones as not run because
             # of the actual cause, the others as not selected.
-            if isinstance(exc, RateLimitExceeded):
+            if isinstance(exc, SessionInvalid):
+                report.setup_failure = "session_invalid"
+            elif isinstance(exc, TelegramUnavailable):
+                report.setup_failure = "telegram_unavailable"
+            rate_limited = isinstance(exc, RateLimitExceeded) or (
+                isinstance(exc, TelegramUnavailable) and exc.retry_after is not None
+            )
+            if rate_limited:
                 cause = ("rate_limited", "准备阶段因限流中止，未执行")
             else:
                 cause = ("aborted", "准备阶段失败，运行中止，未执行")
