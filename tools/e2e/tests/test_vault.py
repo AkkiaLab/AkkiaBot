@@ -243,7 +243,7 @@ def test_session_store_cli_writes_vault_then_deletes_file(
     op.fail = "edit"
     monkeypatch.setattr(cli, "_vault", lambda: Vault(run=op))
 
-    async def session_user(api, session):
+    async def session_user(api, session, role):
         return ADMIN
 
     monkeypatch.setattr("akkiabot_e2e.telethon_transport.session_user", session_user)

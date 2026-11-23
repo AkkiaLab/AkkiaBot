@@ -18,7 +18,14 @@ from telethon.errors import rpcerrorlist
 from telethon.sessions import StringSession
 
 from akkiabot_e2e.config import ApiCredentials
-from akkiabot_e2e.errors import E2EError, FloodWait, InviteFailed, SafetyError
+from akkiabot_e2e.errors import (
+    E2EError,
+    FloodWait,
+    InviteFailed,
+    SafetyError,
+    SessionInvalid,
+    TelegramUnavailable,
+)
 from akkiabot_e2e.login import Ask
 from akkiabot_e2e.redaction import Secret
 from akkiabot_e2e.transport import Button, ChatRef, Entity, Msg, Role, UserInfo
@@ -83,6 +90,9 @@ def _client(api: ApiCredentials, session: Secret | None) -> TelegramClient:
         api.api_id,
         api.api_hash.reveal(),
         flood_sleep_threshold=0,
+        # After its internal retries Telethon would otherwise raise a bare
+        # ValueError instead of the last ServerError / TimedOutError.
+        raise_last_call_error=True,
         receive_updates=False,
         device_model="akkiabot-e2e",
     )
@@ -104,11 +114,63 @@ async def _guard[T](awaitable: Awaitable[T]) -> T:
         raise FloodWait(float(getattr(exc, "seconds", 0) or 60)) from None
 
 
-def _invite_error(user_id: int, exc: errors.RPCError) -> str:
+def _rpc_name(exc: errors.RPCError) -> str:
     # Instances only carry the generic HTTP-ish message (e.g. FORBIDDEN): map the class back.
     codes = [k for k, v in rpcerrorlist.rpc_errors_dict.items() if v is type(exc)]
-    code = codes[0] if codes else getattr(exc, "message", None) or type(exc).__name__
-    return f"群主账号把用户 {user_id} 拉入测试群失败：{code}"
+    return codes[0] if codes else getattr(exc, "message", None) or type(exc).__name__
+
+
+def _invite_error(user_id: int, exc: errors.RPCError) -> str:
+    return f"群主账号把用户 {user_id} 拉入测试群失败：{_rpc_name(exc)}"
+
+
+def _dc(client: Any) -> str:
+    dc_id = getattr(getattr(client, "session", None), "dc_id", None)
+    return f"DC{dc_id}" if dc_id else "未知 DC"
+
+
+def _connect_failure(exc: BaseException, client: Any, role: str | None) -> E2EError | None:
+    """Translate an error raised while connecting / checking a session.
+
+    Only authorization errors mean the session is gone. Server errors (e.g.
+    ``-500 No workers running``) and flood waits are temporary: logging in again
+    would not help and burns the login rate limit. ``role`` is ``None`` when no
+    session is involved (``check-env``).
+    """
+    who = f"连接 {role} 账号时" if role else "连接时"
+    not_expired = "这不是会话失效，不要重新登录"
+    if role and isinstance(exc, errors.UnauthorizedError | errors.AuthKeyError):
+        return SessionInvalid(
+            f"{role} 会话已失效（{_rpc_name(exc)}），请重新执行 just e2e-login {role} 并更新 1Password"
+        )
+    if isinstance(exc, errors.ServerError | errors.TimedOutError):
+        code = getattr(exc, "code", None)
+        message = getattr(exc, "message", None) or type(exc).__name__
+        return TelegramUnavailable(
+            f"{who} Telegram 测试环境 {_dc(client)} 暂时故障（{code} {message}）："
+            f"{not_expired}，请稍后重试"
+        )
+    seconds: float | None = None
+    if isinstance(exc, FloodWait):
+        seconds = exc.seconds
+    elif isinstance(exc, errors.FloodError):
+        seconds = float(getattr(exc, "seconds", 0) or 60)
+    if seconds is not None:
+        return TelegramUnavailable(
+            f"{who} Telegram 测试环境 {_dc(client)} 限流，要求等待 {seconds:g} 秒："
+            f"{not_expired}，请等待后重试",
+            retry_after=seconds,
+        )
+    return None
+
+
+async def _check_session(client: Any) -> None:
+    """Make one request that needs authorization.
+
+    Not ``client.is_user_authorized()``: it swallows every ``RPCError`` (server
+    errors included) and returns ``False``, which reads as "session expired".
+    """
+    await client(functions.updates.GetStateRequest())
 
 
 def _check_invited(user_id: int, result: Any) -> None:
@@ -221,17 +283,20 @@ class TelethonAccount:
     @classmethod
     async def connect(cls, api: ApiCredentials, session: Secret, role: str) -> TelethonAccount:
         client = _client(api, session)
-        await client.connect()
-        await ensure_test_environment(client)
-        if not await client.is_user_authorized():
+        try:
+            # connect() itself already sends the initial help.getConfig.
+            await client.connect()
+            await ensure_test_environment(client)
+            await _check_session(client)
+            # Fill the entity cache so chats / users can be addressed by id.
+            await _guard(client.get_dialogs(limit=200))
+        except Exception as exc:
             await _disconnect(client)
-            raise SafetyError(
-                f"{role} 会话已失效，请重新执行 just e2e-login {role} 并更新 1Password"
-            )
-        account = cls(client)
-        # Fill the entity cache so chats / users can be addressed by id.
-        await _guard(client.get_dialogs(limit=200))
-        return account
+            translated = _connect_failure(exc, client, role)
+            if translated is None:
+                raise
+            raise translated from None
+        return cls(client)
 
     async def _chat(self, chat_id: int) -> Any:
         try:
@@ -589,16 +654,23 @@ class TelethonLogin:
 async def check_test_environment(api: ApiCredentials) -> int:
     """Connect without logging in and confirm the server is the test environment."""
     client: Any = _client(api, None)
-    await client.connect()
     try:
-        await ensure_test_environment(client)
+        try:
+            # connect() itself already sends the initial help.getConfig.
+            await client.connect()
+            await ensure_test_environment(client)
+        except Exception as exc:
+            translated = _connect_failure(exc, client, None)
+            if translated is None:
+                raise
+            raise translated from None
         return int(client.session.dc_id)
     finally:
         await _disconnect(client)
 
 
-async def session_user(api: ApiCredentials, session: Secret) -> UserInfo:
-    account = await TelethonAccount.connect(api, session, "session")
+async def session_user(api: ApiCredentials, session: Secret, role: str) -> UserInfo:
+    account = await TelethonAccount.connect(api, session, role)
     try:
         return await account.me()
     finally:
