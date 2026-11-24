@@ -35,59 +35,81 @@ def disabled_integrations() -> list[type[Integration]]:
 
 REDACTED = "***"
 
-#: Sentry protocol fields kept verbatim wherever they appear: identifiers,
-#: timestamps and SDK metadata. They never carry application data, and
-#: rewriting one breaks the event (a changed ``event_id`` makes the SDK drop
-#: it) when a short secret happens to match part of it.
-PROTOCOL_FIELDS = frozenset(
-    {
-        "event_id",
-        "trace_id",
-        "span_id",
-        "parent_span_id",
-        "segment_id",
-        "profile_id",
-        "replay_id",
-        "timestamp",
-        "start_timestamp",
-        "type",
-        "level",
-        "platform",
-        "release",
-        "dist",
-        "environment",
-        "server_name",
-        "sdk",
-        "debug_meta",
-    }
-)
+type Spec = bool | dict[str, Spec] | list[Spec]
+"""Where a payload keeps Sentry protocol values verbatim: ``True`` keeps the
+whole value, a dict maps the keys of a dict, a one-item list applies to every
+item of a list. Anything the spec does not name is scrubbed."""
+
+_TRACE_IDS: Spec = {"trace_id": True, "span_id": True, "parent_span_id": True}
+
+#: Protocol values of a breadcrumb (``before_breadcrumb`` and ``breadcrumbs``).
+BREADCRUMB_PROTOCOL: Spec = {"timestamp": True, "type": True, "level": True}
+
+#: Protocol values of an error or transaction event: identifiers, timestamps
+#: and SDK metadata, only at the places the event schema puts them. They carry
+#: no application data, and rewriting one breaks the event (the SDK drops an
+#: event whose ``event_id`` is gone) when a short secret matches part of it.
+#: Application data (``extra``, tags, messages…) is scrubbed even where it
+#: reuses one of these key names.
+EVENT_PROTOCOL: Spec = {
+    "event_id": True,
+    "timestamp": True,
+    "start_timestamp": True,
+    "type": True,
+    "level": True,
+    "platform": True,
+    "release": True,
+    "dist": True,
+    "environment": True,
+    "server_name": True,
+    "sdk": True,
+    "debug_meta": True,
+    "contexts": {
+        "trace": _TRACE_IDS,
+        "profile": {"profile_id": True},
+        "replay": {"replay_id": True},
+    },
+    "spans": [
+        {
+            **_TRACE_IDS,
+            "segment_id": True,
+            "start_timestamp": True,
+            "timestamp": True,
+        }
+    ],
+    "breadcrumbs": {"values": [BREADCRUMB_PROTOCOL]},
+}
 
 
-def secret_scrubber(secrets: Iterable[str]) -> Callable[[Any], Any]:
+def secret_scrubber(secrets: Iterable[str], keep: Spec = False) -> Callable[[Any], Any]:
     """Return a function that copies a Sentry payload with ``secrets`` masked.
 
     Third-party errors can embed secrets in their messages, e.g. PTB's
-    ``InvalidToken`` quotes the bot token. Only values are masked: keys and
-    :data:`PROTOCOL_FIELDS` keep the event's structure intact.
+    ``InvalidToken`` quotes the bot token. Only values are masked (keys stay
+    intact), except the protocol values ``keep`` names.
     """
     # Longest first, so a secret containing another is masked whole.
     masked = sorted({s for s in secrets if s}, key=len, reverse=True)
 
-    def scrub(value: Any) -> Any:
+    def scrub(value: Any, spec: Spec) -> Any:
+        if spec is True:
+            return value
         if isinstance(value, str):
             for secret in masked:
                 value = value.replace(secret, REDACTED)
             return value
         if isinstance(value, dict):
+            keys: dict[str, Spec] = spec if isinstance(spec, dict) else {}
             return {
-                k: v if k in PROTOCOL_FIELDS else scrub(v)
+                k: scrub(v, keys.get(k, False))
                 for k, v in value.items()  # pyright: ignore[reportUnknownVariableType]
             }
         if isinstance(value, (list, tuple)):
-            return [scrub(v) for v in value]  # pyright: ignore[reportUnknownVariableType]
+            item: Spec = spec[0] if isinstance(spec, list) and spec else False
+            return [scrub(v, item) for v in value]  # pyright: ignore[reportUnknownVariableType]
         return value
 
-    return scrub
+    return lambda payload: scrub(payload, keep)
 
 
 def init_sentry(
@@ -109,10 +131,14 @@ def init_sentry(
     import sentry_sdk
     from sentry_sdk.integrations.logging import LoggingIntegration
 
-    scrub = secret_scrubber(secrets)
+    scrub_event = secret_scrubber(secrets, EVENT_PROTOCOL)
+    scrub_breadcrumb = secret_scrubber(secrets, BREADCRUMB_PROTOCOL)
 
-    def scrub_payload(payload: Any, _hint: Any) -> Any:
-        return scrub(payload)
+    def scrub_event_hook(event: Any, _hint: Any) -> Any:
+        return scrub_event(event)
+
+    def scrub_breadcrumb_hook(crumb: Any, _hint: Any) -> Any:
+        return scrub_breadcrumb(crumb)
 
     sentry_sdk.init(
         dsn=settings.sentry_dsn.get_secret_value(),
@@ -126,9 +152,9 @@ def init_sentry(
         # Frame locals hold request URLs with the bot token (``/bot<token>/…``)
         # and user payloads; tracebacks are enough to debug.
         include_local_variables=False,
-        before_send=scrub_payload,
-        before_send_transaction=scrub_payload,
-        before_breadcrumb=scrub_payload,
+        before_send=scrub_event_hook,
+        before_send_transaction=scrub_event_hook,
+        before_breadcrumb=scrub_breadcrumb_hook,
     )
     logger.info(
         "sentry enabled",

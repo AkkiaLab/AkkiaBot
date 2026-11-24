@@ -34,7 +34,11 @@ from akkiabot_core.observability import (
     setup_observability,
     track_handler,
 )
-from akkiabot_core.observability.sentry import secret_scrubber
+from akkiabot_core.observability.sentry import (
+    BREADCRUMB_PROTOCOL,
+    EVENT_PROTOCOL,
+    secret_scrubber,
+)
 
 
 @pytest.fixture
@@ -437,20 +441,35 @@ def test_secret_scrubber_masks_longest_secret_first() -> None:
 
 
 def test_secret_scrubber_keeps_keys_and_protocol_fields() -> None:
-    scrub = secret_scrubber(["ab12"])
+    scrub = secret_scrubber(["ab12"], EVENT_PROTOCOL)
     event = {
         "event_id": "00000000000000000000000000ab12",
-        "contexts": {"trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12"}},
+        "contexts": {
+            "trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12", "op": "ab12"},
+            "app": {"trace_id": "ab12"},  # custom context reusing a protocol name
+        },
         "sdk": {"name": "sentry.python", "version": "ab12"},
-        "extra": {"ab12": "x ab12 y"},
+        "breadcrumbs": {"values": [{"type": "ab12", "message": "ab12", "data": {"type": "ab12"}}]},
+        "spans": [{"span_id": "ab12ab12ab12ab12", "description": "ab12"}],
+        "extra": {"ab12": "x ab12 y", "type": "ab12", "sdk": {"detail": "ab12"}},
         "message": "pw ab12",
     }
     assert scrub(event) == {
         "event_id": "00000000000000000000000000ab12",
-        "contexts": {"trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12"}},
+        "contexts": {
+            "trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12", "op": "***"},
+            "app": {"trace_id": "***"},
+        },
         "sdk": {"name": "sentry.python", "version": "ab12"},
-        "extra": {"ab12": "x *** y"},
+        "breadcrumbs": {"values": [{"type": "ab12", "message": "***", "data": {"type": "***"}}]},
+        "spans": [{"span_id": "ab12ab12ab12ab12", "description": "***"}],
+        "extra": {"ab12": "x *** y", "type": "***", "sdk": {"detail": "***"}},
         "message": "pw ***",
+    }
+    crumb = secret_scrubber(["ab12"], BREADCRUMB_PROTOCOL)
+    assert crumb({"level": "ab12", "data": {"level": "ab12"}}) == {
+        "level": "ab12",
+        "data": {"level": "***"},
     }
 
 
@@ -459,7 +478,8 @@ def test_short_secret_matching_protocol_fields_still_sends_event(
 ) -> None:
     """Real SDK, in-memory transport: short secrets that are part of the
     ``event_id`` key, its value or the trace ids must not break (and so drop)
-    the event."""
+    the event, and application data reusing protocol key names is still
+    masked (here through the logging integration, like the app's errors)."""
     import sentry_sdk
     from sentry_sdk.envelope import Envelope
     from sentry_sdk.transport import Transport
@@ -489,14 +509,29 @@ def test_short_secret_matching_protocol_fields_still_sends_event(
             sentry_sdk.capture_event(
                 {"event_id": event_id, "message": f"db password {mock_password} rejected"}
             )
+        logging.getLogger("akkiabot.test.sentry").error(
+            "login failed: %s",
+            mock_password,
+            extra={
+                "detail": mock_password,
+                "type": mock_password,
+                "sdk": {"detail": mock_password},
+            },
+        )
         sentry_sdk.flush()
     finally:
         sentry_sdk.get_client().close()
         sentry_sdk.get_global_scope().set_client(None)
 
-    (event,) = events
+    event, logged = events
     assert event["event_id"] == event_id
     assert event["message"] == "db password *** rejected"
     assert event["extra"][f"key-{mock_password}"] == "value ***"
     assert event["contexts"]["trace"]["trace_id"] == trace_id
     assert event["release"] == "akkiabot@test"
+    # Application data is masked even under protocol key names.
+    assert logged["extra"]["detail"] == "***"
+    assert logged["extra"]["type"] == "***"
+    assert logged["extra"]["sdk"] == {"detail": "***"}
+    assert logged["logentry"]["params"] == ["***"]
+    assert logged["sdk"]["name"].startswith("sentry.python")  # SDK metadata is kept
