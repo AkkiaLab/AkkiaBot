@@ -120,7 +120,7 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 
 | 规则 | 条件 | 持续 | 无数据时 |
 | --- | --- | --- | --- |
-| bot 停止接收 update | `time() - telegram_poll_last_success_timestamp_seconds > 300` | 2 分钟 | OK（webhook 模式、app 停止时由 `/readyz` 告警覆盖） |
+| bot 停止接收 update | `time() - telegram_poll_last_success_timestamp_seconds > 120` | 1 分钟（polling 停止后约 3–4 分钟触发，§5.2） | OK（webhook 模式、app 停止时由 `/readyz` 告警覆盖） |
 | `/readyz` 失败 | `min(probe_success{job="akkiabot-readyz"}) < 1` | 2 分钟 | **告警**（所有环境都没有数据时） |
 | 环境停止上报（每个预期环境一条） | `absent(probe_success{job="akkiabot-readyz", env="<env>"})` | 2 分钟（加上 5 分钟回溯，约 7 分钟触发） | OK（正常上报时 absent 没有结果） |
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
@@ -163,6 +163,42 @@ docker compose stop redis      # /readyz 返回 503，probe_success 变为 0
 # Grafana → Alerting → Alert rules → AkkiaBot：/readyz 失败 先 Pending，2 分钟后 Firing
 docker compose start redis     # 恢复后规则回到 Normal
 ```
+
+### 5.2 polling 存活告警
+
+“bot 停止接收 update”只看 polling 心跳，不依赖 app 自己发现故障：进程和 `/readyz` 都正常、但 python-telegram-bot 已经中止了拉取循环（例如收到一次 `InvalidToken` 后不再重试）时，心跳时间戳不再更新，告警照样触发。
+
+- 阈值：python-telegram-bot 的长轮询默认约每 10 秒返回一次，抓取间隔 30 秒，所以健康时 `time() - 心跳` 远低于阈值；取 120 秒是给正常的重启、发布留出余量。规则持续 1 分钟才触发（每分钟评估一次）。
+- 触发时间：表达式减去的是最后一次成功 polling 的时间戳，从这一刻起算。只要该样本持续上报、可以查询到，`time() - 心跳` 就会随时间增长：超过 120 秒之后的第一次评估进入 Pending（0–1 分钟内），再过一次评估进入 Firing，合计约 3–4 分钟。抓取间隔只影响最新心跳样本何时可见，不改变这个量级。作为对比，原来的 300 秒 + 2 分钟约需 7–8 分钟，例如一次持续 5 分钟后被重启恢复的中断就不会告警。
+- 通知：与其他规则相同，见 §5 末尾和 §5.1（默认 contact point；配置了签名 webhook 时同时发给 webhook）。
+- 处置：先看 app 日志中 telegram 相关的错误；拉取循环已中止、进程仍在运行时，重启 app 即可恢复。
+
+演练（只在预发布环境做，且确认没有人在用预发布 bot 做测试）：在 app 容器的网络命名空间里临时丢弃发往 Telegram 的流量，进程、`/readyz` 和指标抓取都不受影响，只有心跳停止更新。用 `DROP` 而不是 `REJECT`：连接超时在 python-telegram-bot 里按 `TimedOut` 静默重试，不会产生 error 日志和 Sentry 事件。
+
+注入前先在本机构建一个带 iptables 的工具镜像，注入和清理都用它，清理时不依赖联网；构建失败就不要注入。
+
+```bash
+cd /srv/akkiabot/staging
+# 1. 准备：离线可复用的工具镜像（失败则停止，不注入）
+printf 'FROM alpine:3\nRUN apk add --no-cache iptables ip6tables\n' | docker build -q -t akkiabot-netdrill - || exit 1
+app=$(docker compose ps -q app)
+# 按 app 容器内的解析结果取 Telegram Bot API 的地址（经代理或 fake-ip DNS 时不是 Telegram 的公网地址段）
+ips=$(docker exec "$app" getent ahosts api.telegram.org | awk '{print $1}' | sort -u | tr '\n' ' ')
+[ -n "$ips" ] || exit 1
+drill() {  # drill -I 注入 / drill -D 清理；规则留在 app 的网络命名空间里，直到删除或 app 重建
+  docker run --rm --net "container:$app" --cap-add NET_ADMIN -e IPS="$ips" -e OP="$1" akkiabot-netdrill sh -c '
+    for ip in $IPS; do case $ip in *:*) ip6tables "$OP" OUTPUT -d "$ip" -j DROP;; *) iptables "$OP" OUTPUT -d "$ip" -j DROP;; esac; done'
+}
+# 2. 注入
+drill -I
+# Grafana → Alerting → Alert rules → AkkiaBot：bot 停止接收 update（env=staging）约 3–4 分钟后进入 Firing
+# 3. 清理，并核对两种地址族都已没有 DROP 规则（两行输出都应为空）
+drill -D
+docker run --rm --net "container:$app" --cap-add NET_ADMIN akkiabot-netdrill sh -c 'iptables -S OUTPUT | grep DROP; ip6tables -S OUTPUT | grep DROP'
+# 4. 心跳在一个长轮询周期内恢复（dashboard“距上次成功轮询的时间”回落），规则回到 Normal
+```
+
+演练期间 `/readyz` 保持 200，app 日志没有 error。
 
 ## 6. 本地开发
 
