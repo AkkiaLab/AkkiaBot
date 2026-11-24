@@ -264,6 +264,26 @@ class Settings(BaseSettings):
         data["db"]["url"] = self.db.safe_url
         return data
 
+    def secret_values(self) -> tuple[str, ...]:
+        """Every configured secret (:class:`SecretStr` values and the database
+        password), for scrubbing error reports."""
+        found = _secret_values(self)
+        if password := make_url(self.db.url).password:
+            found.append(str(password))
+        return tuple(found)
+
+
+def _secret_values(model: BaseModel) -> list[str]:
+    found: list[str] = []
+    for name in type(model).model_fields:
+        value = getattr(model, name)
+        if isinstance(value, SecretStr):
+            if secret := value.get_secret_value():
+                found.append(secret)
+        elif isinstance(value, BaseModel):
+            found.extend(_secret_values(value))
+    return found
+
 
 class _DatabaseOnly(BaseSettings):
     model_config = _SETTINGS_CONFIG
