@@ -276,9 +276,11 @@ cd /srv/akkiabot/production
 install -d -m 700 backups                           # 已存在时不会改动内容
 ./backup.sh >> backups/backup.log 2>&1 && tail -n 1 backups/backup.log   # 先手动跑一次，确认能生成备份
 crontab -e
-# 每天 03:17（服务器时区）备份生产库
-17 3 * * * cd /srv/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+# 每天 19:17 UTC（北京时间 03:17，低峰）备份生产库；服务器时区为 UTC
+17 19 * * * cd /srv/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
 ```
+
+crontab 的时刻按服务器本地时区解释，服务器统一使用 UTC，所以上面直接写 UTC 时刻。Debian 自带的 cron 不支持 `CRON_TZ`，不要靠它指定时区。修改服务器时区前，先把调度换算到新时区再改；在调度改好到时区切换完成之间，可能多跑一次或少跑一次，按数量轮转，不影响已有备份。
 
 备份保存在同一台服务器上，只能应对误操作和升级失败。需要防范整机故障时，再用 rclone 等工具把 `backups/` 同步到异地存储，这部分由维护者决定，暂不在本仓库实现。Redis 只用作缓存，不需要备份。
 
