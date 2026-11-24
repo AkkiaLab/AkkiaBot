@@ -547,7 +547,12 @@ def test_httpx_breadcrumbs_and_spans_are_scrubbed(
     """Real SDK with tracing, in-memory transport: a Bot API call through httpx
     inside a transaction, then an error. The httpx integration records the
     request URL (``/bot<token>/…``) in the breadcrumb ``data.url`` and the
-    ``http.client`` span description; neither event may carry the token."""
+    ``http.client`` span description; neither event may carry the token.
+
+    The SDK does not attach scope breadcrumbs to transactions, so an event
+    processor adds an httpx-shaped breadcrumb with the raw request URL to the
+    transaction: it then goes through ``before_send_transaction`` like the
+    error event's breadcrumbs go through ``before_send``."""
     import httpx
     import sentry_sdk
     from sentry_sdk.envelope import Envelope
@@ -555,6 +560,17 @@ def test_httpx_breadcrumbs_and_spans_are_scrubbed(
 
     envelopes: list[bytes] = []
     payloads: list[dict[str, Any]] = []
+    requested: list[str] = []
+
+    def bot_api(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url.copy_with(query=None)))
+        return httpx.Response(401, json={})
+
+    def add_transaction_crumb(event: Any, _hint: Any) -> Any:
+        if event.get("type") == "transaction":
+            crumb = {"type": "http", "category": "httplib", "data": {"url": requested[0]}}
+            event.setdefault("breadcrumbs", {"values": []})["values"].append(crumb)
+        return event
 
     class Capturing(Transport):
         def capture_envelope(self, envelope: Envelope) -> None:
@@ -578,13 +594,12 @@ def test_httpx_breadcrumbs_and_spans_are_scrubbed(
             # Breadcrumbs recorded by earlier tests are inherited: start clean.
             for s in (sentry_sdk.get_global_scope(), scope, sentry_sdk.get_current_scope()):
                 s.clear_breadcrumbs()
+            scope.add_event_processor(add_transaction_crumb)
             transaction = sentry_sdk.start_transaction(op="telegram.poll", name="poll")
             with transaction:
                 # Root span data ends up in ``contexts.trace`` of both events.
                 transaction.set_data("url", url)
-                client = httpx.Client(
-                    transport=httpx.MockTransport(lambda _req: httpx.Response(401, json={}))
-                )
+                client = httpx.Client(transport=httpx.MockTransport(bot_api))
                 with client:
                     assert client.post(url, params={"offset": 1}).status_code == 401
                 logging.getLogger("akkiabot.test.sentry").error("getUpdates rejected")
@@ -594,14 +609,14 @@ def test_httpx_breadcrumbs_and_spans_are_scrubbed(
         sentry_sdk.get_global_scope().set_client(None)
 
     assert no_network == []
+    assert requested == [url]
     redacted_url = "https://api.telegram.org/bot***/getUpdates"
     (error,) = [p for p in payloads if p.get("type") != "transaction"]
     (trace,) = [p for p in payloads if p.get("type") == "transaction"]
 
-    (crumb,) = [c for c in error["breadcrumbs"]["values"] if c.get("category") == "httplib"]
-    assert crumb["data"]["url"] == redacted_url
-    for crumb in trace.get("breadcrumbs", {}).get("values", []):
-        assert crumb.get("data", {}).get("url", redacted_url) == redacted_url
+    for event in (error, trace):
+        (crumb,) = [c for c in event["breadcrumbs"]["values"] if c.get("category") == "httplib"]
+        assert crumb["data"]["url"] == redacted_url
 
     (span,) = [s for s in trace["spans"] if s["op"] == "http.client"]
     assert span["description"] == f"POST {redacted_url}"
