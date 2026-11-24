@@ -35,12 +35,40 @@ def disabled_integrations() -> list[type[Integration]]:
 
 REDACTED = "***"
 
+#: Sentry protocol fields kept verbatim wherever they appear: identifiers,
+#: timestamps and SDK metadata. They never carry application data, and
+#: rewriting one breaks the event (a changed ``event_id`` makes the SDK drop
+#: it) when a short secret happens to match part of it.
+PROTOCOL_FIELDS = frozenset(
+    {
+        "event_id",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "segment_id",
+        "profile_id",
+        "replay_id",
+        "timestamp",
+        "start_timestamp",
+        "type",
+        "level",
+        "platform",
+        "release",
+        "dist",
+        "environment",
+        "server_name",
+        "sdk",
+        "debug_meta",
+    }
+)
+
 
 def secret_scrubber(secrets: Iterable[str]) -> Callable[[Any], Any]:
     """Return a function that copies a Sentry payload with ``secrets`` masked.
 
     Third-party errors can embed secrets in their messages, e.g. PTB's
-    ``InvalidToken`` quotes the bot token.
+    ``InvalidToken`` quotes the bot token. Only values are masked: keys and
+    :data:`PROTOCOL_FIELDS` keep the event's structure intact.
     """
     # Longest first, so a secret containing another is masked whole.
     masked = sorted({s for s in secrets if s}, key=len, reverse=True)
@@ -51,7 +79,10 @@ def secret_scrubber(secrets: Iterable[str]) -> Callable[[Any], Any]:
                 value = value.replace(secret, REDACTED)
             return value
         if isinstance(value, dict):
-            return {scrub(k): scrub(v) for k, v in value.items()}  # pyright: ignore[reportUnknownVariableType]
+            return {
+                k: v if k in PROTOCOL_FIELDS else scrub(v)
+                for k, v in value.items()  # pyright: ignore[reportUnknownVariableType]
+            }
         if isinstance(value, (list, tuple)):
             return [scrub(v) for v in value]  # pyright: ignore[reportUnknownVariableType]
         return value

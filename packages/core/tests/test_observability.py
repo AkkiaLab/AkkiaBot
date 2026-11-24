@@ -434,3 +434,69 @@ def test_sentry_masks_configured_secrets(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_secret_scrubber_masks_longest_secret_first() -> None:
     scrub = secret_scrubber(["abc", "abcdef"])
     assert scrub("x abcdef abc") == "x *** ***"
+
+
+def test_secret_scrubber_keeps_keys_and_protocol_fields() -> None:
+    scrub = secret_scrubber(["ab12"])
+    event = {
+        "event_id": "00000000000000000000000000ab12",
+        "contexts": {"trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12"}},
+        "sdk": {"name": "sentry.python", "version": "ab12"},
+        "extra": {"ab12": "x ab12 y"},
+        "message": "pw ab12",
+    }
+    assert scrub(event) == {
+        "event_id": "00000000000000000000000000ab12",
+        "contexts": {"trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12"}},
+        "sdk": {"name": "sentry.python", "version": "ab12"},
+        "extra": {"ab12": "x *** y"},
+        "message": "pw ***",
+    }
+
+
+def test_short_secret_matching_protocol_fields_still_sends_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real SDK, in-memory transport: short secrets that are part of the
+    ``event_id`` key, its value or the trace ids must not break (and so drop)
+    the event."""
+    import sentry_sdk
+    from sentry_sdk.envelope import Envelope
+    from sentry_sdk.transport import Transport
+
+    events: list[dict[str, Any]] = []
+
+    class Capturing(Transport):
+        def capture_envelope(self, envelope: Envelope) -> None:
+            event = envelope.get_event()
+            if event is not None:
+                events.append(dict(event))
+
+    real_init = sentry_sdk.init
+    monkeypatch.setattr(
+        sentry_sdk, "init", lambda **kwargs: real_init(transport=Capturing(), **kwargs)
+    )
+    mock_password = "ab12"  # mock: 人工构造的短测试密码，不可用
+    mock_key_part = "nt_i"  # mock: 人工构造的短测试密码，恰好是键名 event_id 的一部分
+    event_id = "0123456789abcdef01234567890ab12"[:28] + mock_password
+    trace_id = mock_password * 8
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(settings, release="akkiabot@test", secrets=[mock_password, mock_key_part])
+    try:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_context("trace", {"trace_id": trace_id, "span_id": mock_password * 4})
+            scope.set_extra(f"key-{mock_password}", f"value {mock_password}")
+            sentry_sdk.capture_event(
+                {"event_id": event_id, "message": f"db password {mock_password} rejected"}
+            )
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
+
+    (event,) = events
+    assert event["event_id"] == event_id
+    assert event["message"] == "db password *** rejected"
+    assert event["extra"][f"key-{mock_password}"] == "value ***"
+    assert event["contexts"]["trace"]["trace_id"] == trace_id
+    assert event["release"] == "akkiabot@test"
