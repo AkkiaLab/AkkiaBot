@@ -218,7 +218,8 @@ def verify_init_data(raw: str, bot_token: str, *, max_age: timedelta) -> WebAppI
   - 前端在构建时通过 `VITE_API_BASE_URL` 注入 API 地址；后端的 CORS 只放行 `https://bot.akkia.moe`（以及配置里列出的预览域名）。
   - Mini App 的鉴权依赖请求中携带的 Telegram initData，而不是 Cookie，所以跨域不涉及凭据共享，配置很简单。
   - 备选：也可以用 Cloudflare Worker 把 `bot.akkia.moe/api/*` 转发给 tunnel，做到同源，但多一层需要维护，目前不需要。
-- **健康检查**：`/healthz`（存活）与 `/readyz`（数据库和缓存连通）。
+- **健康检查**：`/healthz`（存活）与 `/readyz`（数据库和缓存连通；polling 模式下还检查 `polling`，即 PTB 的 `getUpdates` 循环是否仍在运行）。
+- **polling 中止后退出**：Telegram 对 `getUpdates` 返回 401/404 时，PTB 会抛出 `InvalidToken` 并永久停止 polling，但进程和 HTTP API 仍在运行。为此做了两层处理。第一层：先间隔 1、2、4 秒重试 `getUpdates`，吸收 Telegram 的瞬时误报。第二层：重试后仍被拒绝时，`/readyz` 的 `polling` 变为 `false`，`akkiabot serve` 优雅停止并以退出码 1 结束，由 `restart: unless-stopped` 重启。只让 healthcheck 变红不够，因为 Docker 不会重启 unhealthy 的容器。PTB 中止时记录的错误是这次事件唯一的一次 error 上报；停止 updater 时会再次抛出同一个异常，这次只记 info，不会重复上报 Sentry。
 
 ### 5.5 可观测性
 

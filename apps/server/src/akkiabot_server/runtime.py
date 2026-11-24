@@ -3,18 +3,29 @@
 :class:`Runtime` owns every long-lived resource. The FastAPI lifespan calls
 :meth:`Runtime.start` / :meth:`Runtime.stop`, so PTB and uvicorn share one
 event loop and shut down together.
+
+In polling mode PTB gives up on ``getUpdates`` for good when Telegram rejects
+the token (``InvalidToken``), yet the process and the HTTP API keep running.
+The runtime watches the polling task: once it dies, ``/readyz`` reports
+``polling: false`` and ``akkiabot serve`` shuts down gracefully with exit
+status 1 so the supervisor restarts it — a container healthcheck
+alone never restarts anything under ``restart: unless-stopped``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from wsgiref.simple_server import WSGIServer
 
 import httpx
 from prometheus_client import start_http_server
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from telegram.ext import Updater
 from telegram.request import BaseRequest
 
 from akkiabot_core.cache import Cache, create_cache
@@ -69,6 +80,25 @@ def silence_token_leaking_logs() -> None:
         logging.getLogger(name).setLevel(level)
 
 
+def _no_exit() -> None:
+    """Default :attr:`Runtime.request_exit`: ``/readyz`` still turns red."""
+
+
+def polling_task(updater: Updater) -> asyncio.Task[None] | None:
+    """The task PTB runs ``getUpdates`` in (``None`` when not polling).
+
+    PTB keeps it private; ``test_polling_task_is_found`` breaks loudly if an
+    upgrade moves it.
+    """
+    task = getattr(updater, "_Updater__polling_task", None)
+    return task if isinstance(task, asyncio.Task) else None
+
+
+def _died(task: asyncio.Task[None]) -> bool:
+    """``task`` ended with an error (not stopped, not cancelled)."""
+    return task.done() and not task.cancelled() and task.exception() is not None
+
+
 def _turnstile(settings: Settings, http: httpx.AsyncClient) -> TurnstileVerifier | None:
     turnstile = settings.turnstile
     if turnstile.secret_key is None:
@@ -93,6 +123,12 @@ class Runtime:
     application: App
     llm: LlmComponents
     _metrics: tuple[WSGIServer, threading.Thread] | None = field(default=None, init=False)
+    _polling: asyncio.Task[None] | None = field(default=None, init=False)
+    _polling_watch: asyncio.Task[None] | None = field(default=None, init=False)
+    polling_failed: bool = field(default=False, init=False)
+    """PTB stopped polling on its own; ``akkiabot serve`` then exits with 1."""
+    request_exit: Callable[[], None] = field(default=_no_exit, init=False)
+    """Called once polling has failed; ``akkiabot serve`` stops uvicorn here."""
 
     @classmethod
     def build(
@@ -202,15 +238,47 @@ class Runtime:
             updater = self.application.updater
             assert updater is not None  # noqa: S101 - polling mode keeps the updater
             await updater.start_polling(allowed_updates=ALLOWED_UPDATES)
+            self._polling = polling_task(updater)
+            if self._polling is not None:
+                self._polling_watch = asyncio.create_task(
+                    self._watch_polling(self._polling), name="akkiabot:polling-watch"
+                )
         logger.info(
             "bot started",
             extra={"mode": telegram.mode, "bot_username": self.application.bot.username},
         )
 
+    async def _watch_polling(self, task: asyncio.Task[None]) -> None:
+        await asyncio.wait((task,))  # never raises the task's error; Runtime.stop cancels us
+        if not _died(task):
+            return
+        self.polling_failed = True
+        # PTB has already logged the error with its traceback (one Sentry event);
+        # keep this a warning so the incident is not reported twice.
+        logger.warning(
+            "telegram polling stopped; shutting down so the process is restarted",
+            extra={"error": type(task.exception()).__name__},
+        )
+        self.request_exit()
+
     async def stop(self) -> None:
+        if self._polling_watch is not None:
+            self._polling_watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._polling_watch
+            self._polling_watch = None
         updater = self.application.updater
         if updater is not None and updater.running:
-            await updater.stop()
+            polling = self._polling
+            try:
+                await updater.stop()
+            except Exception:
+                # Stopping re-raises the error polling died of. It was logged
+                # when it happened; logging it again would be a second report.
+                if polling is None or not _died(polling):
+                    raise
+                logger.info("telegram updater stopped after polling failure")
+        self._polling = None
         if self.application.running:
             await self.application.stop()
         await self.application.shutdown()
@@ -223,7 +291,7 @@ class Runtime:
         logger.info("bot stopped")
 
     async def readiness(self) -> dict[str, bool]:
-        """Per-dependency readiness for ``/readyz``."""
+        """Per-dependency readiness for ``/readyz`` (plus polling, when polling)."""
         checks: dict[str, bool] = {}
         for name, probe in (("db", lambda: ping(self.engine)), ("cache", self.cache.ping)):
             try:
@@ -231,6 +299,8 @@ class Runtime:
             except Exception:
                 logger.warning("readiness check failed", extra={"check": name}, exc_info=True)
                 checks[name] = False
+        if self._polling is not None:
+            checks["polling"] = not self._polling.done()
         return checks
 
     def _start_metrics(self) -> None:

@@ -101,3 +101,31 @@ def test_serve_runs_uvicorn_with_configured_bind(
     (config,) = started
     assert (config.host, config.port, config.log_config) == ("127.0.0.1", 18080, None)
     assert isinstance(config.app, FastAPI)
+
+
+def test_serve_exits_with_failure_after_polling_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+    from fastapi import FastAPI
+
+    monkeypatch.chdir(tmp_path)
+    mock_token = "123456:fake-bot-token-c-for-tests"  # mock: 人工构造、不可用
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", mock_token)
+    monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'bot.db'}")
+    servers: list[uvicorn.Server] = []
+
+    def run(self: uvicorn.Server, *_args: object, **_kwargs: object) -> None:
+        # What the polling watchdog does once PTB gives up polling.
+        app = self.config.app
+        assert isinstance(app, FastAPI)
+        runtime = app.state.runtime
+        runtime.polling_failed = True
+        runtime.request_exit()
+        servers.append(self)
+
+    monkeypatch.setattr(uvicorn.Server, "run", run)
+
+    assert main(["serve"]) == 1
+    (server,) = servers
+    assert server.should_exit  # a graceful uvicorn shutdown, not a signal

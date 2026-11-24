@@ -86,7 +86,8 @@ def _serve() -> int:
         "starting akkiabot",
         extra={"version": __version__, "release": release, "config": settings.redacted()},
     )
-    app = create_app(Runtime.build(settings))
+    runtime = Runtime.build(settings)
+    app = create_app(runtime)
     config = uvicorn.Config(
         app,
         host=settings.server.host,
@@ -96,7 +97,14 @@ def _serve() -> int:
         lifespan="on",
         server_header=False,
     )
-    uvicorn.Server(config).run()
+    server = uvicorn.Server(config)
+    # A graceful stop, like SIGTERM, but without uvicorn re-raising the signal
+    # afterwards, which would replace the exit status below.
+    runtime.request_exit = lambda: setattr(server, "should_exit", True)
+    server.run()
+    if runtime.polling_failed:
+        logger.warning("exiting after telegram polling stopped")
+        return 1
     return 0
 
 

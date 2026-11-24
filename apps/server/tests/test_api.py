@@ -1,8 +1,10 @@
 import asyncio
 import io
+import logging
 import traceback
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 import pytest
@@ -13,9 +15,10 @@ from akkiabot_core.db.migrate import upgrade_engine
 from akkiabot_core.observability import configure_logging
 from akkiabot_server.api import create_app
 from akkiabot_server.api.app import SECRET_HEADER
+from akkiabot_server.bot import polling
 from akkiabot_server.bot.application import ALLOWED_UPDATES
-from akkiabot_server.runtime import Runtime
-from akkiabot_server.testing import FakeBotApi, UpdateFactory, metric_value
+from akkiabot_server.runtime import Runtime, polling_task
+from akkiabot_server.testing import ApiError, FakeBotApi, UpdateFactory, metric_value
 
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_WEBHOOK_SECRET = "test-webhook-secret_123"
@@ -56,7 +59,10 @@ async def test_health_and_readiness(
         assert (await client.get("/healthz")).json() == {"status": "ok"}
         ready = await client.get("/readyz")
         assert ready.status_code == 200
-        assert ready.json() == {"status": "ok", "checks": {"db": True, "cache": True}}
+        assert ready.json() == {
+            "status": "ok",
+            "checks": {"db": True, "cache": True, "polling": True},
+        }
 
 
 async def test_readiness_reports_failing_dependency(
@@ -71,7 +77,10 @@ async def test_readiness_reports_failing_dependency(
     async with serve(runtime) as client:
         ready = await client.get("/readyz")
     assert ready.status_code == 503
-    assert ready.json() == {"status": "unavailable", "checks": {"db": True, "cache": False}}
+    assert ready.json() == {
+        "status": "unavailable",
+        "checks": {"db": True, "cache": False, "polling": True},
+    }
 
 
 async def test_polling_mode_requests_explicit_updates(
@@ -81,6 +90,9 @@ async def test_polling_mode_requests_explicit_updates(
     runtime = build(settings)
     async with serve(runtime) as client:
         await _wait_for(lambda: bool(api.calls_to("getUpdates")))
+        updater = runtime.application.updater
+        assert updater is not None
+        assert polling_task(updater) is not None  # the watchdog found PTB's task
         assert (await client.post("/telegram/webhook", json={})).status_code == 404
         # Every long poll feeds the "bot stopped receiving updates" alert.
         await _wait_for(lambda: metric_value("akkiabot_telegram_poll_total", result="ok") > polls)
@@ -188,3 +200,78 @@ async def test_startup_failure_releases_resources(
     rendered = "".join(traceback.format_exception(exc_info.value)) + stream.getvalue()
     assert MOCK_BOT_TOKEN not in rendered
     assert "bot startup failed: InvalidToken: The token `***` was rejected" in rendered
+
+
+def _reject_token_on_polls(api: FakeBotApi, *, times: int | None = None) -> list[int]:
+    """Answer ``getUpdates`` with 401 (PTB: ``InvalidToken``), ``times`` times or forever."""
+    rejected: list[int] = []
+
+    def respond(_params: dict[str, Any]) -> Any:
+        if times is None or len(rejected) < times:
+            rejected.append(1)
+            raise ApiError("Unauthorized", status=401)
+        return []
+
+    api.respond("getUpdates", respond)
+    return rejected
+
+
+async def test_aborted_polling_turns_readiness_red_and_requests_exit(
+    settings: Settings,
+    api: FakeBotApi,
+    build: Callable[[Settings], Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(polling, "TOKEN_REJECTED_RETRY_DELAYS", (0.0, 0.0))
+    rejected = _reject_token_on_polls(api)
+    runtime = build(settings)
+    exits: list[bool] = []
+    runtime.request_exit = lambda: exits.append(True)
+    caplog.set_level(logging.INFO)
+
+    async with serve(runtime) as client:
+        await _wait_for(lambda: bool(exits))
+        ready = await client.get("/readyz")
+        assert ready.status_code == 503
+        assert ready.json()["checks"] == {"db": True, "cache": True, "polling": False}
+    # The lifespan exit (Runtime.stop) above did not raise.
+
+    assert len(rejected) == 3  # the first poll and two retries
+    assert runtime.polling_failed
+    assert exits == [True]
+    assert not runtime.application.running
+    # One error for the incident (PTB aborting polling): stopping the updater
+    # re-raises it, but that is not logged (and so not sent to Sentry) again.
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r.getMessage() for r in errors] == [
+        "Network Retry Loop (Polling Updates): Invalid token. Aborting retry loop."
+    ]
+    assert "telegram updater stopped after polling failure" in caplog.messages
+    assert MOCK_BOT_TOKEN not in caplog.text
+
+
+async def test_transient_token_rejection_keeps_polling(
+    settings: Settings,
+    api: FakeBotApi,
+    build: Callable[[Settings], Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(polling, "TOKEN_REJECTED_RETRY_DELAYS", (0.0, 0.0))
+    rejected = _reject_token_on_polls(api, times=2)
+    runtime = build(settings)
+    exits: list[bool] = []
+    runtime.request_exit = lambda: exits.append(True)
+
+    async with serve(runtime) as client:
+        await _wait_for(lambda: len(api.calls_to("getUpdates")) >= 4)
+        ready = await client.get("/readyz")
+        assert ready.status_code == 200
+        assert ready.json()["checks"]["polling"] is True
+
+    assert len(rejected) == 2
+    assert not runtime.polling_failed
+    assert exits == []
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert caplog.messages.count("telegram rejected the bot token while polling; retrying") == 2
