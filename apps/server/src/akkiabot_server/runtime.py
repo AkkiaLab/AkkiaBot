@@ -87,7 +87,7 @@ def _no_exit() -> None:
 def polling_task(updater: Updater) -> asyncio.Task[None] | None:
     """The task PTB runs ``getUpdates`` in (``None`` when not polling).
 
-    PTB keeps it private; ``test_polling_task_is_found`` breaks loudly if an
+    PTB keeps it private; ``test_polling_mode_requests_explicit_updates`` fails if an
     upgrade moves it.
     """
     task = getattr(updater, "_Updater__polling_task", None)
