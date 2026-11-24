@@ -173,6 +173,12 @@ def test_tunnel_uses_http2() -> None:
     assert _services()["cloudflared"]["environment"]["TUNNEL_TRANSPORT_PROTOCOL"] == "http2"
 
 
+def test_cloudflared_follows_latest() -> None:
+    """Unpinned on purpose: deploy/upgrade.sh pulls it with every release."""
+    assert _services()["cloudflared"]["image"] == "cloudflare/cloudflared:latest"
+    assert "pull --quiet migrate app cloudflared" in (DEPLOY / "upgrade.sh").read_text()
+
+
 def test_operations_documents_tunnel_port() -> None:
     """HTTP/2 tunnels still connect to the Cloudflare edge on TCP 7844, not 443."""
     text = OPERATIONS.read_text(encoding="utf-8")

@@ -16,7 +16,8 @@
 #   3. configuration check: every key of the new examples exists in .env / app.env
 #   4. migration gate: a release that changes migrations needs --allow-migration
 #      (the owner's confirmation); the database is never restored automatically
-#   5. pull the new image (with the old compose files still in place)
+#   5. pull the images of <sha> (app, migrate, and cloudflared:latest so every
+#      release updates the tunnel connector); the stack's files are not touched yet
 #   6. backup.sh, snapshot of the current files, install the new ones, up --wait
 #   7. health: /readyz on the loopback port
 #   8. failure after step 6: without migrations, restore the snapshot and start the
@@ -134,8 +135,15 @@ if [[ "$MIGRATIONS" == changed && "$ALLOW_MIGRATION" != 1 ]]; then
     exit 3
 fi
 
-# 5. Pull with the current files: a failure leaves everything untouched.
-if ! AKKIABOT_TAG="$NEW" "${compose[@]}" pull --quiet migrate app; then
+# 5. Pull before anything is installed: a failure leaves everything untouched.
+# The image names come from the compose file of <sha> (read in place, the stack's
+# own files are not replaced yet). cloudflared uses the `latest` tag and is
+# pulled on every release so the connector never lags behind. `up` below
+# recreates it when its image or its service configuration changed (switching
+# from a pinned tag to `latest` counts, even for the same image), which briefly
+# interrupts the public entry point.
+if ! AKKIABOT_TAG="$NEW" "${compose[@]}" --project-directory . -f "$WORK/compose.yaml" \
+    pull --quiet migrate app cloudflared; then
     echo "upgrade: pulling the image of $NEW failed" >&2
     record "pull-failed"
     exit 4
