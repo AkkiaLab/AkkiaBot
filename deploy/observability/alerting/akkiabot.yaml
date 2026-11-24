@@ -38,16 +38,20 @@ groups:
               refId: C
               type: threshold
               expression: B
-              conditions: [{ evaluator: { type: gt, params: [300] } }]
+              # A healthy long poll returns about every 10 seconds; 120s leaves
+              # room for restarts and deploys. 120s + for 1m fires about 3-4
+              # minutes after the last successful poll (docs/observability.md §5.2).
+              conditions: [{ evaluator: { type: gt, params: [120] } }]
         noDataState: OK
         execErrState: Error
-        for: 2m
+        for: 1m
         labels: { severity: critical, service: akkiabot }
         annotations:
-          summary: bot 超过 5 分钟没有成功拉取 update（getUpdates）
+          summary: bot 超过 2 分钟没有成功拉取 update（getUpdates）
           description: >-
             akkiabot_telegram_poll_last_success_timestamp_seconds 停止更新：Telegram 不可达、
-            token 失效，或另一个进程在用同一个 token 拉取 update。查看 app 日志中 telegram 相关错误。
+            token 失效、polling 已中止而进程仍在运行，或另一个进程在用同一个 token 拉取 update。
+            查看 app 日志中 telegram 相关错误；polling 已中止时重启 app 可恢复。
 
       - uid: akkiabot-readyz-failing
         title: /readyz 失败

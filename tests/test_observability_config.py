@@ -156,6 +156,23 @@ def test_alert_rules_cover_required_conditions() -> None:
     assert rules["akkiabot-readyz-failing"]["noDataState"] == "Alerting"
 
 
+def test_polling_stalled_threshold_matches_docs_and_dashboard() -> None:
+    """docs/observability.md §5.2: 120s + for 1m, fires 3-4 minutes after the last poll."""
+    rule = next(r for r in load_rule_group()["rules"] if r["uid"] == "akkiabot-polling-stalled")
+    (threshold,) = [q for q in rule["data"] if q["model"].get("type") == "threshold"]
+    (condition,) = threshold["model"]["conditions"]
+    assert condition["evaluator"] == {"type": "gt", "params": [120]}
+    assert parse_duration(rule["for"]) == 60
+    (panel,) = [
+        p
+        for p in _panels()
+        if any("poll_last_success" in t.get("expr", "") for t in p.get("targets", []))
+    ]
+    steps = panel["fieldConfig"]["defaults"]["thresholds"]["steps"]
+    assert steps[-1] == {"color": "red", "value": 120}
+    assert "120 秒" in panel["description"]
+
+
 def test_alert_rule_metrics_exist() -> None:
     used = {m for expr in _rule_exprs() for m in METRIC.findall(expr)}
     assert used <= _exported_series(), sorted(used - _exported_series())
