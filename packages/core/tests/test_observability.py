@@ -34,6 +34,7 @@ from akkiabot_core.observability import (
     setup_observability,
     track_handler,
 )
+from akkiabot_core.observability.sentry import secret_scrubber
 
 
 @pytest.fixture
@@ -128,6 +129,8 @@ MOCK_RAW = 'p"a\\ss\nw\u00f6rd 123456:fake-bot-token-for-tests'
 
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_TOKEN = "123456:fake-bot-token-for-scrub-tests"
 
 
 def test_content_is_logged_verbatim(log_stream: io.StringIO) -> None:
@@ -396,3 +399,38 @@ def test_sentry_initialised_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     assert "data_collection" not in captured
     # The auto-enabling OpenAI integration stays off (misreports handled LLM errors).
     assert [i.identifier for i in captured["disabled_integrations"]] == ["openai"]
+    # Frame locals (request URLs carry the bot token) are never sent.
+    assert captured["include_local_variables"] is False
+    event = {"message": "x", "breadcrumbs": {"values": []}}
+    assert captured["before_send"](event, {}) == event
+
+
+def test_sentry_masks_configured_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sentry_sdk
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: captured.update(kwargs))
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(settings, secrets=[MOCK_TOKEN, ""])
+
+    event = {
+        "exception": {"values": [{"value": f"The token `{MOCK_TOKEN}` was rejected"}]},
+        "extra": {"url": f"https://api.telegram.org/bot{MOCK_TOKEN}/getUpdates", "n": 3},
+        "tags": [("k", MOCK_TOKEN)],
+    }
+    scrubbed = captured["before_send"](event, {})
+    assert scrubbed == {
+        "exception": {"values": [{"value": "The token `***` was rejected"}]},
+        "extra": {"url": "https://api.telegram.org/bot***/getUpdates", "n": 3},
+        "tags": [["k", "***"]],
+    }
+    crumb = {"message": f"GET /bot{MOCK_TOKEN}/getMe"}
+    assert captured["before_breadcrumb"](crumb, {}) == {"message": "GET /bot***/getMe"}
+    assert captured["before_send_transaction"]({"transaction": MOCK_TOKEN}, {}) == {
+        "transaction": "***"
+    }
+
+
+def test_secret_scrubber_masks_longest_secret_first() -> None:
+    scrub = secret_scrubber(["abc", "abcdef"])
+    assert scrub("x abcdef abc") == "x *** ***"

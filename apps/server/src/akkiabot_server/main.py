@@ -81,7 +81,7 @@ def _serve() -> int:
     from akkiabot_server.runtime import Runtime
 
     release = release_name()
-    setup_observability(settings.observability, release=release)
+    setup_observability(settings.observability, release=release, secrets=settings.secret_values())
     logger.info(
         "starting akkiabot",
         extra={"version": __version__, "release": release, "config": settings.redacted()},

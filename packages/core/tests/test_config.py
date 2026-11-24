@@ -147,6 +147,15 @@ def test_secrets_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         assert secret not in rendered
     assert s.redacted()["db"]["url"] == "postgresql+asyncpg://akkiabot:***@db:5432/akkiabot"
+    # ... and every one of them is handed to the Sentry scrubber.
+    assert set(s.secret_values()) == {
+        MOCK_BOT_TOKEN,
+        "s3cr3t-pw",
+        "sk-llm-key",
+        "ts-secret",
+        "ipinfo-secret",
+        MOCK_SENTRY_DSN,
+    }
 
 
 @pytest.mark.usefixtures("required_env")

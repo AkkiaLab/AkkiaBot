@@ -1,18 +1,22 @@
 import asyncio
 import io
+import json
 import logging
 import traceback
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 import pytest
+import sentry_sdk
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.transport import Transport
 
 from akkiabot_core.cache import MemoryCache
-from akkiabot_core.config import Settings
+from akkiabot_core.config import ObservabilitySettings, Settings
 from akkiabot_core.db.migrate import upgrade_engine
-from akkiabot_core.observability import configure_logging
+from akkiabot_core.observability import configure_logging, init_sentry
 from akkiabot_server.api import create_app
 from akkiabot_server.api.app import SECRET_HEADER
 from akkiabot_server.bot import polling
@@ -24,6 +28,8 @@ from akkiabot_server.testing import ApiError, FakeBotApi, UpdateFactory, metric_
 MOCK_WEBHOOK_SECRET = "test-webhook-secret_123"
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_BOT_TOKEN = "123456:fake-bot-token-for-tests"  # same as conftest
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
 
 
 @asynccontextmanager
@@ -216,12 +222,45 @@ def _reject_token_on_polls(api: FakeBotApi, *, times: int | None = None) -> list
     return rejected
 
 
+class CapturingTransport(Transport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict[str, Any]] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        event = envelope.get_event()
+        if event is not None:
+            self.events.append(dict(event))
+
+
+@pytest.fixture
+def sentry_events(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[dict[str, Any]]]:
+    """Sentry set up like ``akkiabot serve`` does, capturing events in memory."""
+    transport = CapturingTransport()
+    real_init = sentry_sdk.init
+
+    def init_with_transport(**kwargs: Any) -> Any:
+        return real_init(transport=transport, **kwargs)
+
+    monkeypatch.setattr(sentry_sdk, "init", init_with_transport)
+    observability = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(observability, release="akkiabot@test", secrets=settings.secret_values())
+    try:
+        yield transport.events
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
+
+
 async def test_aborted_polling_turns_readiness_red_and_requests_exit(
     settings: Settings,
     api: FakeBotApi,
     build: Callable[[Settings], Runtime],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    sentry_events: list[dict[str, Any]],
 ) -> None:
     monkeypatch.setattr(polling, "TOKEN_REJECTED_RETRY_DELAYS", (0.0, 0.0))
     rejected = _reject_token_on_polls(api)
@@ -249,6 +288,19 @@ async def test_aborted_polling_turns_readiness_red_and_requests_exit(
     ]
     assert "telegram updater stopped after polling failure" in caplog.messages
     assert MOCK_BOT_TOKEN not in caplog.text
+    # Sentry gets that one event, and nothing in it (message, exception value,
+    # frames, breadcrumbs) carries the bot token.
+    sentry_sdk.get_client().flush()
+    (event,) = sentry_events
+    (exception,) = event["exception"]["values"]
+    assert exception["type"] == "InvalidToken"
+    # Frame locals would hold the request URL (``…/bot<token>/getUpdates``).
+    frames = exception["stacktrace"]["frames"]
+    assert frames
+    assert not [f for f in frames if "vars" in f]
+    rendered = json.dumps(event, default=str)
+    assert MOCK_BOT_TOKEN not in rendered
+    assert MOCK_BOT_TOKEN.split(":", 1)[1] not in rendered
 
 
 async def test_transient_token_rejection_keeps_polling(
