@@ -363,7 +363,7 @@
     {
       "type": "stat",
       "title": "距上次成功轮询",
-      "description": "now - telegram_poll_last_success_timestamp_seconds（polling 模式）；超过 5 分钟告警。",
+      "description": "now - telegram_poll_last_success_timestamp_seconds（polling 模式）；超过 120 秒并持续 1 分钟告警（橙色 60 秒、红色 120 秒）。",
       "id": 6,
       "datasource": {
         "type": "prometheus",
@@ -399,11 +399,11 @@
               },
               {
                 "color": "orange",
-                "value": 120
+                "value": 60
               },
               {
                 "color": "red",
-                "value": 300
+                "value": 120
               }
             ]
           }
