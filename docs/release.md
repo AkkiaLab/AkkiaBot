@@ -117,7 +117,7 @@ flowchart LR
   2. 下载该 commit 的 compose、Alloy 配置、备份/恢复脚本和配置样例；
   3. 配置检查：新样例中的每个键在 `.env` / `app.env` 中都存在（只比较键名，不输出值）；
   4. 迁移门禁：新旧版本之间 `db/migrations/versions/` 有变化（旧版本未知也视为有变化）时，必须带 `--allow-migration`，即维护者已确认本次迁移；
-  5. 先用旧 compose 文件拉取新镜像；
+  5. 按该 commit 的 compose 文件拉取新镜像（此时还不替换栈目录中的文件），同时拉取 `cloudflare/cloudflared:latest`：cloudflared 不固定版本，每次发版随之更新。拉取到的镜像或 cloudflared 的服务配置有变化时 `up` 会重建该容器，公网入口短暂中断；从固定标签切换到 `latest` 也算配置变化，即使两者指向同一镜像；
   6. `backup.sh`，保存当前文件快照，替换文件和 `AKKIABOT_TAG`，`docker compose up -d --wait`；
   7. 回环 `/readyz` 健康检查；之后由工具检查公网 `/readyz`，失败时以退出码 9 结束（后端已切换，后续步骤停止，查因后重试同一 tag 或按 §4.4 回滚）；
   8. 切换后失败：无迁移时自动恢复快照并启动旧版本（退出码 7）；有迁移时**不回滚、不恢复数据库**，按 `docs/operations.md` §5.2 由人处理（退出码 6）；回滚也失败时退出码 8。
