@@ -100,7 +100,9 @@ services:
     stop_grace_period: 30s
 
   cloudflared:
-    image: cloudflare/cloudflared:2026.11.2
+    # Deliberately unpinned: deploy/upgrade.sh pulls it on every release, so the
+    # connector is updated together with the app and never left behind.
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
     # Remotely managed tunnel: the public hostname -> http://app:8000 rule lives
     # in the Cloudflare dashboard (docs/operations.md §DNS 与 tunnel).

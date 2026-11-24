@@ -16,7 +16,7 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"
 tag="${AKKIABOT_TAG:-$(sed -n 's/^AKKIABOT_TAG=//p' .env)}"
 case "$*" in
-  "compose pull"*) [[ -z "${FAKE_PULL_FAIL:-}" ]] ;;
+  "compose "*" pull"*) [[ -z "${FAKE_PULL_FAIL:-}" ]] ;;
   "compose exec -T postgres pg_dump"*) [[ -z "${FAKE_BACKUP_FAIL:-}" ]] && echo dump ;;
   "compose up"*) [[ "$tag" != "${FAKE_BAD_TAG:-none}" ]] && echo "$tag" > .running ;;
   *) exit 0 ;;
@@ -121,6 +121,17 @@ def test_upgrade_success_and_idempotent_retry(stack: dict[str, Path]) -> None:
     assert again.returncode == 0
     assert "already running" in again.stdout
     assert log(stack).rstrip().endswith("already-current")
+
+
+def test_pull_uses_target_compose_and_includes_cloudflared(stack: dict[str, Path]) -> None:
+    """cloudflared is unpinned (`latest`) and must be refreshed by every release."""
+    proc = run(stack, NEW, "--migrations", "unchanged")
+    assert proc.returncode == 0, proc.stderr
+    pulls = [line for line in stack["log"].read_text().splitlines() if " pull " in line]
+    assert pulls == [
+        f"docker compose --project-directory . -f .upgrade/{NEW}/compose.yaml"
+        " pull --quiet migrate app cloudflared"
+    ]
 
 
 def test_missing_configuration_changes_nothing(stack: dict[str, Path]) -> None:

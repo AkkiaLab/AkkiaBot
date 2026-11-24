@@ -315,6 +315,8 @@ Mini App 和 API 不同源，后端通过 `CORS_ALLOW_ORIGINS` 放行 `https://b
 3. Public Hostname 只添加一条：子域名 `bot-api`（预发布为 `bot-api-staging`），域名 `akkia.moe`，类型 `HTTP`，URL 为 `app:8000`。Cloudflare 会自动创建对应的 CNAME 记录。
 4. **不要**添加指向 `app:9464` 或其他服务的规则。
 
+compose 中的 cloudflared 使用 `cloudflare/cloudflared:latest`，不固定版本：每次发版 `deploy/upgrade.sh` 都会一并拉取，避免升级时遗漏 cloudflared；拉取到的镜像或 cloudflared 的服务配置有变化时，`up` 会重建该容器，公网入口短暂中断；从固定版本号切换到 `latest` 也算配置变化，即使两者指向同一镜像也会重建。tunnel 是否正常以服务入口（公网 `/readyz`）能否访问为准，tunnel 异常时入口同样无法访问，发版后不需要另去 Cloudflare 控制台核对连接器状态。自动回滚会恢复升级前的 compose 文件再执行 `up`：旧 compose 引用固定版本号时（例如首次切换到 `latest` 的那次发版），cloudflared 随之回到该版本；回滚前后的 compose 都引用 `latest` 时，恢复 compose 不会恢复先前的镜像，cloudflared 继续使用新拉取的版本。如果确认是新版 cloudflared 引起的问题，临时在 `compose.yaml` 中把镜像改为上一个可用版本号后执行 `docker compose up -d --wait --no-deps cloudflared`（只作用于 cloudflared，不重建 app 等依赖），并在仓库中跟进。
+
 compose 中的 cloudflared 固定使用 HTTP/2 连接 Cloudflare（`TUNNEL_TRANSPORT_PROTOCOL=http2`），不使用默认的 QUIC：预发布主机上 QUIC 连接多次超时断开，健康检查随之反复失败。两种协议的隧道连接都使用 **7844** 端口，区别只是 TCP 或 UDP（见 [Cloudflare 防火墙说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)）。
 
 服务器需要的出站流量：
