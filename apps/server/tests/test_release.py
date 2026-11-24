@@ -12,7 +12,7 @@ from akkiabot_server import GIT_SHA_ENV, __version__, main, release_name, runtim
 from akkiabot_server.services.llm import LlmComponents
 from akkiabot_server.testing import FakeBotApi
 
-from .conftest import MakeSettings
+from .conftest import MOCK_BOT_TOKEN, MakeSettings
 
 # mock: 虚构的 40 位十六进制值，仅用于测试，不对应任何真实提交。
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -62,15 +62,22 @@ def test_serve_reports_the_same_release_to_sentry(
     monkeypatch.setenv(GIT_SHA_ENV, FAKE_SHA)
     monkeypatch.setattr(main, "load_settings", make_settings)
     seen: list[str | None] = []
+    scrubbed: list[tuple[str, ...]] = []
 
     class StopServeError(Exception):
         pass
 
-    def fake_setup(settings: Any, *, release: str | None = None) -> None:
+    def fake_setup(
+        settings: Any, *, release: str | None = None, secrets: tuple[str, ...] = ()
+    ) -> None:
         seen.append(release)
+        scrubbed.append(tuple(secrets))
         raise StopServeError  # stop before the bot / HTTP server start
 
     monkeypatch.setattr(main, "setup_observability", fake_setup)
     with pytest.raises(StopServeError):
         main.main(["serve"])
     assert seen == [f"akkiabot@{FAKE_SHA}"]
+    # Secrets such as the bot token are masked in Sentry events.
+    assert scrubbed == [make_settings().secret_values()]
+    assert MOCK_BOT_TOKEN in scrubbed[0]

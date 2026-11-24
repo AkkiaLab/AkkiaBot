@@ -122,3 +122,58 @@ def test_default_request_matches_ptb_default() -> None:
     # PTB's builder uses a single connection for getUpdates.
     request = default_get_updates_request()
     assert request._client_kwargs["limits"].max_connections == 1
+
+
+class Sequenced(Scripted):
+    """Answers with ``statuses`` in turn, then 200."""
+
+    def __init__(self, *statuses: int) -> None:
+        super().__init__()
+        self.statuses = list(statuses)
+
+    @override
+    async def do_request(
+        self, url: str, method: str, *args: Any, **kwargs: Any
+    ) -> tuple[int, bytes]:
+        await super().do_request(url, method)
+        return (self.statuses.pop(0) if self.statuses else 200), b"{}"
+
+
+async def test_rejected_token_is_retried_before_giving_up() -> None:
+    inner = Sequenced(401, 404, 401, 401)
+    ok, err = _counts()
+
+    status, _ = await PollHeartbeatRequest(inner, retry_delays=(0, 0, 0)).do_request(
+        f"{BASE}/getUpdates", "POST"
+    )
+
+    assert status == 401  # PTB now raises InvalidToken and stops polling
+    assert len(inner.calls) == 4
+    assert _counts() == (ok, err + 4)
+
+
+async def test_transient_token_rejection_recovers() -> None:
+    inner = Sequenced(401)
+    status, _ = await PollHeartbeatRequest(inner, retry_delays=(0, 0, 0)).do_request(
+        f"{BASE}/getUpdates", "POST"
+    )
+    assert status == 200
+    assert len(inner.calls) == 2
+
+
+async def test_only_get_updates_and_token_rejections_are_retried() -> None:
+    other = Sequenced(401)
+    status, _ = await PollHeartbeatRequest(other, retry_delays=(0,)).do_request(
+        f"{BASE}/sendMessage", "POST"
+    )
+    assert (status, len(other.calls)) == (401, 1)
+    server_error = Sequenced(502)
+    status, _ = await PollHeartbeatRequest(server_error, retry_delays=(0,)).do_request(
+        f"{BASE}/getUpdates", "POST"
+    )
+    assert (status, len(server_error.calls)) == (502, 1)
+
+
+def test_default_retry_is_short() -> None:
+    # A revoked token must still stop polling (and restart the process) quickly.
+    assert sum(PollHeartbeatRequest(Scripted()).retry_delays) <= 10

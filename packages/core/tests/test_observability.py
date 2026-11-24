@@ -34,6 +34,11 @@ from akkiabot_core.observability import (
     setup_observability,
     track_handler,
 )
+from akkiabot_core.observability.sentry import (
+    BREADCRUMB_PROTOCOL,
+    EVENT_PROTOCOL,
+    secret_scrubber,
+)
 
 
 @pytest.fixture
@@ -128,6 +133,8 @@ MOCK_RAW = 'p"a\\ss\nw\u00f6rd 123456:fake-bot-token-for-tests'
 
 # mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
 MOCK_SENTRY_DSN = "https://key@o0.ingest.sentry.io/1"
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_TOKEN = "123456:fake-bot-token-for-scrub-tests"
 
 
 def test_content_is_logged_verbatim(log_stream: io.StringIO) -> None:
@@ -396,3 +403,135 @@ def test_sentry_initialised_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     assert "data_collection" not in captured
     # The auto-enabling OpenAI integration stays off (misreports handled LLM errors).
     assert [i.identifier for i in captured["disabled_integrations"]] == ["openai"]
+    # Frame locals (request URLs carry the bot token) are never sent.
+    assert captured["include_local_variables"] is False
+    event = {"message": "x", "breadcrumbs": {"values": []}}
+    assert captured["before_send"](event, {}) == event
+
+
+def test_sentry_masks_configured_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sentry_sdk
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: captured.update(kwargs))
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(settings, secrets=[MOCK_TOKEN, ""])
+
+    event = {
+        "exception": {"values": [{"value": f"The token `{MOCK_TOKEN}` was rejected"}]},
+        "extra": {"url": f"https://api.telegram.org/bot{MOCK_TOKEN}/getUpdates", "n": 3},
+        "tags": [("k", MOCK_TOKEN)],
+    }
+    scrubbed = captured["before_send"](event, {})
+    assert scrubbed == {
+        "exception": {"values": [{"value": "The token `***` was rejected"}]},
+        "extra": {"url": "https://api.telegram.org/bot***/getUpdates", "n": 3},
+        "tags": [["k", "***"]],
+    }
+    crumb = {"message": f"GET /bot{MOCK_TOKEN}/getMe"}
+    assert captured["before_breadcrumb"](crumb, {}) == {"message": "GET /bot***/getMe"}
+    assert captured["before_send_transaction"]({"transaction": MOCK_TOKEN}, {}) == {
+        "transaction": "***"
+    }
+
+
+def test_secret_scrubber_masks_longest_secret_first() -> None:
+    scrub = secret_scrubber(["abc", "abcdef"])
+    assert scrub("x abcdef abc") == "x *** ***"
+
+
+def test_secret_scrubber_keeps_keys_and_protocol_fields() -> None:
+    scrub = secret_scrubber(["ab12"], EVENT_PROTOCOL)
+    event = {
+        "event_id": "00000000000000000000000000ab12",
+        "contexts": {
+            "trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12", "op": "ab12"},
+            "app": {"trace_id": "ab12"},  # custom context reusing a protocol name
+        },
+        "sdk": {"name": "sentry.python", "version": "ab12"},
+        "breadcrumbs": {"values": [{"type": "ab12", "message": "ab12", "data": {"type": "ab12"}}]},
+        "spans": [{"span_id": "ab12ab12ab12ab12", "description": "ab12"}],
+        "extra": {"ab12": "x ab12 y", "type": "ab12", "sdk": {"detail": "ab12"}},
+        "message": "pw ab12",
+    }
+    assert scrub(event) == {
+        "event_id": "00000000000000000000000000ab12",
+        "contexts": {
+            "trace": {"trace_id": "ab12" * 8, "span_id": "ab12ab12ab12ab12", "op": "***"},
+            "app": {"trace_id": "***"},
+        },
+        "sdk": {"name": "sentry.python", "version": "ab12"},
+        "breadcrumbs": {"values": [{"type": "ab12", "message": "***", "data": {"type": "***"}}]},
+        "spans": [{"span_id": "ab12ab12ab12ab12", "description": "***"}],
+        "extra": {"ab12": "x *** y", "type": "***", "sdk": {"detail": "***"}},
+        "message": "pw ***",
+    }
+    crumb = secret_scrubber(["ab12"], BREADCRUMB_PROTOCOL)
+    assert crumb({"level": "ab12", "data": {"level": "ab12"}}) == {
+        "level": "ab12",
+        "data": {"level": "***"},
+    }
+
+
+def test_short_secret_matching_protocol_fields_still_sends_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real SDK, in-memory transport: short secrets that are part of the
+    ``event_id`` key, its value or the trace ids must not break (and so drop)
+    the event, and application data reusing protocol key names is still
+    masked (here through the logging integration, like the app's errors)."""
+    import sentry_sdk
+    from sentry_sdk.envelope import Envelope
+    from sentry_sdk.transport import Transport
+
+    events: list[dict[str, Any]] = []
+
+    class Capturing(Transport):
+        def capture_envelope(self, envelope: Envelope) -> None:
+            event = envelope.get_event()
+            if event is not None:
+                events.append(dict(event))
+
+    real_init = sentry_sdk.init
+    monkeypatch.setattr(
+        sentry_sdk, "init", lambda **kwargs: real_init(transport=Capturing(), **kwargs)
+    )
+    mock_password = "ab12"  # mock: 人工构造的短测试密码，不可用
+    mock_key_part = "nt_i"  # mock: 人工构造的短测试密码，恰好是键名 event_id 的一部分
+    event_id = "0123456789abcdef01234567890ab12"[:28] + mock_password
+    trace_id = mock_password * 8
+    settings = ObservabilitySettings(sentry_dsn=MOCK_SENTRY_DSN)  # pyright: ignore[reportArgumentType]
+    assert init_sentry(settings, release="akkiabot@test", secrets=[mock_password, mock_key_part])
+    try:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_context("trace", {"trace_id": trace_id, "span_id": mock_password * 4})
+            scope.set_extra(f"key-{mock_password}", f"value {mock_password}")
+            sentry_sdk.capture_event(
+                {"event_id": event_id, "message": f"db password {mock_password} rejected"}
+            )
+        logging.getLogger("akkiabot.test.sentry").error(
+            "login failed: %s",
+            mock_password,
+            extra={
+                "detail": mock_password,
+                "type": mock_password,
+                "sdk": {"detail": mock_password},
+            },
+        )
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
+
+    event, logged = events
+    assert event["event_id"] == event_id
+    assert event["message"] == "db password *** rejected"
+    assert event["extra"][f"key-{mock_password}"] == "value ***"
+    assert event["contexts"]["trace"]["trace_id"] == trace_id
+    assert event["release"] == "akkiabot@test"
+    # Application data is masked even under protocol key names.
+    assert logged["extra"]["detail"] == "***"
+    assert logged["extra"]["type"] == "***"
+    assert logged["extra"]["sdk"] == {"detail": "***"}
+    assert logged["logentry"]["params"] == ["***"]
+    assert logged["sdk"]["name"].startswith("sentry.python")  # SDK metadata is kept
