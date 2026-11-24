@@ -2,7 +2,8 @@
 # PostgreSQL backup for the compose stack (docs/operations.md §备份与恢复).
 #
 # Run from the directory holding compose.yaml and .env, e.g. from cron:
-#   17 3 * * * cd /srv/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+#   17 19 * * * cd /srv/akkiabot/production && ./backup.sh >> backups/backup.log 2>&1
+# (server timezone is UTC; 19:17 UTC = 03:17 UTC+8, off-peak)
 # cron opens backups/backup.log before this script runs, so create the
 # directory first (once, at deploy time): install -d -m 700 backups
 #
