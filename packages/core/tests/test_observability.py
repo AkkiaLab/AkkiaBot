@@ -535,3 +535,84 @@ def test_short_secret_matching_protocol_fields_still_sends_event(
     assert logged["extra"]["sdk"] == {"detail": "***"}
     assert logged["logentry"]["params"] == ["***"]
     assert logged["sdk"]["name"].startswith("sentry.python")  # SDK metadata is kept
+
+
+# mock: 人工构造的不可用测试值，不符合真实凭据格式，不是凭据。
+MOCK_HTTPX_TOKEN = "123456:fake-bot-token-for-httpx-tests"
+
+
+def test_httpx_breadcrumbs_and_spans_are_scrubbed(
+    monkeypatch: pytest.MonkeyPatch, no_network: list[object]
+) -> None:
+    """Real SDK with tracing, in-memory transport: a Bot API call through httpx
+    inside a transaction, then an error. The httpx integration records the
+    request URL (``/bot<token>/…``) in the breadcrumb ``data.url`` and the
+    ``http.client`` span description; neither event may carry the token."""
+    import httpx
+    import sentry_sdk
+    from sentry_sdk.envelope import Envelope
+    from sentry_sdk.transport import Transport
+
+    envelopes: list[bytes] = []
+    payloads: list[dict[str, Any]] = []
+
+    class Capturing(Transport):
+        def capture_envelope(self, envelope: Envelope) -> None:
+            envelopes.append(envelope.serialize())
+            payload = envelope.get_event() or envelope.get_transaction_event()
+            if payload is not None:
+                payloads.append(dict(payload))
+
+    real_init = sentry_sdk.init
+    monkeypatch.setattr(
+        sentry_sdk, "init", lambda **kwargs: real_init(transport=Capturing(), **kwargs)
+    )
+    url = f"https://api.telegram.org/bot{MOCK_HTTPX_TOKEN}/getUpdates"
+    settings = ObservabilitySettings(
+        sentry_dsn=MOCK_SENTRY_DSN,  # pyright: ignore[reportArgumentType]
+        sentry_traces_sample_rate=1.0,
+    )
+    assert init_sentry(settings, secrets=[MOCK_HTTPX_TOKEN])
+    try:
+        with sentry_sdk.isolation_scope() as scope:
+            # Breadcrumbs recorded by earlier tests are inherited: start clean.
+            for s in (sentry_sdk.get_global_scope(), scope, sentry_sdk.get_current_scope()):
+                s.clear_breadcrumbs()
+            transaction = sentry_sdk.start_transaction(op="telegram.poll", name="poll")
+            with transaction:
+                # Root span data ends up in ``contexts.trace`` of both events.
+                transaction.set_data("url", url)
+                client = httpx.Client(
+                    transport=httpx.MockTransport(lambda _req: httpx.Response(401, json={}))
+                )
+                with client:
+                    assert client.post(url, params={"offset": 1}).status_code == 401
+                logging.getLogger("akkiabot.test.sentry").error("getUpdates rejected")
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
+
+    assert no_network == []
+    redacted_url = "https://api.telegram.org/bot***/getUpdates"
+    (error,) = [p for p in payloads if p.get("type") != "transaction"]
+    (trace,) = [p for p in payloads if p.get("type") == "transaction"]
+
+    (crumb,) = [c for c in error["breadcrumbs"]["values"] if c.get("category") == "httplib"]
+    assert crumb["data"]["url"] == redacted_url
+    for crumb in trace.get("breadcrumbs", {}).get("values", []):
+        assert crumb.get("data", {}).get("url", redacted_url) == redacted_url
+
+    (span,) = [s for s in trace["spans"] if s["op"] == "http.client"]
+    assert span["description"] == f"POST {redacted_url}"
+    assert span["data"]["url"] == redacted_url
+
+    for event in (error, trace):
+        assert event["contexts"]["trace"]["trace_id"] == trace["contexts"]["trace"]["trace_id"]
+        assert event["contexts"]["trace"]["data"]["url"] == redacted_url
+
+    assert len(envelopes) == 2
+    token_tail = MOCK_HTTPX_TOKEN.split(":", 1)[1]
+    for raw in envelopes:
+        assert MOCK_HTTPX_TOKEN.encode() not in raw
+        assert token_tail.encode() not in raw
