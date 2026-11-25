@@ -51,9 +51,9 @@ def build(api: FakeBotApi) -> Callable[[Settings], Runtime]:
     return make
 
 
-async def _wait_for(predicate: Callable[[], bool]) -> None:
+async def _wait_for(predicate: Callable[[], bool], *, within: float = 2.0) -> None:
     """Poll a condition set by a background task (the PTB update fetcher)."""
-    async with asyncio.timeout(2.0):
+    async with asyncio.timeout(within):
         while not predicate():  # noqa: ASYNC110 - no event to await on the fake API
             await asyncio.sleep(0.01)
 
@@ -327,3 +327,91 @@ async def test_transient_token_rejection_keeps_polling(
     assert exits == []
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert caplog.messages.count("telegram rejected the bot token while polling; retrying") == 2
+
+
+def _fail_polls(api: FakeBotApi, errors: list[ApiError]) -> list[ApiError]:
+    """Answer ``getUpdates`` with ``errors`` in turn, then normally; returns those raised."""
+    raised: list[ApiError] = []
+
+    def respond(_params: dict[str, Any]) -> Any:
+        if len(raised) < len(errors):
+            raised.append(errors[len(raised)])
+            raise raised[-1]
+        return []
+
+    api.respond("getUpdates", respond)
+    return raised
+
+
+# mock: 虚构的网关错误页，用来确认响应原文不会进入日志或 Sentry。
+MOCK_GATEWAY_PAGE = b"<html><body>mock-gateway-page upstream unavailable</body></html>"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # Telegram's own JSON error object; the description must not be logged.
+        ApiError("Bad Gateway: mock-json-description", status=502),
+        # A gateway's HTML page: PTB would log it verbatim while parsing it.
+        ApiError("unused", status=502, raw_body=MOCK_GATEWAY_PAGE),
+        ApiError("unused", status=503, raw_body=b"mock-plain-text-body"),
+    ],
+    ids=["json", "html", "plain-text"],
+)
+async def test_transient_server_errors_while_polling_are_not_sent_to_sentry(
+    error: ApiError,
+    settings: Settings,
+    api: FakeBotApi,
+    build: Callable[[Settings], Runtime],
+    caplog: pytest.LogCaptureFixture,
+    sentry_events: list[dict[str, Any]],
+) -> None:
+    # PTB keeps retrying a failed getUpdates (after ~1 s); each retry used to
+    # become one Sentry error event.
+    errors_before = metric_value("akkiabot_telegram_poll_total", result="error")
+    raised = _fail_polls(api, [error])
+    runtime = build(settings)
+    caplog.set_level(logging.DEBUG)
+
+    async with serve(runtime) as client:
+        await _wait_for(lambda: len(api.calls_to("getUpdates")) >= 2, within=5.0)
+        assert (await client.get("/readyz")).json()["checks"]["polling"] is True
+
+    assert len(raised) == 1
+    assert not runtime.polling_failed
+    # Counted as a failed poll, so a lasting outage still trips the heartbeat alert.
+    assert metric_value("akkiabot_telegram_poll_total", result="error") == errors_before + 1
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    (warning,) = [r for r in caplog.records if r.message == "telegram polling failed; retrying"]
+    assert warning.levelno == logging.WARNING
+    assert warning.exc_info is None
+    assert getattr(warning, "error", None) == "TelegramServerError"
+    assert getattr(warning, "status_code", None) == error.status
+    # Neither the response nor the token reaches the logs.
+    for leaked in ("mock-json-description", "mock-gateway-page", "mock-plain-text-body"):
+        assert leaked not in caplog.text
+    assert MOCK_BOT_TOKEN not in caplog.text
+    sentry_sdk.get_client().flush()
+    assert sentry_events == []
+
+
+async def test_other_polling_errors_are_still_sent_to_sentry(
+    settings: Settings,
+    api: FakeBotApi,
+    build: Callable[[Settings], Runtime],
+    sentry_events: list[dict[str, Any]],
+) -> None:
+    # 409: another instance is polling with the same token; PTB retries, but
+    # this needs a human, so it stays an error.
+    _fail_polls(api, [ApiError("Conflict: terminated by other getUpdates request", status=409)])
+    runtime = build(settings)
+
+    async with serve(runtime):
+        await _wait_for(lambda: len(api.calls_to("getUpdates")) >= 2, within=5.0)
+
+    sentry_sdk.get_client().flush()
+    (event,) = sentry_events
+    assert event["logentry"]["message"] == "Exception happened while polling for updates."
+    (exception,) = event["exception"]["values"]
+    assert exception["type"] == "Conflict"
+    assert MOCK_BOT_TOKEN not in json.dumps(event, default=str)

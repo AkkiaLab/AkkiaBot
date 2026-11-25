@@ -40,6 +40,7 @@ from akkiabot_server.bot.application import (
 )
 from akkiabot_server.bot.commands import COMMANDS
 from akkiabot_server.bot.deps import BotDeps
+from akkiabot_server.bot.polling import log_polling_error
 from akkiabot_server.bot.registry import CommandRegistry
 from akkiabot_server.bot.types import App
 from akkiabot_server.services.antispam_guard import AntiSpamGuard
@@ -237,7 +238,9 @@ class Runtime:
         else:
             updater = self.application.updater
             assert updater is not None  # noqa: S101 - polling mode keeps the updater
-            await updater.start_polling(allowed_updates=ALLOWED_UPDATES)
+            await updater.start_polling(
+                allowed_updates=ALLOWED_UPDATES, error_callback=log_polling_error
+            )
             self._polling = polling_task(updater)
             if self._polling is not None:
                 self._polling_watch = asyncio.create_task(
