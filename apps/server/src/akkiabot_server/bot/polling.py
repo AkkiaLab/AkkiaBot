@@ -13,6 +13,14 @@ turns a 401/404 from ``getUpdates`` into ``InvalidToken`` and aborts polling
 for good; Telegram has been seen answering that once for a token that was
 valid seconds later. A short retry absorbs such a blip without a restart, and
 a token that is really revoked still fails within seconds.
+
+:func:`log_polling_error` replaces PTB's polling error callback. PTB retries
+every failed ``getUpdates`` forever and logs each failure with a traceback at
+ERROR, so a Bad Gateway from Telegram's front end or a dropped connection that
+heals seconds later became one Sentry event per retry. Such network errors are
+logged as warnings instead; an outage that lasts is still caught by the
+heartbeat alert above, and the updates are not lost (Telegram keeps them until
+a later ``getUpdates`` confirms them).
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from collections.abc import Sequence
 from http import HTTPStatus
 from typing import Any, override
 
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.request import BaseRequest, HTTPXRequest, RequestData
 
 from akkiabot_core.observability import record_telegram_poll, start_telegram_poll_heartbeat
@@ -34,6 +43,25 @@ GET_UPDATES = "getUpdates"
 TOKEN_REJECTED = frozenset({HTTPStatus.UNAUTHORIZED, HTTPStatus.NOT_FOUND})
 #: Pauses between ``getUpdates`` attempts while the token is rejected.
 TOKEN_REJECTED_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0)
+
+
+def log_polling_error(error: TelegramError) -> None:
+    """Error callback for :meth:`telegram.ext.Updater.start_polling`.
+
+    PTB keeps retrying after this returns. Transient network failures (5xx
+    from Telegram, connection errors) become warnings, which Sentry keeps as
+    breadcrumbs only; anything else (``Conflict``, a ``BadRequest``, which PTB
+    derives from ``NetworkError``…) is logged like PTB's default callback does.
+    """
+    if isinstance(error, NetworkError) and not isinstance(error, BadRequest):
+        # PTB builds these messages from the HTTP status or the httpx error;
+        # they carry no URL, so no token.
+        logger.warning(
+            "telegram polling failed; retrying",
+            extra={"error": type(error).__name__, "detail": error.message},
+        )
+        return
+    logger.error("Exception happened while polling for updates.", exc_info=error)
 
 
 def default_get_updates_request() -> HTTPXRequest:

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, override
 
 import pytest
+from telegram.error import BadRequest, Conflict, NetworkError, TelegramError
 from telegram.request import BaseRequest, RequestData
 
-from akkiabot_server.bot.polling import PollHeartbeatRequest, default_get_updates_request
+from akkiabot_server.bot.polling import (
+    PollHeartbeatRequest,
+    default_get_updates_request,
+    log_polling_error,
+)
 from akkiabot_server.testing import metric_value
 
 BASE = "https://api.telegram.org/botTOKEN/test"
@@ -177,3 +183,37 @@ async def test_only_get_updates_and_token_rejections_are_retried() -> None:
 def test_default_retry_is_short() -> None:
     # A revoked token must still stop polling (and restart the process) quickly.
     assert sum(PollHeartbeatRequest(Scripted()).retry_delays) <= 10
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NetworkError("Bad Gateway"),
+        NetworkError("httpx.ConnectError: All connection attempts failed"),
+        NetworkError("httpx.RemoteProtocolError: Server disconnected without sending a response."),
+    ],
+)
+def test_transient_polling_errors_are_warnings(
+    error: NetworkError, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO):
+        log_polling_error(error)
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert getattr(record, "detail", None) == error.message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [BadRequest("Bad Request: wrong parameter"), Conflict("Conflict"), TelegramError("unknown")],
+)
+def test_other_polling_errors_stay_errors(
+    error: TelegramError, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO):
+        log_polling_error(error)
+    (record,) = caplog.records
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.exc_info[1] is error
