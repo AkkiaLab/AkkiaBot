@@ -7,7 +7,9 @@
 //   1. Verifies the HMAC-SHA256 signature (client secret of the Sentry internal
 //      integration) over the raw body and rejects stale timestamps.
 //   2. Only forwards `issue` webhooks with action created / unresolved /
-//      resolved, for the configured installation and project slugs.
+//      resolved, and issue alert webhooks (`event_alert`, action triggered,
+//      sent when an alert rule names the integration as its action), for the
+//      configured installation and project slugs.
 //   3. Forwards a minimal, non-free-text payload. Titles, culprits, exception
 //      metadata, actors and stats never leave the relay; the dispatcher reads
 //      what it needs from the Sentry API with a read-only token.
@@ -23,6 +25,10 @@
 
 const MAX_BODY_BYTES = 256 * 1024;
 const FORWARD_ACTIONS = new Set(["created", "unresolved", "resolved"]);
+// `data.event.url` of an issue alert: the API URL of the event, which is the
+// only place in that payload naming the project by slug.
+const EVENT_API_URL =
+  /^https:\/\/(?:[a-z0-9-]+\.)?sentry\.io\/api\/0\/projects\/[^/]+\/([^/]+)\/events\/[^/]+\/?$/;
 const DEFAULT_MAX_SKEW_SECONDS = 300;
 const FORWARD_TIMEOUT_MS = 10_000;
 
@@ -72,24 +78,53 @@ function splitList(value) {
  * envelope to forward. Returns `{ forward }` or `{ ignore: reason }`.
  */
 export function buildForward(resource, payload, env, requestId) {
-  if (resource !== "issue") return { ignore: `resource_${resource || "missing"}` };
+  if (resource !== "issue" && resource !== "event_alert") {
+    return { ignore: `resource_${resource || "missing"}` };
+  }
   if (!payload || typeof payload !== "object") return { ignore: "malformed" };
   const action = payload.action;
-  if (!FORWARD_ACTIONS.has(action)) return { ignore: "action_not_forwarded" };
+  const wantAction = resource === "issue" ? FORWARD_ACTIONS.has(action) : action === "triggered";
+  if (!wantAction) return { ignore: "action_not_forwarded" };
 
   const wantInstallation = (env.SENTRY_INSTALLATION_UUID || "").trim();
   const installation = payload.installation?.uuid;
   if (wantInstallation && installation !== wantInstallation) return { ignore: "installation" };
 
+  const pick = (v, re) => (typeof v === "string" && re.test(v) ? v : null);
+  const allowed = splitList(env.ALLOWED_PROJECT_SLUGS);
+
+  if (resource === "event_alert") {
+    const event = payload.data?.event;
+    const projectSlug = EVENT_API_URL.exec(typeof event?.url === "string" ? event.url : "")?.[1];
+    if (!allowed.includes(projectSlug)) return { ignore: "project_not_allowed" };
+    const issueId = String(event?.issue_id ?? "");
+    if (!/^\d{1,20}$/.test(issueId)) return { ignore: "malformed" };
+    // The rule label, event title, tags and environment stay here: the
+    // dispatcher checks the issue's environments through the Sentry API.
+    return {
+      forward: {
+        event: "sentry_alert.triggered",
+        eventPayload: {
+          source: "sentry",
+          resource: "event_alert",
+          action,
+          issue_id: issueId,
+          project_slug: projectSlug,
+          level: pick(event.level, /^[a-z]{1,16}$/),
+          request_id: pick(requestId, /^[0-9A-Za-z-]{1,64}$/),
+        },
+      },
+    };
+  }
+
   const issue = payload.data?.issue;
   const projectSlug = issue?.project?.slug;
-  if (!splitList(env.ALLOWED_PROJECT_SLUGS).includes(projectSlug)) {
+  if (!allowed.includes(projectSlug)) {
     return { ignore: "project_not_allowed" };
   }
   const issueId = String(issue?.id ?? "");
   if (!/^\d{1,20}$/.test(issueId)) return { ignore: "malformed" };
 
-  const pick = (v, re) => (typeof v === "string" && re.test(v) ? v : null);
   return {
     forward: {
       event: `sentry_issue.${action}`,
