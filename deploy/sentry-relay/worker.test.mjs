@@ -179,3 +179,91 @@ test("rejects when no target URL is configured", async () => {
   assert.equal(res.status, 503);
   assert.equal(calls.length, 0);
 });
+
+function alertPayload(overrides = {}) {
+  return {
+    action: "triggered",
+    installation: { uuid: "mock-installation-uuid" },
+    actor: { type: "application", name: "Sentry" },
+    data: {
+      event: {
+        event_id: "mockevent0000000000000000000000",
+        issue_id: "7654321",
+        project: 1,
+        level: "error",
+        title: "ValueError: fictional event title that must stay in the relay",
+        environment: "production",
+        tags: [["environment", "production"]],
+        url: "https://sentry.io/api/0/projects/mock-org/akkiabot-staging/events/mockevent/",
+        web_url: "https://mock-org.sentry.io/issues/7654321/events/mockevent/",
+        issue_url: "https://sentry.io/api/0/issues/7654321/",
+        ...overrides.event,
+      },
+      triggered_rule: "Mock production rule",
+      issue_alert: { title: "Mock production rule", settings: [] },
+    },
+    ...overrides.top,
+  };
+}
+
+test("forwards an issue alert as sentry_alert.triggered with only the issue id", async () => {
+  const { calls, deps } = recorder();
+  const res = await handle(
+    signedRequest(alertPayload(), { resource: "event_alert" }),
+    env,
+    undefined,
+    deps,
+  );
+  assert.equal(res.status, 202);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers["idempotency-key"], "sentry-0f2b9c1e-mock-4a7d-request");
+  const sent = JSON.parse(calls[0].init.body);
+  assert.deepEqual(sent, {
+    event: "sentry_alert.triggered",
+    eventPayload: {
+      source: "sentry",
+      resource: "event_alert",
+      action: "triggered",
+      issue_id: "7654321",
+      project_slug: "akkiabot-staging",
+      level: "error",
+      request_id: "0f2b9c1e-mock-4a7d-request",
+    },
+  });
+  // Free text, rule label and environment never leave the relay.
+  for (const leaked of [
+    "fictional event title",
+    "Mock production rule",
+    'production"',
+    "mockevent",
+  ]) {
+    assert.ok(!calls[0].init.body.includes(leaked), leaked);
+  }
+});
+
+test("ignores issue alerts for other projects, installations, actions or bad ids", async () => {
+  const { calls, deps } = recorder();
+  const cases = [
+    alertPayload({
+      event: { url: "https://sentry.io/api/0/projects/mock-org/akkia-bot-lab/events/x/" },
+    }),
+    alertPayload({
+      event: { url: "https://evil.invalid/api/0/projects/o/akkiabot-staging/events/x/" },
+    }),
+    alertPayload({ event: { url: undefined } }),
+    alertPayload({ top: { installation: { uuid: "mock-other-installation" } } }),
+    alertPayload({ top: { action: "created" } }),
+    alertPayload({ event: { issue_id: "12a" } }),
+  ];
+  for (const payload of cases) {
+    const res = await handle(
+      signedRequest(payload, { resource: "event_alert" }),
+      env,
+      undefined,
+      deps,
+    );
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).status, "ignored");
+  }
+  assert.equal(calls.length, 0);
+});
