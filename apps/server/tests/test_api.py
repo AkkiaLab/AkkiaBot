@@ -343,18 +343,35 @@ def _fail_polls(api: FakeBotApi, errors: list[ApiError]) -> list[ApiError]:
     return raised
 
 
-async def test_transient_network_errors_while_polling_are_not_sent_to_sentry(
+# mock: 虚构的网关错误页，用来确认响应原文不会进入日志或 Sentry。
+MOCK_GATEWAY_PAGE = b"<html><body>mock-gateway-page upstream unavailable</body></html>"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # Telegram's own JSON error object; the description must not be logged.
+        ApiError("Bad Gateway: mock-json-description", status=502),
+        # A gateway's HTML page: PTB would log it verbatim while parsing it.
+        ApiError("unused", status=502, raw_body=MOCK_GATEWAY_PAGE),
+        ApiError("unused", status=503, raw_body=b"mock-plain-text-body"),
+    ],
+    ids=["json", "html", "plain-text"],
+)
+async def test_transient_server_errors_while_polling_are_not_sent_to_sentry(
+    error: ApiError,
     settings: Settings,
     api: FakeBotApi,
     build: Callable[[Settings], Runtime],
     caplog: pytest.LogCaptureFixture,
     sentry_events: list[dict[str, Any]],
 ) -> None:
-    # PTB raises NetworkError("Bad Gateway") for a 502 and keeps retrying
-    # (after ~1 s); each retry used to become one Sentry error event.
-    raised = _fail_polls(api, [ApiError("Bad Gateway", status=502)])
+    # PTB keeps retrying a failed getUpdates (after ~1 s); each retry used to
+    # become one Sentry error event.
+    errors_before = metric_value("akkiabot_telegram_poll_total", result="error")
+    raised = _fail_polls(api, [error])
     runtime = build(settings)
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
 
     async with serve(runtime) as client:
         await _wait_for(lambda: len(api.calls_to("getUpdates")) >= 2, within=5.0)
@@ -362,13 +379,18 @@ async def test_transient_network_errors_while_polling_are_not_sent_to_sentry(
 
     assert len(raised) == 1
     assert not runtime.polling_failed
+    # Counted as a failed poll, so a lasting outage still trips the heartbeat alert.
+    assert metric_value("akkiabot_telegram_poll_total", result="error") == errors_before + 1
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     (warning,) = [r for r in caplog.records if r.message == "telegram polling failed; retrying"]
     assert warning.levelno == logging.WARNING
-    assert (getattr(warning, "error", None), getattr(warning, "detail", None)) == (
-        "NetworkError",
-        "Bad Gateway",
-    )
+    assert warning.exc_info is None
+    assert getattr(warning, "error", None) == "TelegramServerError"
+    assert getattr(warning, "status_code", None) == error.status
+    # Neither the response nor the token reaches the logs.
+    for leaked in ("mock-json-description", "mock-gateway-page", "mock-plain-text-body"):
+        assert leaked not in caplog.text
+    assert MOCK_BOT_TOKEN not in caplog.text
     sentry_sdk.get_client().flush()
     assert sentry_events == []
 

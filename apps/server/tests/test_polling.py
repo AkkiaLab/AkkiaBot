@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any, override
 
+import httpx
 import pytest
 from telegram.error import BadRequest, Conflict, NetworkError, TelegramError
 from telegram.request import BaseRequest, RequestData
 
 from akkiabot_server.bot.polling import (
     PollHeartbeatRequest,
+    TelegramServerError,
     default_get_updates_request,
     log_polling_error,
 )
@@ -91,16 +93,18 @@ async def test_failed_poll_counts_error_and_keeps_heartbeat(
     monkeypatch.setattr(time, "time", lambda: 1_800_000_500.0)
     ok, err = _counts()
 
-    status, _ = await PollHeartbeatRequest(Scripted(status=502)).do_request(
+    status, _ = await PollHeartbeatRequest(Scripted(status=409)).do_request(
         f"{BASE}/getUpdates", "POST"
     )
-    assert status == 502
+    assert status == 409
+    with pytest.raises(TelegramServerError):
+        await PollHeartbeatRequest(Scripted(status=502)).do_request(f"{BASE}/getUpdates", "POST")
     with pytest.raises(OSError, match="network down"):
         await PollHeartbeatRequest(Scripted(error=OSError("network down"))).do_request(
             f"{BASE}/getUpdates", "POST"
         )
 
-    assert _counts() == (ok, err + 2)
+    assert _counts() == (ok, err + 3)
     assert metric_value("akkiabot_telegram_poll_last_success_timestamp_seconds") == 1_800_000_100.0
 
 
@@ -174,10 +178,11 @@ async def test_only_get_updates_and_token_rejections_are_retried() -> None:
     )
     assert (status, len(other.calls)) == (401, 1)
     server_error = Sequenced(502)
-    status, _ = await PollHeartbeatRequest(server_error, retry_delays=(0,)).do_request(
-        f"{BASE}/getUpdates", "POST"
-    )
-    assert (status, len(server_error.calls)) == (502, 1)
+    with pytest.raises(TelegramServerError):
+        await PollHeartbeatRequest(server_error, retry_delays=(0,)).do_request(
+            f"{BASE}/getUpdates", "POST"
+        )
+    assert len(server_error.calls) == 1  # PTB's retry loop retries it, with backoff
 
 
 def test_default_retry_is_short() -> None:
@@ -185,23 +190,59 @@ def test_default_retry_is_short() -> None:
     assert sum(PollHeartbeatRequest(Scripted()).retry_delays) <= 10
 
 
+def _wrapped(error: NetworkError, cause: Exception | None = None) -> NetworkError:
+    try:
+        raise error from cause
+    except NetworkError as exc:
+        return exc
+
+
 @pytest.mark.parametrize(
-    "error",
+    ("error", "expected"),
     [
-        NetworkError("Bad Gateway"),
-        NetworkError("httpx.ConnectError: All connection attempts failed"),
-        NetworkError("httpx.RemoteProtocolError: Server disconnected without sending a response."),
+        (TelegramServerError(502), {"error": "TelegramServerError", "status_code": 502}),
+        (
+            # mock: 虚构的 httpx 错误文本
+            _wrapped(NetworkError("httpx.ConnectError: mock-detail"), httpx.ConnectError("x")),
+            {"error": "NetworkError", "cause": "ConnectError"},
+        ),
+        (
+            _wrapped(
+                NetworkError("httpx.RemoteProtocolError: mock-detail"),
+                httpx.RemoteProtocolError("x"),
+            ),
+            {"error": "NetworkError", "cause": "RemoteProtocolError"},
+        ),
+        (NetworkError("mock-detail"), {"error": "NetworkError"}),
     ],
 )
 def test_transient_polling_errors_are_warnings(
-    error: NetworkError, caplog: pytest.LogCaptureFixture
+    error: NetworkError, expected: dict[str, object], caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.INFO):
         log_polling_error(error)
     (record,) = caplog.records
     assert record.levelno == logging.WARNING
     assert record.exc_info is None
-    assert getattr(record, "detail", None) == error.message
+    fields = {
+        k: getattr(record, k) for k in ("error", "status_code", "cause") if hasattr(record, k)
+    }
+    assert fields == expected
+    assert "mock-detail" not in caplog.text
+
+
+async def test_server_errors_on_polls_never_expose_the_body() -> None:
+    inner = Scripted(status=502)
+    request = PollHeartbeatRequest(inner, retry_delays=())
+    with pytest.raises(TelegramServerError) as exc_info:
+        await request.do_request(f"{BASE}/getUpdates", "POST")
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.message == "Telegram answered HTTP 502"
+    # Other methods still get the raw answer (PTB's own error handling).
+    assert await request.do_request(f"{BASE}/sendMessage", "POST") == (
+        502,
+        b'{"ok": true, "result": []}',
+    )
 
 
 @pytest.mark.parametrize(
