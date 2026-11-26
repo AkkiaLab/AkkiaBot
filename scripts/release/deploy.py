@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -273,6 +274,38 @@ def _run(
     return subprocess.run(  # noqa: S603 - fixed executables (bash/ssh), quoted arguments
         args, input=stdin, capture_output=True, text=True, check=False, env=env
     )
+
+
+#: Workspace package behind template rendering (``op_environment``) and ``akkiabot-e2e``.
+E2E_MODULE = "akkiabot_e2e"
+
+
+def required_modules(target: Target, *, accept: bool) -> list[str]:
+    """Workspace modules this deploy imports or runs after its first deploying step."""
+    if (target.template and not target.ssh) or (target.name == "staging" and accept):
+        return [E2E_MODULE]
+    return []
+
+
+def check_dependencies(
+    target: Target,
+    *,
+    accept: bool,
+    find_spec: Callable[[str], object | None] | None = None,
+) -> None:
+    """Fail before any lock, lease or deploy when the Python workspace is not synced.
+
+    A fresh checkout run through plain ``uv run`` only has the root project: rendering
+    the staging template would raise ``ModuleNotFoundError`` after the Mini App was
+    already switched, leaving staging on mixed versions.
+    """
+    find = find_spec or importlib.util.find_spec
+    missing = [name for name in required_modules(target, accept=accept) if find(name) is None]
+    if missing:
+        raise ReleaseError(
+            f"Python 依赖未同步，缺少 {'、'.join(missing)}：未部署任何内容。"
+            "先在本检出执行 `just setup-py`（uv sync --all-packages --locked）再重试"
+        )
 
 
 def template_environment() -> dict[str, str]:
