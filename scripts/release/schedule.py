@@ -3,8 +3,9 @@
 Workspace rule (2026-11-15): regular releases ship on Thursday and Sunday at
 20:00 UTC+8; at 18:00 the *current* regular release freezes new features.
 Fixes and cascade merges are never frozen. The phase is derived from the
-clock and the repository alone, so a delayed or repeated scheduled run makes
-the same decision as an on-time one (docs/release.md §5).
+clock and the current repository state each time a run starts; a run that
+starts after the window day ends does nothing. GitHub schedules may be delayed
+or skipped and are only a fallback for an external trigger (docs/release.md §5).
 """
 
 from __future__ import annotations
