@@ -236,3 +236,47 @@ def test_cli_reads_the_private_file_and_refuses_inline_comment(
         "AKKIABOT_PRODUCTION_SSH=prod-host\nAKKIABOT_PRODUCTION_DIR=/srv/demo\n", encoding="utf-8"
     )
     assert deploy.resolve_target("production").directory == "/srv/demo"
+
+
+def test_required_modules_follow_what_the_deploy_imports_or_runs() -> None:
+    staging = example_target("staging")  # local: renders the template with op inject
+    production = example_target("production")  # over ssh, no template
+    assert deploy.required_modules(staging, accept=False) == [deploy.E2E_MODULE]
+    assert deploy.required_modules(staging, accept=True) == [deploy.E2E_MODULE]
+    assert deploy.required_modules(production, accept=False) == []
+    remote_staging = deploy.Target(**{**staging.__dict__, "ssh": "staging-host"})
+    assert deploy.required_modules(remote_staging, accept=False) == []
+    assert deploy.required_modules(remote_staging, accept=True) == [deploy.E2E_MODULE]
+
+
+def test_unsynced_workspace_fails_before_lock_lease_or_deploy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh checkout without `uv sync --all-packages`: nothing is deployed (AKKIA-281)."""
+    real = deploy.importlib.util.find_spec
+    monkeypatch.setattr(
+        deploy.importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == deploy.E2E_MODULE else real(name, *a),
+    )
+    for key, value in EXAMPLE_TARGETS.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(deploy, "environment_lock", lambda name: pytest.fail("lock taken"))
+    monkeypatch.setattr(deploy, "release_staging", lambda *a, **k: pytest.fail("staging ran"))
+    monkeypatch.setattr(deploy, "deploy", lambda *a, **k: pytest.fail("deploy ran"))
+    args = cli.build_parser().parse_args(["deploy", "staging", "v1.0.0-rc.1", "--accept"])
+    with pytest.raises(ReleaseError, match="just setup-py") as exc:
+        cli.cmd_deploy(None, None, args)  # type: ignore[arg-type]
+    assert deploy.E2E_MODULE in str(exc.value)
+    assert cli.main(["deploy", "staging", "v1.0.0-rc.1", "--accept"]) == 3
+
+
+def test_synced_workspace_passes_the_dependency_check() -> None:
+    deploy.check_dependencies(example_target("staging"), accept=True)
+
+
+def test_deploy_recipes_sync_the_python_workspace_first() -> None:
+    justfile = (Path(__file__).resolve().parents[2] / "justfile").read_text(encoding="utf-8")
+    headers = {line.split()[0]: line for line in justfile.splitlines() if line[:1].isalpha()}
+    for recipe in ("release-staging", "release-deploy"):
+        assert headers[recipe].rstrip().endswith(": setup-py"), headers[recipe]

@@ -176,10 +176,11 @@ release *args:
 release-app *args:
     scripts/release/as-app.sh uv run python -m scripts.release {{ args }}
 
-# Deploy an RC to staging on this machine, then accept it in the same lock (scenarios: comma-separated; empty = full)
-release-staging tag scenarios="":
+# Deploy an RC to staging on this machine, then accept it in the same lock (scenarios: comma-separated; empty = full).
+# Both deploy recipes sync the Python workspace first: the deploy needs akkiabot_e2e (template, acceptance).
+release-staging tag scenarios="": setup-py
     uv run python -m scripts.release deploy staging {{ tag }} --accept {{ if scenarios != "" { "--scenarios " + scenarios } else { "" } }}
 
 # Deploy an owner-approved formal tag (release-production.yml `approve` job) to production
-release-deploy env tag *args:
+release-deploy env tag *args: setup-py
     uv run python -m scripts.release deploy {{ env }} {{ tag }} {{ args }}

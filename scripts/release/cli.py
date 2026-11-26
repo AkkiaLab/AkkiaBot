@@ -192,6 +192,7 @@ def cmd_window(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
 
 def cmd_deploy(git: Git, gh: GitHub, args: argparse.Namespace) -> int:
     target = deploy.resolve_target(args.env, ssh=args.ssh, directory=args.dir)
+    deploy.check_dependencies(target, accept=args.accept)
     with deploy.environment_lock(target.name):
         if target.name == "staging":
             staged = deploy.release_staging(
