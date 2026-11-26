@@ -87,6 +87,7 @@ flowchart LR
 2. `check-rc`：RC 必须是该版本最新的 RC，且等于分支当前 HEAD；否则判为过期，需要新 RC。
 3. 同一 sha 构建后端镜像（`release.yml`，只打 sha 标签）。RC 工作流本身不写 staging。
 4. 交接给运行机（staging 栈、1Password 与测试会话都在运行机上）：`just release-staging vX.Y.Z-rc.N <场景>`。以下步骤严格按顺序执行，任一步失败都会停止，不进入后续步骤：
+   0. 先同步 Python workspace 依赖（`just release-staging` / `just release-deploy` 都依赖 `setup-py`，即 `uv sync --all-packages --locked`）。直接用 `just release deploy …` 调用时，发布工具在加锁、取租约和任何部署之前检查 `akkiabot_e2e` 是否可导入（本机渲染 staging 模板和验收都需要它），缺失时以退出码 3 报错，不部署前端或后端；先执行 `just setup-py` 再重试；
    1. 取得本机 staging 锁和仓库级 **staging 租约**，并再次核对 RC 有效；
    2. 触发 `webapp-deploy.yml -f sha=<sha>` 发布 staging Mini App，并等待它成功；
    3. 用该 commit 的 `deploy/upgrade.sh` 升级运行机上配置的 staging 栈（目录取 `AKKIABOT_STAGING_DIR`，见 §7「运行机部署目标」；渲染该 commit 的 `staging/app.env.tpl`）；
@@ -137,6 +138,7 @@ flowchart LR
 | 上合冲突 | 该方向暂停，issue + 发布通知 | §3.3 解决 PR，落地后自动继续 |
 | 上合推送被拒 | 无变化 | 下次运行重新规划；持续被拒检查规则/App 权限 |
 | RC 过期（分支前进） | 旧 RC 不能部署/封版 | 出新 RC，按影响重新验收 |
+| Python 依赖未同步（退出码 3，提示 `just setup-py`） | 未加锁、未取租约，前后端均未改动 | `just setup-py` 后重跑 |
 | staging 部署失败 | 前端失败时后端未改动；后端失败看 `upgrade.sh` 退出码；公网或版本检查失败为 9 / 10，不进入验收 | 查因后重跑 `just release-staging`（租约已释放） |
 | 前端运行未确认结束（退出码 11） | 租约保留，后端未改动 | 在 Actions 确认运行已结束后 `just release lease release <sha>`，再重跑 |
 | staging 租约被占用 | 新的部署被拒绝 | 等待持有者结束；持有者异常退出时等租约过期，或核实后执行 `just release lease release <sha>` |
