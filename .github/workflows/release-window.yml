@@ -2,8 +2,11 @@ name: Release window
 
 # Thursday and Sunday, UTC+8 (docs/release.md §5): 16:xx prepare, 18:xx freeze
 # (下车 + RC to staging), 20:xx release (seal the accepted RC, then production
-# approval). The phase is taken from the clock when the run starts, so a delayed
-# run decides like an on-time one and a repeated run changes nothing. Manual
+# approval). Every run decides again from the clock when it starts and the
+# current repository state; completed actions are deduplicated by their own
+# checks (docs/release.md §5). GitHub may delay or skip schedule events, so the
+# crons below are only a fallback: an external scheduler dispatches phase=auto
+# shortly after each phase starts. Manual
 # entry (加车 / patch release): dispatch with phase and version; dry_run only
 # reports the decisions (no branch, RC, dispatch, PR retarget or seal).
 
