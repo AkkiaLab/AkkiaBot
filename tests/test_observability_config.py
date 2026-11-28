@@ -439,6 +439,14 @@ def test_env_missing_rule_per_expected_environment() -> None:
         assert "__ENV__" not in json.dumps(rule, ensure_ascii=False)
         assert env in rule["title"]
         assert rule["noDataState"] == "OK"  # present = absent() returns nothing
+        assert "__MINUTES__" not in json.dumps(rule, ensure_ascii=False)
+    # docs/observability.md §5: staging tolerates short scrape or push backlogs;
+    # production keeps 2m because this rule is its only signal when it alone goes away.
+    staging, production = rules
+    assert parse_duration(staging["for"]) == 300
+    assert "约 10 分钟" in staging["annotations"]["summary"]
+    assert parse_duration(production["for"]) == 120
+    assert "约 7 分钟" in production["annotations"]["summary"]
     with pytest.raises(SyncError):
         env_missing_rules(template, ['staging"} or vector(1) #'])
 
