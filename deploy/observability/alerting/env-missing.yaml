@@ -11,6 +11,12 @@
 # the `akkiabot` group. Add `production` here when the production stack starts
 # reporting; `--env` on the command line overrides the list.
 environments: [staging, production]
+# Per-environment `for`, overriding rule.for. staging tolerates short scrape or
+# push backlogs. production keeps the default: when only production stops
+# reporting, `/readyz 失败` still sees staging's series and cannot fire, so this
+# rule is its only signal.
+for_by_env:
+  staging: 5m
 rule:
   uid: akkiabot-env-missing-__ENV__
   title: 环境停止上报（__ENV__）
@@ -37,10 +43,11 @@ rule:
   # Reporting normally = absent() returns nothing.
   noDataState: OK
   execErrState: Error
+  # Default; see for_by_env. __MINUTES__ = 5m lookback + for.
   for: 2m
   labels: { severity: critical, service: akkiabot }
   annotations:
-    summary: __ENV__ 环境超过 5 分钟没有上报 /readyz 探测数据
+    summary: __ENV__ 环境约 __MINUTES__ 分钟没有上报 /readyz 探测数据
     description: >-
       Grafana Cloud 中没有 env=__ENV__ 的 probe_success：该环境的 Alloy 停止、主机宕机或无法访问
       Grafana Cloud。在服务器上检查 docker compose ps 与 docker compose logs alloy。

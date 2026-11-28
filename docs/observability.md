@@ -145,7 +145,7 @@ dashboard 名为 **AkkiaBot**，顶部变量依次是数据源、`env`、日志�
 | --- | --- | --- | --- |
 | bot 停止接收 update | `time() - telegram_poll_last_success_timestamp_seconds > 120` | 1 分钟（polling 停止后约 3–4 分钟触发，§5.2） | OK（webhook 模式、app 停止时由 `/readyz` 告警覆盖） |
 | `/readyz` 失败 | `min(probe_success{job="akkiabot-readyz"}) < 1` | 2 分钟 | **告警**（所有环境都没有数据时） |
-| 环境停止上报（每个预期环境一条） | `absent(probe_success{job="akkiabot-readyz", env="<env>"})` | 2 分钟（加上 5 分钟回溯，约 7 分钟触发） | OK（正常上报时 absent 没有结果） |
+| 环境停止上报（每个预期环境一条） | `absent(probe_success{job="akkiabot-readyz", env="<env>"})` | production 2 分钟（加上 5 分钟回溯，约 7 分钟触发）；staging 5 分钟（约 10 分钟触发，容忍短时采集或推送积压）。按环境的值在 `env-missing.yaml` 的 `for_by_env` 中配置 | OK（正常上报时 absent 没有结果） |
 | handler 错误率升高 | 最近 5 分钟 `handler_errors_total / handler 调用次数 > 5%` | 1 分钟 | OK |
 | LLM 错误或超时持续出现 | 15 分钟内 `antispam_llm_errors_total` 增加 ≥ 3 | 5 分钟 | OK |
 | 验证页面人机验证组件持续报错 | 30 分钟内 `captcha_client_events_total{event="turnstile_error"}` 增加 ≥ 3 | 5 分钟 | OK（没有页面上报时不告警） |
