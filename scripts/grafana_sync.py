@@ -55,6 +55,9 @@ NOTIFICATIONS = OBSERVABILITY / "alerting" / "notifications.yaml"
 #: (``__alert_rule_uid__``); webhook routes and receivers can match on it.
 RULE_LABEL = "akkiabot_rule"
 ENV_PLACEHOLDER = "__ENV__"
+# Minutes from the last sample to firing: Prometheus lookback (5m) plus `for`.
+MINUTES_PLACEHOLDER = "__MINUTES__"
+_LOOKBACK_SECONDS = 300
 _ENV_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 FOLDER_UID = "akkiabot"
@@ -139,11 +142,19 @@ def load_env_missing(path: Path = ENV_MISSING) -> dict[str, Any]:
 
 def env_missing_rules(template: dict[str, Any], envs: Sequence[str]) -> list[dict[str, Any]]:
     """One "environment stopped reporting" rule per expected environment."""
+    overrides = template.get("for_by_env") or {}
     rules = []
     for env in envs:
         if not _ENV_NAME.match(env):
             raise SyncError(f"环境名不合法：{env!r}")
-        text = json.dumps(template["rule"], ensure_ascii=False).replace(ENV_PLACEHOLDER, env)
+        rule = copy.deepcopy(template["rule"])
+        rule["for"] = overrides.get(env, rule["for"])
+        minutes = (_LOOKBACK_SECONDS + parse_duration(rule["for"])) // 60
+        text = (
+            json.dumps(rule, ensure_ascii=False)
+            .replace(ENV_PLACEHOLDER, env)
+            .replace(MINUTES_PLACEHOLDER, str(minutes))
+        )
         rules.append(json.loads(text))
     return rules
 
